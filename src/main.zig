@@ -24,7 +24,7 @@ else
 
 // Embed font at comptime
 // Large fonts use pre-compiled blob (bdf2blob.py) to avoid slow comptime parsing
-const FontType = font_mod.FontBlob(@embedFile("fonts/plemoljp-console-nf.bin"));
+const FontType = font_mod.FontBlob(@embedFile("fonts/ufo.bin"));
 
 // =============================================================================
 // Signal handling via signalfd
