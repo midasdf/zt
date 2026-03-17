@@ -1,4 +1,4 @@
-# ⚡ zt — the last terminal before the framebuffer
+# ⚡ zt — 50KB terminal emulator in Zig
 
 A minimal, fast terminal emulator written in Zig. Renders directly to the Linux framebuffer or X11 via shared memory. No GPU, no bloat, no dependencies (fbdev) or just XCB (X11).
 
