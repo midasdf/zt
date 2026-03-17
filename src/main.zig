@@ -10,4 +10,5 @@ test {
     _ = @import("vt.zig");
     _ = @import("pty.zig");
     _ = @import("input.zig");
+    _ = @import("render.zig");
 }
