@@ -211,7 +211,7 @@ pub const X11Backend = struct {
         return self.height;
     }
 
-    pub fn getBpp(self: *Self) u32 {
+    pub fn getBpp(_: *Self) u32 {
         return 4;
     }
 
