@@ -6,4 +6,5 @@ pub fn main() !void {
 
 test {
     _ = @import("font.zig");
+    _ = @import("term.zig");
 }
