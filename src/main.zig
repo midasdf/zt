@@ -239,7 +239,13 @@ pub fn main() !void {
                                     if (key_ev.pressed) {
                                         const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
                                         if (bytes.len > 0) {
-                                            _ = pty.write(bytes) catch {};
+                                            _ = pty.write(bytes) catch |err| switch (err) {
+                                                error.WouldBlock => {},
+                                                else => {
+                                                    running = false;
+                                                    break;
+                                                },
+                                            };
                                         }
                                     }
                                 },
@@ -267,7 +273,13 @@ pub fn main() !void {
                             if (input_event.pressed or input_event.repeat) {
                                 const bytes = input.translateKey(input_event.keycode, .{}, term.decckm);
                                 if (bytes.len > 0) {
-                                    _ = pty.write(bytes) catch {};
+                                    _ = pty.write(bytes) catch |err| switch (err) {
+                                        error.WouldBlock => {},
+                                        else => {
+                                            running = false;
+                                            break;
+                                        },
+                                    };
                                 }
                             }
                         }

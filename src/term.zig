@@ -18,6 +18,10 @@ pub const Cell = struct {
     };
 };
 
+// Static default cell for out-of-bounds getCell/getCellMut
+var default_cell_mut: Cell = .{};
+const default_cell: Cell = .{};
+
 pub const Term = struct {
     const Self = @This();
 
@@ -95,14 +99,17 @@ pub const Term = struct {
     }
 
     pub fn getCell(self: *const Self, x: u32, y: u32) *const Cell {
+        if (x >= self.cols or y >= self.rows) return &default_cell;
         return &self.cells[self.cellIndex(x, y)];
     }
 
     pub fn getCellMut(self: *Self, x: u32, y: u32) *Cell {
+        if (x >= self.cols or y >= self.rows) return &default_cell_mut;
         return &self.cells[self.cellIndex(x, y)];
     }
 
     pub fn setCell(self: *Self, x: u32, y: u32, cell: Cell) void {
+        if (x >= self.cols or y >= self.rows) return;
         const idx = self.cellIndex(x, y);
         self.cells[idx] = cell;
         self.dirty.set(idx);
@@ -140,6 +147,9 @@ pub const Term = struct {
 
         // Mark entire scroll region dirty
         self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
+
+        // Clear TrueColor entries — regeneration is cheap since they're rare
+        self.clearAllRgb();
     }
 
     pub fn scrollDown(self: *Self, n: u32) void {
@@ -165,6 +175,9 @@ pub const Term = struct {
 
         // Mark entire scroll region dirty
         self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
+
+        // Clear TrueColor entries — regeneration is cheap since they're rare
+        self.clearAllRgb();
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
@@ -195,6 +208,20 @@ pub const Term = struct {
         // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
+
+        // Clear TrueColor maps (indices are invalidated by resize)
+        self.clearAllRgb();
+
+        // Resize alt buffer if allocated
+        if (self.alt_cells) |alt| {
+            self.allocator.free(alt);
+            self.alt_cells = try self.allocator.alloc(Cell, new_total);
+            @memset(self.alt_cells.?, Cell{});
+        }
+        if (self.alt_dirty) |*ad| {
+            ad.deinit();
+            self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
+        }
     }
 
     pub fn switchScreen(self: *Self, alt: bool) !void {
@@ -254,18 +281,21 @@ pub const Term = struct {
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
                 @memset(self.cells[start..total], Cell{});
                 self.dirty.setRangeValue(.{ .start = start, .end = total }, true);
+                self.clearRgbRange(start, total);
             },
             1 => {
                 // Erase above cursor (from start to cursor inclusive)
                 const end = self.cellIndex(self.cursor_x, self.cursor_y) + 1;
                 @memset(self.cells[0..end], Cell{});
                 self.dirty.setRangeValue(.{ .start = 0, .end = end }, true);
+                self.clearRgbRange(0, end);
             },
             2, 3 => {
                 // Erase all
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
                 @memset(self.cells[0..total], Cell{});
                 self.dirty.setRangeValue(.{ .start = 0, .end = total }, true);
+                self.clearAllRgb();
             },
             else => {},
         }
@@ -283,18 +313,21 @@ pub const Term = struct {
                 const end = row_start + cols;
                 @memset(self.cells[start..end], Cell{});
                 self.dirty.setRangeValue(.{ .start = start, .end = end }, true);
+                self.clearRgbRange(start, end);
             },
             1 => {
                 // Erase left of cursor (inclusive)
                 const end = row_start + @as(usize, self.cursor_x) + 1;
                 @memset(self.cells[row_start..end], Cell{});
                 self.dirty.setRangeValue(.{ .start = row_start, .end = end }, true);
+                self.clearRgbRange(row_start, end);
             },
             2 => {
                 // Erase entire line
                 const end = row_start + cols;
                 @memset(self.cells[row_start..end], Cell{});
                 self.dirty.setRangeValue(.{ .start = row_start, .end = end }, true);
+                self.clearRgbRange(row_start, end);
             },
             else => {},
         }
@@ -319,6 +352,21 @@ pub const Term = struct {
             self.scroll_top = 0;
             self.scroll_bottom = self.rows -| 1;
         }
+    }
+
+    /// Remove TrueColor entries for cell indices in [start, end).
+    fn clearRgbRange(self: *Self, start: usize, end: usize) void {
+        var idx = start;
+        while (idx < end) : (idx += 1) {
+            _ = self.fg_rgb_map.remove(idx);
+            _ = self.bg_rgb_map.remove(idx);
+        }
+    }
+
+    /// Clear all TrueColor entries.
+    fn clearAllRgb(self: *Self) void {
+        self.fg_rgb_map.clearRetainingCapacity();
+        self.bg_rgb_map.clearRetainingCapacity();
     }
 
     // TrueColor helpers

@@ -36,7 +36,7 @@ pub const Pty = struct {
             TIOCSPTLCK,
             @intFromPtr(&unlock),
         );
-        if (unlock_rc != 0) return error.IoctlFailed;
+        if (@as(isize, @bitCast(unlock_rc)) < 0) return error.IoctlFailed;
 
         // 3. Get slave pts number
         var pty_num: c_int = undefined;
@@ -45,7 +45,7 @@ pub const Pty = struct {
             TIOCGPTN,
             @intFromPtr(&pty_num),
         );
-        if (ptn_rc != 0) return error.IoctlFailed;
+        if (@as(isize, @bitCast(ptn_rc)) < 0) return error.IoctlFailed;
 
         // Build slave path: "/dev/pts/" ++ number
         var slave_path_buf: [32]u8 = undefined;
@@ -150,7 +150,7 @@ pub const Pty = struct {
             TIOCSWINSZ,
             @intFromPtr(&ws),
         );
-        if (rc != 0) return error.IoctlFailed;
+        if (@as(isize, @bitCast(rc)) < 0) return error.IoctlFailed;
     }
 };
 

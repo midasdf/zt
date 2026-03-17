@@ -618,16 +618,22 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             7 => term.decawm = set,
             25 => term.cursor_visible = set,
             47, 1047 => {
-                term.switchScreen(set) catch {};
+                term.switchScreen(set) catch |err| {
+                    std.log.err("switchScreen failed: {}", .{err});
+                };
             },
             1049 => {
                 if (set) {
                     term.saved_cursor_x = term.cursor_x;
                     term.saved_cursor_y = term.cursor_y;
-                    term.switchScreen(true) catch {};
+                    term.switchScreen(true) catch |err| {
+                        std.log.err("switchScreen failed: {}", .{err});
+                    };
                     term.eraseDisplay(2);
                 } else {
-                    term.switchScreen(false) catch {};
+                    term.switchScreen(false) catch |err| {
+                        std.log.err("switchScreen failed: {}", .{err});
+                    };
                     term.cursor_x = term.saved_cursor_x;
                     term.cursor_y = term.saved_cursor_y;
                 }
