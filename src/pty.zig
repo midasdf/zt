@@ -93,21 +93,39 @@ pub const Pty = struct {
             // g. Set up environment
             var col_env_buf: [32]u8 = undefined;
             var row_env_buf: [32]u8 = undefined;
+            var shell_env_buf: [256]u8 = undefined;
+            var home_env_buf: [256]u8 = undefined;
+            var user_env_buf: [128]u8 = undefined;
             const col_env = std.fmt.bufPrintZ(&col_env_buf, "COLUMNS={d}", .{cols}) catch "COLUMNS=80";
             const row_env = std.fmt.bufPrintZ(&row_env_buf, "LINES={d}", .{rows}) catch "LINES=24";
+            const shell_env = std.fmt.bufPrintZ(&shell_env_buf, "SHELL={s}", .{shell_path}) catch "SHELL=/bin/sh";
+
+            // Get HOME and USER from parent environment
+            const home_val = std.posix.getenv("HOME") orelse "/root";
+            const user_val = std.posix.getenv("USER") orelse "root";
+            const lang_val = std.posix.getenv("LANG") orelse "C.UTF-8";
+            const home_env = std.fmt.bufPrintZ(&home_env_buf, "HOME={s}", .{home_val}) catch "HOME=/root";
+            const user_env = std.fmt.bufPrintZ(&user_env_buf, "USER={s}", .{user_val}) catch "USER=root";
+            var lang_env_buf: [64]u8 = undefined;
+            const lang_env = std.fmt.bufPrintZ(&lang_env_buf, "LANG={s}", .{lang_val}) catch "LANG=C.UTF-8";
 
             const env: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{
                 "TERM=xterm-256color",
                 "COLORTERM=truecolor",
                 "PATH=/usr/local/bin:/usr/bin:/bin",
-                "LANG=en_US.UTF-8",
+                lang_env,
+                shell_env,
+                home_env,
+                user_env,
                 col_env,
                 row_env,
             };
 
-            // h. execve
+            // h. execve (use shell_path as argv[0] — login shell convention
+            //    would use "-fish" but that requires building a new string)
             const argv: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{
                 shell_path,
+                "--login",
             };
 
             _ = posix.execveZ(shell_path, argv, env) catch {};
