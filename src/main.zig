@@ -23,7 +23,8 @@ else
     void;
 
 // Embed font at comptime
-const FontType = font_mod.Font(@embedFile("fonts/test_minimal.bdf"));
+// Large fonts use pre-compiled blob (bdf2blob.py) to avoid slow comptime parsing
+const FontType = font_mod.FontBlob(@embedFile("fonts/plemoljp-console-nf.bin"));
 
 // =============================================================================
 // Signal handling via signalfd

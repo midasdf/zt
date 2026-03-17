@@ -9,7 +9,7 @@ pub const Glyph = struct {
 };
 
 pub fn Font(comptime bdf_data: []const u8) type {
-    @setEvalBranchQuota(100_000);
+    @setEvalBranchQuota(100_000_000);
     const parsed = parseBdf(bdf_data);
     return FontType(parsed.glyph_count, parsed.bitmap_size, parsed.glyphs, parsed.bitmap_data);
 }
@@ -56,13 +56,52 @@ pub const GlyphView = struct {
     bitmap: []const u8,
 };
 
+/// Load a pre-compiled font blob (from bdf2blob.py).
+/// Binary format: header(8) + glyph_table(n*16) + bitmap_data
+/// This avoids comptime BDF parsing for large fonts.
+pub fn FontBlob(comptime blob: []const u8) type {
+    const glyph_count = std.mem.readInt(u32, blob[0..4], .little);
+    const table_offset: usize = 8;
+    const bitmap_offset: usize = table_offset + glyph_count * 16;
+
+    return struct {
+        pub fn getGlyph(codepoint: u21) ?GlyphView {
+            // Binary search in glyph table
+            var lo: usize = 0;
+            var hi: usize = glyph_count;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                const entry_off = table_offset + mid * 16;
+                const entry_cp: u21 = @intCast(std.mem.readInt(u32, blob[entry_off..][0..4], .little));
+                if (entry_cp == codepoint) {
+                    const w = std.mem.readInt(u16, blob[entry_off + 4 ..][0..2], .little);
+                    const h = std.mem.readInt(u16, blob[entry_off + 6 ..][0..2], .little);
+                    const bmp_off = std.mem.readInt(u32, blob[entry_off + 8 ..][0..4], .little);
+                    const bmp_len = std.mem.readInt(u16, blob[entry_off + 12 ..][0..2], .little);
+                    return .{
+                        .codepoint = codepoint,
+                        .width = w,
+                        .height = h,
+                        .bitmap = blob[bitmap_offset + bmp_off ..][0..bmp_len],
+                    };
+                } else if (entry_cp < codepoint) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return null;
+        }
+    };
+}
+
 fn parseBdf(comptime bdf_data: []const u8) struct {
     glyph_count: usize,
     bitmap_size: usize,
     glyphs: [countGlyphs(bdf_data)]Glyph,
     bitmap_data: [countBitmapBytes(bdf_data)]u8,
 } {
-    @setEvalBranchQuota(200_000);
+    @setEvalBranchQuota(100_000_000);
     const n = countGlyphs(bdf_data);
     const total_bytes = countBitmapBytes(bdf_data);
     var glyphs: [n]Glyph = undefined;
@@ -134,7 +173,7 @@ fn parseBdf(comptime bdf_data: []const u8) struct {
 }
 
 fn countGlyphs(comptime bdf_data: []const u8) usize {
-    @setEvalBranchQuota(100_000);
+    @setEvalBranchQuota(100_000_000);
     var count: usize = 0;
     var lines = std.mem.splitScalar(u8, bdf_data, '\n');
     while (lines.next()) |line_raw| {
@@ -147,7 +186,7 @@ fn countGlyphs(comptime bdf_data: []const u8) usize {
 }
 
 fn countBitmapBytes(comptime bdf_data: []const u8) usize {
-    @setEvalBranchQuota(200_000);
+    @setEvalBranchQuota(100_000_000);
     var total: usize = 0;
     var lines = std.mem.splitScalar(u8, bdf_data, '\n');
     var in_bitmap = false;
