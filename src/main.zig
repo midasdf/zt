@@ -8,4 +8,5 @@ test {
     _ = @import("font.zig");
     _ = @import("term.zig");
     _ = @import("vt.zig");
+    _ = @import("pty.zig");
 }
