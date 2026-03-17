@@ -79,14 +79,14 @@ pub const X11Backend = struct {
             connection,
             c.XCB_COPY_FROM_PARENT, // depth
             window,
-            screen.root,
+            screen.*.root,
             0,
             0, // x, y
             @intCast(width),
             @intCast(height),
             0, // border_width
             c.XCB_WINDOW_CLASS_INPUT_OUTPUT,
-            screen.root_visual,
+            screen.*.root_visual,
             c.XCB_CW_EVENT_MASK,
             &values,
         );
@@ -127,16 +127,16 @@ pub const X11Backend = struct {
         var wm_delete_atom: c.xcb_atom_t = 0;
         if (protocols_reply) |pr| {
             if (delete_reply) |dr| {
-                wm_delete_atom = dr.atom;
+                wm_delete_atom = dr.*.atom;
                 _ = c.xcb_change_property(
                     connection,
                     c.XCB_PROP_MODE_REPLACE,
                     window,
-                    pr.atom,
+                    pr.*.atom,
                     c.XCB_ATOM_ATOM,
                     32,
                     1,
-                    @ptrCast(&dr.atom),
+                    @ptrCast(&dr.*.atom),
                 );
             }
         }
@@ -235,7 +235,7 @@ pub const X11Backend = struct {
             @intCast(self.height),
             0,
             0, // dst x, y
-            self.screen.root_depth,
+            self.screen.*.root_depth,
             c.XCB_IMAGE_FORMAT_Z_PIXMAP,
             0, // send_event
             self.shm_seg,
@@ -289,35 +289,35 @@ pub const X11Backend = struct {
         const event = c.xcb_poll_for_event(self.connection) orelse return null;
         defer std.c.free(event);
 
-        const event_type = event.response_type & 0x7F;
+        const event_type = event.*.response_type & 0x7F;
         switch (event_type) {
             c.XCB_KEY_PRESS => {
                 const key: *c.xcb_key_press_event_t = @ptrCast(@alignCast(event));
                 return .{ .key = .{
                     // XCB keycodes are offset by 8 from evdev keycodes
-                    .keycode = key.detail -| 8,
+                    .keycode = key.*.detail -| 8,
                     .pressed = true,
-                    .modifiers = xcbStateToMods(key.state),
+                    .modifiers = xcbStateToMods(key.*.state),
                 } };
             },
             c.XCB_KEY_RELEASE => {
                 const key: *c.xcb_key_release_event_t = @ptrCast(@alignCast(event));
                 return .{ .key = .{
-                    .keycode = key.detail -| 8,
+                    .keycode = key.*.detail -| 8,
                     .pressed = false,
-                    .modifiers = xcbStateToMods(key.state),
+                    .modifiers = xcbStateToMods(key.*.state),
                 } };
             },
             c.XCB_CONFIGURE_NOTIFY => {
                 const cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(event));
-                if (cfg.width != self.width or cfg.height != self.height) {
-                    return .{ .resize = .{ .width = cfg.width, .height = cfg.height } };
+                if (cfg.*.width != self.width or cfg.*.height != self.height) {
+                    return .{ .resize = .{ .width = cfg.*.width, .height = cfg.*.height } };
                 }
                 return null;
             },
             c.XCB_CLIENT_MESSAGE => {
                 const msg: *c.xcb_client_message_event_t = @ptrCast(@alignCast(event));
-                if (msg.data.data32[0] == self.wm_delete_atom) {
+                if (msg.*.data.data32[0] == self.wm_delete_atom) {
                     return .close;
                 }
                 return null;
