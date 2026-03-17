@@ -9,4 +9,5 @@ test {
     _ = @import("term.zig");
     _ = @import("vt.zig");
     _ = @import("pty.zig");
+    _ = @import("input.zig");
 }
