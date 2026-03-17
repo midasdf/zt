@@ -1,0 +1,11 @@
+.{
+    .name = .zt,
+    .version = "0.1.0",
+    .fingerprint = 0xc36136a6af00f24b,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "config.zig",
+    },
+}
