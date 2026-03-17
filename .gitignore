@@ -1,2 +1,8 @@
 .zig-cache/
 zig-out/
+
+# Font files (generate locally with scripts/)
+fonts/
+src/fonts/*.bin
+# Keep test font
+!src/fonts/test_minimal.bdf
