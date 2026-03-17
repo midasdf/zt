@@ -1,8 +1,5 @@
 const std = @import("std");
 
-/// Maximum bytes per glyph bitmap (2 bytes/row * 32 rows max)
-const MAX_BITMAP_SIZE = 64;
-
 pub const Glyph = struct {
     codepoint: u21,
     width: u32,
@@ -57,13 +54,6 @@ pub const GlyphView = struct {
     width: u32,
     height: u32,
     bitmap: []const u8,
-};
-
-const ParseResult = struct {
-    glyph_count: usize,
-    bitmap_size: usize,
-    glyphs: []const Glyph,
-    bitmap_data: []const u8,
 };
 
 fn parseBdf(comptime bdf_data: []const u8) struct {

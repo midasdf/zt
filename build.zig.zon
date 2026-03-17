@@ -7,5 +7,6 @@
         "build.zig.zon",
         "src",
         "config.zig",
+        "fonts",
     },
 }
