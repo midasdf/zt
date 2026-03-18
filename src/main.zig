@@ -193,6 +193,8 @@ pub fn main() !void {
     var running = true;
     var pty_buf: [65536]u8 = undefined;
     var cursor_visible_blink = true;
+    var prev_cursor_x: u32 = 0;
+    var prev_cursor_y: u32 = 0;
 
     while (running) {
         var events: [16]linux.epoll_event = undefined;
@@ -288,6 +290,18 @@ pub fn main() !void {
                 },
             }
         }
+
+        // Mark old cursor position dirty if cursor moved
+        if (prev_cursor_x != term.cursor_x or prev_cursor_y != term.cursor_y) {
+            if (prev_cursor_x < term.cols and prev_cursor_y < term.rows) {
+                term.setCell(prev_cursor_x, prev_cursor_y, term.getCell(prev_cursor_x, prev_cursor_y).*);
+            }
+            if (term.cursor_x < term.cols and term.cursor_y < term.rows) {
+                term.setCell(term.cursor_x, term.cursor_y, term.getCell(term.cursor_x, term.cursor_y).*);
+            }
+        }
+        prev_cursor_x = term.cursor_x;
+        prev_cursor_y = term.cursor_y;
 
         // Render dirty cells
         const buf = backend.getBuffer();
