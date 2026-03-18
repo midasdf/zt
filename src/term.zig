@@ -103,8 +103,8 @@ pub const Term = struct {
         return &self.cells[self.cellIndex(x, y)];
     }
 
-    pub fn getCellMut(self: *Self, x: u32, y: u32) *Cell {
-        if (x >= self.cols or y >= self.rows) return &default_cell_mut;
+    pub fn getCellMut(self: *Self, x: u32, y: u32) ?*Cell {
+        if (x >= self.cols or y >= self.rows) return null;
         return &self.cells[self.cellIndex(x, y)];
     }
 
@@ -203,6 +203,7 @@ pub const Term = struct {
 
         self.cols = new_cols;
         self.rows = new_rows;
+        self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
 
         // Clamp cursor
@@ -352,6 +353,118 @@ pub const Term = struct {
             self.scroll_top = 0;
             self.scroll_bottom = self.rows -| 1;
         }
+    }
+
+    pub fn insertLines(self: *Self, n: u32) void {
+        if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
+        const count = @min(n, self.scroll_bottom - self.cursor_y + 1);
+        if (count == 0) return;
+        const cols: usize = self.cols;
+        const bot: usize = self.scroll_bottom;
+        const cy: usize = self.cursor_y;
+
+        // Shift lines down within [cursor_y, scroll_bottom]
+        const copy_rows = bot - cy + 1 - count;
+        if (copy_rows > 0) {
+            const src_start = cy * cols;
+            const dst_start = (cy + count) * cols;
+            std.mem.copyBackwards(Cell, self.cells[dst_start .. dst_start + copy_rows * cols], self.cells[src_start .. src_start + copy_rows * cols]);
+        }
+
+        // Clear inserted lines
+        const clear_start = cy * cols;
+        const clear_end = (cy + count) * cols;
+        @memset(self.cells[clear_start..clear_end], Cell{});
+
+        // Mark scroll region dirty
+        self.dirty.setRangeValue(.{ .start = cy * cols, .end = (bot + 1) * cols }, true);
+        self.clearAllRgb();
+    }
+
+    pub fn deleteLines(self: *Self, n: u32) void {
+        if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
+        const count = @min(n, self.scroll_bottom - self.cursor_y + 1);
+        if (count == 0) return;
+        const cols: usize = self.cols;
+        const bot: usize = self.scroll_bottom;
+        const cy: usize = self.cursor_y;
+
+        // Shift lines up within [cursor_y, scroll_bottom]
+        const copy_rows = bot - cy + 1 - count;
+        if (copy_rows > 0) {
+            const src_start = (cy + count) * cols;
+            const dst_start = cy * cols;
+            std.mem.copyForwards(Cell, self.cells[dst_start .. dst_start + copy_rows * cols], self.cells[src_start .. src_start + copy_rows * cols]);
+        }
+
+        // Clear bottom lines in region
+        const clear_start = (bot + 1 - count) * cols;
+        const clear_end = (bot + 1) * cols;
+        @memset(self.cells[clear_start..clear_end], Cell{});
+
+        // Mark scroll region dirty
+        self.dirty.setRangeValue(.{ .start = cy * cols, .end = (bot + 1) * cols }, true);
+        self.clearAllRgb();
+    }
+
+    pub fn deleteChars(self: *Self, n: u32) void {
+        if (self.cursor_x >= self.cols or self.cursor_y >= self.rows) return;
+        const cols: usize = self.cols;
+        const cx: usize = self.cursor_x;
+        const cy: usize = self.cursor_y;
+        const remaining = cols - cx;
+        const count = @min(n, @as(u32, @intCast(remaining)));
+        const row_start = cy * cols;
+
+        // Shift characters left
+        const copy_len = remaining - count;
+        if (copy_len > 0) {
+            std.mem.copyForwards(Cell, self.cells[row_start + cx .. row_start + cx + copy_len], self.cells[row_start + cx + count .. row_start + cx + count + copy_len]);
+        }
+
+        // Clear rightmost characters
+        const clear_start = row_start + cols - count;
+        @memset(self.cells[clear_start .. row_start + cols], Cell{});
+
+        self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cols }, true);
+        self.clearRgbRange(row_start + cx, row_start + cols);
+    }
+
+    pub fn insertChars(self: *Self, n: u32) void {
+        if (self.cursor_x >= self.cols or self.cursor_y >= self.rows) return;
+        const cols: usize = self.cols;
+        const cx: usize = self.cursor_x;
+        const cy: usize = self.cursor_y;
+        const remaining = cols - cx;
+        const count = @min(n, @as(u32, @intCast(remaining)));
+        const row_start = cy * cols;
+
+        // Shift characters right
+        const copy_len = remaining - count;
+        if (copy_len > 0) {
+            std.mem.copyBackwards(Cell, self.cells[row_start + cx + count .. row_start + cx + count + copy_len], self.cells[row_start + cx .. row_start + cx + copy_len]);
+        }
+
+        // Clear inserted characters
+        @memset(self.cells[row_start + cx .. row_start + cx + count], Cell{});
+
+        self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cols }, true);
+        self.clearRgbRange(row_start + cx, row_start + cols);
+    }
+
+    pub fn eraseChars(self: *Self, n: u32) void {
+        if (self.cursor_x >= self.cols or self.cursor_y >= self.rows) return;
+        const cols: usize = self.cols;
+        const cx: usize = self.cursor_x;
+        const cy: usize = self.cursor_y;
+        const remaining = cols - cx;
+        const count: usize = @min(n, @as(u32, @intCast(remaining)));
+        const row_start = cy * cols;
+
+        @memset(self.cells[row_start + cx .. row_start + cx + count], Cell{});
+
+        self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cx + count }, true);
+        self.clearRgbRange(row_start + cx, row_start + cx + count);
     }
 
     /// Remove TrueColor entries for cell indices in [start, end).

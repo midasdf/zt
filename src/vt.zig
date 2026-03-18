@@ -394,10 +394,14 @@ pub const Parser = struct {
 // =============================================================================
 
 pub fn executeAction(action: Action, term: *Term) void {
+    executeActionWithFd(action, term, null);
+}
+
+pub fn executeActionWithFd(action: Action, term: *Term, writer_fd: ?std.posix.fd_t) void {
     switch (action) {
         .print => |cp| handlePrint(cp, term),
         .execute => |c| handleControl(c, term),
-        .csi_dispatch => |csi| handleCsi(csi, term),
+        .csi_dispatch => |csi| handleCsi(csi, term, writer_fd),
         .esc_dispatch => |esc| handleEsc(esc, term),
         .osc_dispatch => {},
         .none => {},
@@ -450,7 +454,7 @@ fn handleControl(c: u8, term: *Term) void {
     }
 }
 
-fn handleCsi(csi: CsiAction, term: *Term) void {
+fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
     const p = csi.params;
     const pc = csi.param_count;
 
@@ -471,6 +475,20 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             term.moveCursorRel(-@as(i32, @intCast(n)), 0);
         },
+        'E' => { // CNL — cursor next line
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.moveCursorRel(0, @as(i32, @intCast(n)));
+            term.cursor_x = 0;
+        },
+        'F' => { // CPL — cursor preceding line
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.moveCursorRel(0, -@as(i32, @intCast(n)));
+            term.cursor_x = 0;
+        },
+        'G' => { // CHA — cursor horizontal absolute (1-indexed)
+            const col = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
+            term.cursor_x = @min(@as(u32, @intCast(col)), term.cols -| 1);
+        },
         'H', 'f' => { // CUP — cursor position (1-indexed params)
             const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
             const col = if (pc > 1 and p[1] > 0) p[1] - 1 else 0;
@@ -484,7 +502,40 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const mode: u8 = if (pc > 0) @intCast(p[0]) else 0;
             term.eraseLine(mode);
         },
+        'L' => { // IL — insert lines
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.insertLines(@intCast(n));
+        },
+        'M' => { // DL — delete lines
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.deleteLines(@intCast(n));
+        },
+        'P' => { // DCH — delete characters
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.deleteChars(@intCast(n));
+        },
+        'X' => { // ECH — erase characters
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.eraseChars(@intCast(n));
+        },
+        '@' => { // ICH — insert characters
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.insertChars(@intCast(n));
+        },
+        'd' => { // VPA — vertical position absolute (1-indexed)
+            const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
+            term.cursor_y = @min(@as(u32, @intCast(row)), term.rows -| 1);
+        },
         'm' => handleSgr(csi, term), // SGR
+        'n' => { // DSR — device status report
+            if (csi.private_marker == 0 and pc > 0 and p[0] == 6) {
+                if (writer_fd) |fd| {
+                    var buf: [32]u8 = undefined;
+                    const response = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ term.cursor_y + 1, term.cursor_x + 1 }) catch return;
+                    _ = std.posix.write(fd, response) catch {};
+                }
+            }
+        },
         'S' => { // SU — scroll up
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             term.scrollUp(@intCast(n));

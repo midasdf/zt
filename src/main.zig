@@ -191,6 +191,7 @@ pub fn main() !void {
     // 10. Event loop
     var parser = vt.Parser{};
     var running = true;
+    var mod_state: input.Modifiers = .{};
     var pty_buf: [65536]u8 = undefined;
     var cursor_visible_blink = true;
     var prev_cursor_x: u32 = 0;
@@ -217,7 +218,7 @@ pub fn main() !void {
                     }
                     for (pty_buf[0..bytes_read]) |byte| {
                         const action = parser.feed(byte);
-                        vt.executeAction(action, &term);
+                        vt.executeActionWithFd(action, &term, pty.master_fd);
                     }
                 },
                 @intFromEnum(EpollTag.signal) => {
@@ -272,18 +273,35 @@ pub fn main() !void {
                     // evdev fds (fbdev backend)
                     if (config.backend == .fbdev) {
                         const evdev_idx = ev.data.u32 - EVDEV_BASE;
-                        if (backend.readEvdev(evdev_idx)) |input_event| {
-                            if (input_event.pressed or input_event.repeat) {
-                                const bytes = input.translateKey(input_event.keycode, .{}, term.decckm);
-                                if (bytes.len > 0) {
-                                    _ = pty.write(bytes) catch |err| switch (err) {
-                                        error.WouldBlock => {},
-                                        else => {
-                                            running = false;
-                                            break;
-                                        },
-                                    };
-                                }
+                        while (backend.readEvdev(evdev_idx)) |input_event| {
+                            const K = input.KEY;
+                            switch (input_event.keycode) {
+                                K.LEFTSHIFT, K.RIGHTSHIFT => {
+                                    mod_state.shift = input_event.pressed;
+                                },
+                                K.LEFTCTRL, K.RIGHTCTRL => {
+                                    mod_state.ctrl = input_event.pressed;
+                                },
+                                K.LEFTALT, K.RIGHTALT => {
+                                    mod_state.alt = input_event.pressed;
+                                },
+                                K.LEFTMETA, K.RIGHTMETA => {
+                                    mod_state.meta = input_event.pressed;
+                                },
+                                else => {
+                                    if (input_event.pressed or input_event.repeat) {
+                                        const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm);
+                                        if (bytes.len > 0) {
+                                            _ = pty.write(bytes) catch |err| switch (err) {
+                                                error.WouldBlock => {},
+                                                else => {
+                                                    running = false;
+                                                    break;
+                                                },
+                                            };
+                                        }
+                                    }
+                                },
                             }
                         }
                     }

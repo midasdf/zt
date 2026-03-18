@@ -124,17 +124,22 @@ pub fn renderCell(
         .rgb24 => 3,
     };
 
-    // 5. Fill background rect
+    // 5. Bounds limits to prevent buffer overflow
+    const max_offset = buffer.len;
     const px_x = cell_x * font_w;
     const px_y = cell_y * font_h;
+
+    // 6. Fill background rect
     for (0..font_h) |row| {
         const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
         for (0..font_w) |col| {
-            writePixel(buffer, row_offset + @as(u32, @intCast(col)) * bpp, bg_color, pixel_format);
+            const offset = row_offset + @as(u32, @intCast(col)) * bpp;
+            if (offset + bpp > max_offset) continue;
+            writePixel(buffer, offset, bg_color, pixel_format);
         }
     }
 
-    // 6. Draw glyph bitmap
+    // 7. Draw glyph bitmap
     if (glyph) |g| {
         const bytes_per_row = (g.width + 7) / 8;
         for (0..@min(g.height, font_h)) |row| {
@@ -143,10 +148,14 @@ pub fn renderCell(
                 const bit = @as(u8, 0x80) >> @intCast(col % 8);
                 if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
                     const offset = (px_y + @as(u32, @intCast(row))) * stride + (px_x + @as(u32, @intCast(col))) * bpp;
+                    if (offset + bpp > max_offset) continue;
                     writePixel(buffer, offset, fg_color, pixel_format);
                     // Bold: draw 1px to the right
                     if (cell.attrs.bold and col + 1 < font_w) {
-                        writePixel(buffer, offset + bpp, fg_color, pixel_format);
+                        const bold_offset = offset + bpp;
+                        if (bold_offset + bpp <= max_offset) {
+                            writePixel(buffer, bold_offset, fg_color, pixel_format);
+                        }
                     }
                 }
             }
@@ -157,17 +166,20 @@ pub fn renderCell(
             for (0..font_w) |col| {
                 if (row == 0 or row == font_h - 1 or col == 0 or col == font_w - 1) {
                     const offset = (px_y + @as(u32, @intCast(row))) * stride + (px_x + @as(u32, @intCast(col))) * bpp;
+                    if (offset + bpp > max_offset) continue;
                     writePixel(buffer, offset, fg_color, pixel_format);
                 }
             }
         }
     }
 
-    // 7. Underline: draw horizontal line at font_h - 2
+    // 8. Underline: draw horizontal line at font_h - 2
     if (cell.attrs.underline) {
         const row_offset = (px_y + font_h - 2) * stride + px_x * bpp;
         for (0..font_w) |col| {
-            writePixel(buffer, row_offset + @as(u32, @intCast(col)) * bpp, fg_color, pixel_format);
+            const offset = row_offset + @as(u32, @intCast(col)) * bpp;
+            if (offset + bpp > max_offset) continue;
+            writePixel(buffer, offset, fg_color, pixel_format);
         }
     }
 }
