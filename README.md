@@ -1,5 +1,9 @@
 # ⚡ zt — 50KB terminal emulator in Zig
 
+[![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
+
 A minimal, fast terminal emulator written in Zig. Renders directly to the Linux framebuffer or X11 via shared memory. No GPU, no bloat, no dependencies (fbdev) or just XCB (X11).
 
 Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero) (RPi Zero 2W + 720x720 HyperPixel4), but runs on any Linux box.
