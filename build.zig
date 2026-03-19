@@ -5,9 +5,16 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev or x11") orelse "fbdev";
+    const is_x11 = std.mem.eql(u8, backend_opt, "x11");
+
+    const options = b.addOptions();
+    options.addOption(bool, "use_x11", is_x11);
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
+        .imports = &.{
+            .{ .name = "build_options", .module = options.createModule() },
+        },
     });
 
     const exe_mod = b.createModule(.{

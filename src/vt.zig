@@ -134,32 +134,15 @@ pub const Parser = struct {
             }
             return .none;
         } else {
-            // Invalid continuation — emit replacement char and reprocess
+            // Invalid continuation — reprocess byte in ground state.
+            // If the byte produces an action, return it (sacrificing the
+            // replacement char). Otherwise return U+FFFD replacement.
             self.state = .ground;
-            const reprocessed = self.handleGround(byte);
-            _ = reprocessed;
-            // We need to return the replacement char; the reprocessed byte
-            // is lost. To properly handle this we'd need a queue.
-            // For simplicity, return replacement and let the byte be reprocessed
-            // by returning to ground and letting next feed() handle it.
-            // Actually, we need to reprocess. Let's do it properly:
-            self.state = .ground;
-            // We can't return two actions, so return replacement and
-            // reprocess via re-entering ground state. The caller will
-            // call feed() again with the next byte. But this byte is lost.
-            // The spec says "reprocess byte in ground" — we need to do it now.
-            // Since we can only return one action, let's process the byte and
-            // sacrifice the replacement char if the byte produces an action,
-            // or return the replacement if the byte is benign.
             const ground_action = self.handleGround(byte);
-            switch (ground_action) {
-                .none => return Action{ .print = 0xFFFD },
-                else => {
-                    // Sacrifice replacement, return the real action
-                    // This is an acceptable trade-off for a single-action API
-                    return ground_action;
-                },
-            }
+            return switch (ground_action) {
+                .none => Action{ .print = 0xFFFD },
+                else => ground_action,
+            };
         }
     }
 
@@ -408,7 +391,26 @@ pub fn executeActionWithFd(action: Action, term: *Term, writer_fd: ?std.posix.fd
     }
 }
 
+fn isWide(cp: u21) bool {
+    return (cp >= 0x1100 and cp <= 0x115F) or // Hangul Jamo
+        (cp >= 0x2E80 and cp <= 0x303E) or // CJK Radicals, Kangxi, Ideographic Description
+        (cp >= 0x3040 and cp <= 0x33BF) or // Hiragana, Katakana, Bopomofo, CJK compat
+        (cp >= 0x3400 and cp <= 0x4DBF) or // CJK Unified Extension A
+        (cp >= 0x4E00 and cp <= 0xA4CF) or // CJK Unified, Yi
+        (cp >= 0xA960 and cp <= 0xA97C) or // Hangul Jamo Extended-A
+        (cp >= 0xAC00 and cp <= 0xD7A3) or // Hangul Syllables
+        (cp >= 0xF900 and cp <= 0xFAFF) or // CJK Compatibility Ideographs
+        (cp >= 0xFE10 and cp <= 0xFE6F) or // CJK Compatibility Forms, Small Forms
+        (cp >= 0xFF01 and cp <= 0xFF60) or // Fullwidth Forms
+        (cp >= 0xFFE0 and cp <= 0xFFE6) or // Fullwidth Signs
+        (cp >= 0x1F300 and cp <= 0x1F9FF) or // Misc Symbols, Emoticons
+        (cp >= 0x20000 and cp <= 0x2FFFF) or // CJK Extension B-F
+        (cp >= 0x30000 and cp <= 0x3FFFF); // CJK Extension G+
+}
+
 fn handlePrint(cp: u21, term: *Term) void {
+    const wide = isWide(cp);
+
     if (term.cursor_x >= term.cols) {
         if (term.decawm) {
             term.cursor_x = 0;
@@ -418,11 +420,33 @@ fn handlePrint(cp: u21, term: *Term) void {
         }
     }
 
+    // Wide char needs 2 columns — wrap if at last column
+    if (wide and term.cursor_x + 1 >= term.cols) {
+        if (term.decawm) {
+            term.setCell(term.cursor_x, term.cursor_y, Cell{});
+            term.cursor_x = 0;
+            term.insertNewline();
+        }
+    }
+
+    // Clear any existing wide char pair we're overwriting
+    if (term.cursor_x < term.cols and term.cursor_y < term.rows) {
+        const existing = term.getCell(term.cursor_x, term.cursor_y);
+        if (existing.attrs.wide_dummy and term.cursor_x > 0) {
+            term.setCell(term.cursor_x - 1, term.cursor_y, Cell{});
+        } else if (existing.attrs.wide and term.cursor_x + 1 < term.cols) {
+            term.setCell(term.cursor_x + 1, term.cursor_y, Cell{});
+        }
+    }
+
+    var attrs = term.current_attrs;
+    if (wide) attrs.wide = true;
+
     const cell = Cell{
         .char = cp,
         .fg = term.current_fg,
         .bg = term.current_bg,
-        .attrs = term.current_attrs,
+        .attrs = attrs,
     };
     term.setCell(term.cursor_x, term.cursor_y, cell);
 
@@ -434,9 +458,15 @@ fn handlePrint(cp: u21, term: *Term) void {
         term.setBgRgb(term.cursor_x, term.cursor_y, rgb) catch {};
     }
 
-    // TODO: CJK double-width handling
-
     term.cursor_x += 1;
+
+    // Wide char: set dummy cell for right half
+    if (wide and term.cursor_x < term.cols) {
+        var dummy = Cell{ .bg = term.current_bg };
+        dummy.attrs.wide_dummy = true;
+        term.setCell(term.cursor_x, term.cursor_y, dummy);
+        term.cursor_x += 1;
+    }
 }
 
 fn handleControl(c: u8, term: *Term) void {

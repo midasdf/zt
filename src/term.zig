@@ -14,12 +14,12 @@ pub const Cell = struct {
         underline: bool = false,
         reverse: bool = false,
         dim: bool = false,
-        _pad: u3 = 0,
+        wide: bool = false,
+        wide_dummy: bool = false,
+        _pad: u1 = 0,
     };
 };
 
-// Static default cell for out-of-bounds getCell/getCellMut
-var default_cell_mut: Cell = .{};
 const default_cell: Cell = .{};
 
 pub const Term = struct {
@@ -117,6 +117,11 @@ pub const Term = struct {
 
     pub fn isDirty(self: *const Self, x: u32, y: u32) bool {
         return self.dirty.isSet(self.cellIndex(x, y));
+    }
+
+    pub fn markDirty(self: *Self, x: u32, y: u32) void {
+        if (x >= self.cols or y >= self.rows) return;
+        self.dirty.set(self.cellIndex(x, y));
     }
 
     pub fn clearDirty(self: *Self) void {

@@ -122,12 +122,12 @@ pub const FbdevBackend = struct {
         // 2. Get variable screen info
         var vinfo: FbVarScreenInfo = undefined;
         const vinfo_ret = std.os.linux.ioctl(fb_fd, FBIOGET_VSCREENINFO, @intFromPtr(&vinfo));
-        if (vinfo_ret != 0) return error.IoctlFailed;
+        if (@as(isize, @bitCast(vinfo_ret)) < 0) return error.IoctlFailed;
 
         // 3. Get fixed screen info
         var finfo: FbFixScreenInfo = undefined;
         const finfo_ret = std.os.linux.ioctl(fb_fd, FBIOGET_FSCREENINFO, @intFromPtr(&finfo));
-        if (finfo_ret != 0) return error.IoctlFailed;
+        if (@as(isize, @bitCast(finfo_ret)) < 0) return error.IoctlFailed;
 
         const fb_size = finfo.line_length * vinfo.yres;
         const bpp = vinfo.bits_per_pixel / 8;
@@ -162,7 +162,7 @@ pub const FbdevBackend = struct {
             // Check if it's a keyboard
             var key_bits: [96]u8 = [_]u8{0} ** 96;
             const ev_ret = std.os.linux.ioctl(fd, EVIOCGBIT_EV_KEY, @intFromPtr(&key_bits));
-            if (ev_ret != 0) {
+            if (@as(isize, @bitCast(ev_ret)) < 0) {
                 std.posix.close(fd);
                 continue;
             }
@@ -278,7 +278,7 @@ pub const FbdevBackend = struct {
     pub fn saveConsoleState(self: *Self) !void {
         if (self.tty_fd < 0) return;
         const ret = std.os.linux.ioctl(self.tty_fd, KDGKBMODE, @intFromPtr(&self.original_kb_mode));
-        if (ret != 0) return error.IoctlFailed;
+        if (@as(isize, @bitCast(ret)) < 0) return error.IoctlFailed;
     }
 
     pub fn restoreConsoleState(self: *Self) void {
@@ -298,7 +298,7 @@ pub const FbdevBackend = struct {
             .frsig = 0,
         };
         const ret = std.os.linux.ioctl(self.tty_fd, VT_SETMODE, @intFromPtr(&mode));
-        if (ret != 0) return error.IoctlFailed;
+        if (@as(isize, @bitCast(ret)) < 0) return error.IoctlFailed;
     }
 
     pub fn releaseVt(self: *Self) void {

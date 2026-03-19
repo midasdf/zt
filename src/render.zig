@@ -98,7 +98,10 @@ pub fn renderCell(
     comptime font_w: u32,
     comptime font_h: u32,
     comptime pixel_format: PixelFormat,
+    comptime wide: bool,
 ) void {
+    const render_w: u32 = if (wide) font_w * 2 else font_w;
+
     // 1. Determine fg/bg colors
     var fg_color = if (fg_rgb_override) |rgb| Color{ .r = rgb[0], .g = rgb[1], .b = rgb[2] } else palette[cell.fg];
     var bg_color = if (bg_rgb_override) |rgb| Color{ .r = rgb[0], .g = rgb[1], .b = rgb[2] } else palette[cell.bg];
@@ -132,7 +135,7 @@ pub fn renderCell(
     // 6. Fill background rect
     for (0..font_h) |row| {
         const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
-        for (0..font_w) |col| {
+        for (0..render_w) |col| {
             const offset = row_offset + @as(u32, @intCast(col)) * bpp;
             if (offset + bpp > max_offset) continue;
             writePixel(buffer, offset, bg_color, pixel_format);
@@ -143,7 +146,7 @@ pub fn renderCell(
     if (glyph) |g| {
         const bytes_per_row = (g.width + 7) / 8;
         for (0..@min(g.height, font_h)) |row| {
-            for (0..@min(g.width, font_w)) |col| {
+            for (0..@min(g.width, render_w)) |col| {
                 const byte_idx = row * bytes_per_row + col / 8;
                 const bit = @as(u8, 0x80) >> @intCast(col % 8);
                 if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
@@ -151,7 +154,7 @@ pub fn renderCell(
                     if (offset + bpp > max_offset) continue;
                     writePixel(buffer, offset, fg_color, pixel_format);
                     // Bold: draw 1px to the right
-                    if (cell.attrs.bold and col + 1 < font_w) {
+                    if (cell.attrs.bold and col + 1 < render_w) {
                         const bold_offset = offset + bpp;
                         if (bold_offset + bpp <= max_offset) {
                             writePixel(buffer, bold_offset, fg_color, pixel_format);
@@ -163,8 +166,8 @@ pub fn renderCell(
     } else {
         // Missing glyph fallback: draw a box outline
         for (0..font_h) |row| {
-            for (0..font_w) |col| {
-                if (row == 0 or row == font_h - 1 or col == 0 or col == font_w - 1) {
+            for (0..render_w) |col| {
+                if (row == 0 or row == font_h - 1 or col == 0 or col == render_w - 1) {
                     const offset = (px_y + @as(u32, @intCast(row))) * stride + (px_x + @as(u32, @intCast(col))) * bpp;
                     if (offset + bpp > max_offset) continue;
                     writePixel(buffer, offset, fg_color, pixel_format);
@@ -176,7 +179,7 @@ pub fn renderCell(
     // 8. Underline: draw horizontal line at font_h - 2
     if (cell.attrs.underline) {
         const row_offset = (px_y + font_h - 2) * stride + px_x * bpp;
-        for (0..font_w) |col| {
+        for (0..render_w) |col| {
             const offset = row_offset + @as(u32, @intCast(col)) * bpp;
             if (offset + bpp > max_offset) continue;
             writePixel(buffer, offset, fg_color, pixel_format);
@@ -190,17 +193,21 @@ pub fn renderCursor(
     cell_x: u32,
     cell_y: u32,
     cell: Cell,
+    fg_rgb_override: ?[3]u8,
+    bg_rgb_override: ?[3]u8,
     glyph: ?GlyphView,
     comptime font_w: u32,
     comptime font_h: u32,
     comptime pixel_format: PixelFormat,
+    comptime wide: bool,
 ) void {
     // Block cursor = render cell with fg/bg swapped
     var inverted = cell;
     const tmp = inverted.fg;
     inverted.fg = inverted.bg;
     inverted.bg = tmp;
-    renderCell(buffer, stride, cell_x, cell_y, inverted, null, null, glyph, font_w, font_h, pixel_format);
+    // Swap RGB overrides too (fg becomes bg, bg becomes fg)
+    renderCell(buffer, stride, cell_x, cell_y, inverted, bg_rgb_override, fg_rgb_override, glyph, font_w, font_h, pixel_format, wide);
 }
 
 // --- Tests ---
@@ -238,7 +245,7 @@ test "Render: renderCell writes pixels to buffer" {
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
     const glyph = GlyphView{ .codepoint = 'A', .width = 8, .height = 16, .bitmap = &bitmap };
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32);
+    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false);
 
     // Row 2 (0x18 = bits 3,4) should have white pixels at columns 3 and 4
     const row2_start = 2 * stride;

@@ -128,7 +128,9 @@ pub const Pty = struct {
                 "--login",
             };
 
-            _ = posix.execveZ(shell_path, argv, env) catch {};
+            _ = posix.execveZ(shell_path, argv, env) catch {
+                _ = posix.write(2, "zt: execve failed\n") catch {};
+            };
             std.posix.exit(1);
         }
 

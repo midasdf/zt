@@ -230,9 +230,7 @@ pub fn main() !void {
                     _ = std.posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
                     cursor_visible_blink = !cursor_visible_blink;
                     // Mark cursor cell dirty for redraw
-                    if (term.cursor_x < term.cols and term.cursor_y < term.rows) {
-                        term.setCell(term.cursor_x, term.cursor_y, term.getCell(term.cursor_x, term.cursor_y).*);
-                    }
+                    term.markDirty(term.cursor_x, term.cursor_y);
                 },
                 @intFromEnum(EpollTag.backend) => {
                     // X11 events (keys, resize, close)
@@ -257,9 +255,15 @@ pub fn main() !void {
                                     const new_cols = rsz.width / config.font_width;
                                     const new_rows = rsz.height / config.font_height;
                                     if (new_cols > 0 and new_rows > 0) {
-                                        term.resize(new_cols, new_rows) catch {};
-                                        pty.resize(@intCast(new_cols), @intCast(new_rows)) catch {};
-                                        backend.resize(rsz.width, rsz.height) catch {};
+                                        term.resize(new_cols, new_rows) catch |err| {
+                                            std.log.err("term resize: {}", .{err});
+                                        };
+                                        pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
+                                            std.log.err("pty resize: {}", .{err});
+                                        };
+                                        backend.resize(rsz.width, rsz.height) catch |err| {
+                                            std.log.err("backend resize: {}", .{err});
+                                        };
                                     }
                                 },
                                 .close => {
@@ -311,12 +315,8 @@ pub fn main() !void {
 
         // Mark old cursor position dirty if cursor moved
         if (prev_cursor_x != term.cursor_x or prev_cursor_y != term.cursor_y) {
-            if (prev_cursor_x < term.cols and prev_cursor_y < term.rows) {
-                term.setCell(prev_cursor_x, prev_cursor_y, term.getCell(prev_cursor_x, prev_cursor_y).*);
-            }
-            if (term.cursor_x < term.cols and term.cursor_y < term.rows) {
-                term.setCell(term.cursor_x, term.cursor_y, term.getCell(term.cursor_x, term.cursor_y).*);
-            }
+            term.markDirty(prev_cursor_x, prev_cursor_y);
+            term.markDirty(term.cursor_x, term.cursor_y);
         }
         prev_cursor_x = term.cursor_x;
         prev_cursor_y = term.cursor_y;
@@ -330,17 +330,27 @@ pub fn main() !void {
             while (x < term.cols) : (x += 1) {
                 if (term.isDirty(x, y)) {
                     const cell = term.getCell(x, y);
+
+                    // Skip wide_dummy cells — rendered by the wide cell to the left
+                    if (cell.attrs.wide_dummy) continue;
+
                     const fg_rgb = term.getFgRgb(x, y);
                     const bg_rgb = term.getBgRgb(x, y);
                     const glyph = FontType.getGlyph(cell.char);
-
-                    // Is this the cursor cell?
                     const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
 
-                    if (is_cursor) {
-                        render.renderCursor(buf, stride, x, y, cell.*, glyph, config.font_width, config.font_height, .bgra32);
+                    if (cell.attrs.wide) {
+                        if (is_cursor) {
+                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true);
+                        } else {
+                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true);
+                        }
                     } else {
-                        render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32);
+                        if (is_cursor) {
+                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false);
+                        } else {
+                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false);
+                        }
                     }
 
                     backend.markDirtyRows(y * config.font_height, (y + 1) * config.font_height - 1);

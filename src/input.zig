@@ -215,7 +215,8 @@ fn getSpecialKey(kc: u16) ?SpecialKey {
 }
 
 /// Translate a Linux evdev keycode + modifiers into bytes to write to the PTY.
-/// Returns a slice into a static buffer (valid until the next call).
+/// Returns a slice into a static buffer — valid only until the next call.
+/// NOT thread-safe: uses function-level static storage.
 pub fn translateKey(keycode: u16, mods: Modifiers, decckm: bool) []const u8 {
     const S = struct {
         var buf: [32]u8 = undefined;

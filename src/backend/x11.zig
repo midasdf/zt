@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config");
 const input_mod = @import("../input.zig");
 
 const c = @cImport({
@@ -63,9 +64,9 @@ pub const X11Backend = struct {
         }
         const screen = iter.data orelse return error.NoScreen;
 
-        // 3. Dimensions: 80x24 cells at 8x16 pixels
-        const width: u32 = 80 * 8; // 640
-        const height: u32 = 24 * 16; // 384
+        // 3. Dimensions: 80x24 cells at configured font size
+        const width: u32 = 80 * config.font_width;
+        const height: u32 = 24 * config.font_height;
         const stride: u32 = width * 4;
 
         // 4. Create window
