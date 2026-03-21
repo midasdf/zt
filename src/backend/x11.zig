@@ -541,6 +541,24 @@ pub const X11Backend = struct {
                 const evdev_keycode = key.*.detail -| 8;
                 const xcb_keycode: u32 = key.*.detail;
 
+                // Forward key to XIM if IC is active — IM server processes
+                // and replies via commit_string or forward_event callback
+                if (self.xim) |xim| {
+                    if (self.xim_connected and self.xic != 0) {
+                        _ = c.xcb_xim_forward_event(xim, self.xic, key);
+                        // Check if forwarding produced immediate results
+                        if (self.has_committed) {
+                            self.has_committed = false;
+                            return .{ .text = self.committed_text };
+                        }
+                        if (self.has_forwarded_key) {
+                            self.has_forwarded_key = false;
+                            return .{ .key = self.forwarded_key };
+                        }
+                        return null; // wait for async response
+                    }
+                }
+
                 // Shift+Space → toggle IME via XIM trigger
                 if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt and !mods.meta) {
                     if (self.xim) |xim| {
@@ -604,6 +622,13 @@ pub const X11Backend = struct {
             },
             c.XCB_KEY_RELEASE => {
                 const key: *c.xcb_key_release_event_t = @ptrCast(@alignCast(event));
+                // Forward to XIM if active
+                if (self.xim) |xim| {
+                    if (self.xim_connected and self.xic != 0) {
+                        _ = c.xcb_xim_forward_event(xim, self.xic, @ptrCast(@alignCast(event)));
+                        return null;
+                    }
+                }
                 return .{ .key = .{
                     .keycode = key.*.detail -| 8,
                     .pressed = false,
