@@ -14,8 +14,18 @@ const c = @cImport({
 pub const Event = union(enum) {
     key: KeyEvent,
     text: TextEvent,
+    paste: PasteEvent,
     resize: ResizeEvent,
     close: void,
+};
+
+pub const PasteEvent = struct {
+    data: [4096]u8 = undefined,
+    len: u32 = 0,
+
+    pub fn slice(self: *const PasteEvent) []const u8 {
+        return self.data[0..self.len];
+    }
 };
 
 pub const TextEvent = struct {
@@ -59,6 +69,10 @@ pub const X11Backend = struct {
     // Dirty row tracking
     dirty_y_min: u32 = std.math.maxInt(u32),
     dirty_y_max: u32 = 0,
+    // Clipboard atoms
+    clipboard_atom: c.xcb_atom_t = 0,
+    utf8_string_atom: c.xcb_atom_t = 0,
+    zt_paste_atom: c.xcb_atom_t = 0, // property for receiving paste data
     // XKB (keyboard layout)
     xkb_ctx: ?*c.xkb_context = null,
     xkb_keymap: ?*c.xkb_keymap = null,
@@ -72,6 +86,7 @@ pub const X11Backend = struct {
     has_committed: bool = false,
     forwarded_keycode: u8 = 0, // XCB keycode (detail) from forward_event callback
     has_forwarded_key: bool = false,
+    paste_buf: PasteEvent = .{},
     screen_id: c_int = 0,
 
     pub fn init() !Self {
@@ -145,9 +160,12 @@ pub const X11Backend = struct {
             "zt\x00zt\x00",
         );
 
-        // 6. Set up WM_DELETE_WINDOW protocol
+        // 6. Intern atoms
         const protocols_cookie = c.xcb_intern_atom(connection, 0, 12, "WM_PROTOCOLS");
         const delete_cookie = c.xcb_intern_atom(connection, 0, 16, "WM_DELETE_WINDOW");
+        const clipboard_cookie = c.xcb_intern_atom(connection, 0, 9, "CLIPBOARD");
+        const utf8_cookie = c.xcb_intern_atom(connection, 0, 11, "UTF8_STRING");
+        const paste_cookie = c.xcb_intern_atom(connection, 0, 8, "ZT_PASTE");
 
         const protocols_reply = c.xcb_intern_atom_reply(connection, protocols_cookie, null);
         defer if (protocols_reply) |r| std.c.free(r);
@@ -171,6 +189,21 @@ pub const X11Backend = struct {
                 );
             }
         }
+
+        // 6b. Get clipboard atoms
+        const clipboard_reply = c.xcb_intern_atom_reply(connection, clipboard_cookie, null);
+        defer if (clipboard_reply) |r| std.c.free(r);
+        const utf8_reply = c.xcb_intern_atom_reply(connection, utf8_cookie, null);
+        defer if (utf8_reply) |r| std.c.free(r);
+        const paste_reply = c.xcb_intern_atom_reply(connection, paste_cookie, null);
+        defer if (paste_reply) |r| std.c.free(r);
+
+        var clipboard_atom: c.xcb_atom_t = 0;
+        var utf8_string_atom: c.xcb_atom_t = 0;
+        var zt_paste_atom: c.xcb_atom_t = 0;
+        if (clipboard_reply) |r| clipboard_atom = r.*.atom;
+        if (utf8_reply) |r| utf8_string_atom = r.*.atom;
+        if (paste_reply) |r| zt_paste_atom = r.*.atom;
 
         // 7. Set up SHM
         const buffer_size = stride * height;
@@ -211,6 +244,9 @@ pub const X11Backend = struct {
             .height = height,
             .stride = stride,
             .wm_delete_atom = wm_delete_atom,
+            .clipboard_atom = clipboard_atom,
+            .utf8_string_atom = utf8_string_atom,
+            .zt_paste_atom = zt_paste_atom,
             .screen_id = screen_num,
         };
 
@@ -269,6 +305,20 @@ pub const X11Backend = struct {
             => true,
             else => false,
         };
+    }
+
+    /// Request clipboard paste from X11 CLIPBOARD selection.
+    pub fn requestPaste(self: *Self) void {
+        if (self.clipboard_atom == 0 or self.utf8_string_atom == 0) return;
+        _ = c.xcb_convert_selection(
+            self.connection,
+            self.window,
+            self.clipboard_atom,
+            self.utf8_string_atom,
+            self.zt_paste_atom,
+            c.XCB_CURRENT_TIME,
+        );
+        _ = c.xcb_flush(self.connection);
     }
 
     /// Convert an XCB keycode (detail) to an Event using XKB or fallback keymap.
@@ -576,6 +626,12 @@ pub const X11Backend = struct {
                 const evdev_keycode = key.*.detail -| 8;
                 const xcb_keycode: u32 = key.*.detail;
 
+                // Ctrl+Shift+V → paste from clipboard
+                if (evdev_keycode == 47 and mods.ctrl and mods.shift and !mods.alt) {
+                    self.requestPaste();
+                    return null;
+                }
+
                 // Forward key to XIM if IC is active — IM server processes
                 // and replies via commit_string or forward_event callback
                 if (self.xim) |xim| {
@@ -668,6 +724,41 @@ pub const X11Backend = struct {
                 if (cfg.*.width != self.width or cfg.*.height != self.height) {
                     return .{ .resize = .{ .width = cfg.*.width, .height = cfg.*.height } };
                 }
+                return null;
+            },
+            c.XCB_SELECTION_NOTIFY => {
+                const sel: *c.xcb_selection_notify_event_t = @ptrCast(@alignCast(event));
+                if (sel.*.property == 0) return null; // selection request failed
+
+                // Read the property data
+                const prop_cookie = c.xcb_get_property(
+                    self.connection,
+                    1, // delete after reading
+                    self.window,
+                    sel.*.property,
+                    c.XCB_ATOM_ANY,
+                    0,
+                    1024 * 1024, // max 1MB
+                );
+                const prop_reply = c.xcb_get_property_reply(self.connection, prop_cookie, null);
+                if (prop_reply) |reply| {
+                    defer std.c.free(reply);
+                    const len: u32 = @intCast(c.xcb_get_property_value_length(reply));
+                    if (len > 0) {
+                        const data: [*]const u8 = @ptrCast(c.xcb_get_property_value(reply));
+                        const clamped = @min(len, 4096);
+                        @memcpy(self.paste_buf.data[0..clamped], data[0..clamped]);
+                        self.paste_buf.len = clamped;
+                        return .{ .paste = self.paste_buf };
+                    }
+                }
+                return null;
+            },
+            c.XCB_EXPOSE => {
+                // Window (re-)exposed — repaint entire buffer
+                self.dirty_y_min = 0;
+                self.dirty_y_max = self.height -| 1;
+                self.present();
                 return null;
             },
             c.XCB_CLIENT_MESSAGE => {

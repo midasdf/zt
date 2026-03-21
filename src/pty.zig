@@ -100,26 +100,47 @@ pub const Pty = struct {
             const row_env = std.fmt.bufPrintZ(&row_env_buf, "LINES={d}", .{rows}) catch "LINES=24";
             const shell_env = std.fmt.bufPrintZ(&shell_env_buf, "SHELL={s}", .{shell_path}) catch "SHELL=/bin/sh";
 
-            // Get HOME and USER from parent environment
+            // Inherit key environment variables from parent
             const home_val = std.posix.getenv("HOME") orelse "/root";
             const user_val = std.posix.getenv("USER") orelse "root";
             const lang_val = std.posix.getenv("LANG") orelse "C.UTF-8";
+            const path_val = std.posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
             const home_env = std.fmt.bufPrintZ(&home_env_buf, "HOME={s}", .{home_val}) catch "HOME=/root";
             const user_env = std.fmt.bufPrintZ(&user_env_buf, "USER={s}", .{user_val}) catch "USER=root";
             var lang_env_buf: [64]u8 = undefined;
             const lang_env = std.fmt.bufPrintZ(&lang_env_buf, "LANG={s}", .{lang_val}) catch "LANG=C.UTF-8";
+            var path_env_buf: [1024]u8 = undefined;
+            const path_env = std.fmt.bufPrintZ(&path_env_buf, "PATH={s}", .{path_val}) catch "PATH=/usr/local/bin:/usr/bin:/bin";
 
-            const env: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{
-                "TERM=xterm-256color",
-                "COLORTERM=truecolor",
-                "PATH=/usr/local/bin:/usr/bin:/bin",
-                lang_env,
-                shell_env,
-                home_env,
-                user_env,
-                col_env,
-                row_env,
-            };
+            // X11 / Wayland display variables
+            var display_env_buf: [128]u8 = undefined;
+            var wayland_env_buf: [128]u8 = undefined;
+            var xauth_env_buf: [256]u8 = undefined;
+            var xdg_runtime_buf: [256]u8 = undefined;
+            var dbus_env_buf: [256]u8 = undefined;
+            const display_env: ?[*:0]const u8 = if (std.posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{std.posix.getenv("DISPLAY").?}) catch null) else null;
+            const wayland_env: ?[*:0]const u8 = if (std.posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{std.posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
+            const xauth_env: ?[*:0]const u8 = if (std.posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{std.posix.getenv("XAUTHORITY").?}) catch null) else null;
+            const xdg_runtime_env: ?[*:0]const u8 = if (std.posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{std.posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
+            const dbus_env: ?[*:0]const u8 = if (std.posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{std.posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
+
+            var env_arr: [20:null]?[*:0]const u8 = .{null} ** 20;
+            var ei: usize = 0;
+            env_arr[ei] = "TERM=xterm-256color"; ei += 1;
+            env_arr[ei] = "COLORTERM=truecolor"; ei += 1;
+            env_arr[ei] = path_env; ei += 1;
+            env_arr[ei] = lang_env; ei += 1;
+            env_arr[ei] = shell_env; ei += 1;
+            env_arr[ei] = home_env; ei += 1;
+            env_arr[ei] = user_env; ei += 1;
+            env_arr[ei] = col_env; ei += 1;
+            env_arr[ei] = row_env; ei += 1;
+            if (display_env) |e| { env_arr[ei] = e; ei += 1; }
+            if (wayland_env) |e| { env_arr[ei] = e; ei += 1; }
+            if (xauth_env) |e| { env_arr[ei] = e; ei += 1; }
+            if (xdg_runtime_env) |e| { env_arr[ei] = e; ei += 1; }
+            if (dbus_env) |e| { env_arr[ei] = e; ei += 1; }
+            const env: [*:null]const ?[*:0]const u8 = &env_arr;
 
             // h. execve
             if (exec_argv) |eargv| {

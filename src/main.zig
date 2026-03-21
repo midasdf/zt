@@ -387,6 +387,16 @@ pub fn main() !void {
                                         }
                                     }
                                 },
+                                .paste => |paste_ev| {
+                                    // Clipboard paste → write to PTY
+                                    const text = paste_ev.slice();
+                                    if (text.len > 0) {
+                                        if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, epoll_fd)) {
+                                            running = false;
+                                            break;
+                                        }
+                                    }
+                                },
                                 .resize => |rsz| {
                                     const new_cols = rsz.width / config.font_width;
                                     const new_rows = rsz.height / config.font_height;
