@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 const config = @import("config");
 
@@ -100,6 +101,83 @@ fn epollAdd(epoll_fd: i32, fd: std.posix.fd_t, tag: u32) !void {
     if (rc_isize < 0) return error.EpollCtlFailed;
 }
 
+fn epollSetPtyEvents(epoll_fd: i32, pty_fd: std.posix.fd_t, want_write: bool) void {
+    var ev = linux.epoll_event{
+        .events = linux.EPOLL.IN | if (want_write) linux.EPOLL.OUT else @as(u32, 0),
+        .data = .{ .u32 = @intFromEnum(EpollTag.pty) },
+    };
+    _ = linux.epoll_ctl(epoll_fd, linux.EPOLL.CTL_MOD, pty_fd, &ev);
+}
+
+/// Write to PTY with buffering on WouldBlock.
+fn ptyBufferedWrite(
+    pty_ptr: *Pty,
+    data: []const u8,
+    write_buf: *[4096]u8,
+    write_pending: *usize,
+    epoll_fd: i32,
+) bool {
+    // If there's pending data, just append to buffer
+    if (write_pending.* > 0) {
+        const space = write_buf.len - write_pending.*;
+        const to_copy = @min(data.len, space);
+        if (to_copy > 0) {
+            @memcpy(write_buf[write_pending.* .. write_pending.* + to_copy], data[0..to_copy]);
+            write_pending.* += to_copy;
+        }
+        return true; // still running
+    }
+
+    // Try direct write
+    const written = pty_ptr.write(data) catch |err| switch (err) {
+        error.WouldBlock => {
+            // Buffer everything
+            const to_copy = @min(data.len, write_buf.len);
+            @memcpy(write_buf[0..to_copy], data[0..to_copy]);
+            write_pending.* = to_copy;
+            epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
+            return true;
+        },
+        else => return false,
+    };
+
+    // Partial write — buffer the rest
+    if (written < data.len) {
+        const remaining = data.len - written;
+        const to_copy = @min(remaining, write_buf.len);
+        @memcpy(write_buf[0..to_copy], data[written .. written + to_copy]);
+        write_pending.* = to_copy;
+        epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
+    }
+    return true;
+}
+
+/// Flush pending write buffer.
+fn ptyFlushPending(
+    pty_ptr: *Pty,
+    write_buf: *[4096]u8,
+    write_pending: *usize,
+    epoll_fd: i32,
+) bool {
+    if (write_pending.* == 0) return true;
+
+    const written = pty_ptr.write(write_buf[0..write_pending.*]) catch |err| switch (err) {
+        error.WouldBlock => return true, // try again later
+        else => return false,
+    };
+
+    if (written >= write_pending.*) {
+        write_pending.* = 0;
+        epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, false);
+    } else {
+        // Shift remaining data to front
+        const remaining = write_pending.* - written;
+        std.mem.copyForwards(u8, write_buf[0..remaining], write_buf[written .. written + remaining]);
+        write_pending.* = remaining;
+    }
+    return true;
+}
+
 // =============================================================================
 // Signal handler
 // =============================================================================
@@ -127,9 +205,19 @@ fn handleSignal(sig_fd: std.posix.fd_t, backend: *Backend) bool {
 // =============================================================================
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // Debug: GPA for leak detection; Release: lightweight allocator
+    var gpa = if (builtin.mode == .Debug)
+        std.heap.GeneralPurposeAllocator(.{}){}
+    else {};
+    defer if (builtin.mode == .Debug) {
+        _ = gpa.deinit();
+    };
+    const allocator = if (builtin.mode == .Debug)
+        gpa.allocator()
+    else if (config.backend == .x11)
+        std.heap.c_allocator
+    else
+        std.heap.page_allocator;
 
     // 1. Init backend
     var backend = if (config.backend == .fbdev)
@@ -196,6 +284,8 @@ pub fn main() !void {
     var cursor_visible_blink = true;
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
+    var write_buf: [4096]u8 = undefined;
+    var write_pending: usize = 0;
 
     while (running) {
         var events: [16]linux.epoll_event = undefined;
@@ -207,18 +297,32 @@ pub fn main() !void {
         for (events[0..n]) |ev| {
             switch (ev.data.u32) {
                 @intFromEnum(EpollTag.pty) => {
-                    // PTY readable — bulk read + batch parse
-                    const bytes_read = pty.read(&pty_buf) catch {
-                        running = false;
-                        break;
-                    };
-                    if (bytes_read == 0) {
-                        running = false;
-                        break;
+                    // Flush pending writes if EPOLLOUT
+                    if (ev.events & linux.EPOLL.OUT != 0) {
+                        if (!ptyFlushPending(&pty, &write_buf, &write_pending, epoll_fd)) {
+                            running = false;
+                            break;
+                        }
                     }
-                    for (pty_buf[0..bytes_read]) |byte| {
-                        const action = parser.feed(byte);
-                        vt.executeActionWithFd(action, &term, pty.master_fd);
+                    // PTY readable — drain all available data before rendering
+                    if (ev.events & linux.EPOLL.IN != 0) {
+                        while (true) {
+                            const bytes_read = pty.read(&pty_buf) catch |err| switch (err) {
+                                error.WouldBlock => break,
+                                else => {
+                                    running = false;
+                                    break;
+                                },
+                            };
+                            if (bytes_read == 0) {
+                                running = false;
+                                break;
+                            }
+                            for (pty_buf[0..bytes_read]) |byte| {
+                                const action = parser.feed(byte);
+                                vt.executeActionWithFd(action, &term, pty.master_fd);
+                            }
+                        }
                     }
                 },
                 @intFromEnum(EpollTag.signal) => {
@@ -241,13 +345,10 @@ pub fn main() !void {
                                     if (key_ev.pressed) {
                                         const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
                                         if (bytes.len > 0) {
-                                            _ = pty.write(bytes) catch |err| switch (err) {
-                                                error.WouldBlock => {},
-                                                else => {
-                                                    running = false;
-                                                    break;
-                                                },
-                                            };
+                                            if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, epoll_fd)) {
+                                                running = false;
+                                                break;
+                                            }
                                         }
                                     }
                                 },
@@ -296,13 +397,10 @@ pub fn main() !void {
                                     if (input_event.pressed or input_event.repeat) {
                                         const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm);
                                         if (bytes.len > 0) {
-                                            _ = pty.write(bytes) catch |err| switch (err) {
-                                                error.WouldBlock => {},
-                                                else => {
-                                                    running = false;
-                                                    break;
-                                                },
-                                            };
+                                            if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, epoll_fd)) {
+                                                running = false;
+                                                break;
+                                            }
                                         }
                                     }
                                 },
@@ -321,11 +419,16 @@ pub fn main() !void {
         prev_cursor_x = term.cursor_x;
         prev_cursor_y = term.cursor_y;
 
-        // Render dirty cells
+        // Render dirty cells — skip entirely if nothing changed
+        if (prev_cursor_x == term.cursor_x and prev_cursor_y == term.cursor_y and !term.hasDirty()) {
+            continue;
+        }
+
         const buf = backend.getBuffer();
         const stride = backend.getStride();
         var y: u32 = 0;
         while (y < term.rows) : (y += 1) {
+            if (!term.isRowDirty(y)) continue; // skip clean rows
             var x: u32 = 0;
             while (x < term.cols) : (x += 1) {
                 if (term.isDirty(x, y)) {

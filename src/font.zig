@@ -65,7 +65,23 @@ pub fn FontBlob(comptime blob: []const u8) type {
     const bitmap_offset: usize = table_offset + glyph_count * 16;
 
     return struct {
+        // ASCII glyph cache: O(1) lookup for codepoints 0-127
+        const ascii_cache: [128]?GlyphView = blk: {
+            @setEvalBranchQuota(100_000);
+            var cache: [128]?GlyphView = .{null} ** 128;
+            for (0..128) |cp| {
+                cache[cp] = getGlyphSlow(@intCast(cp));
+            }
+            break :blk cache;
+        };
+
         pub fn getGlyph(codepoint: u21) ?GlyphView {
+            // Fast path: ASCII
+            if (codepoint < 128) return ascii_cache[codepoint];
+            return getGlyphSlow(codepoint);
+        }
+
+        fn getGlyphSlow(codepoint: u21) ?GlyphView {
             // Binary search in glyph table
             var lo: usize = 0;
             var hi: usize = glyph_count;

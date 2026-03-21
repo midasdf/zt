@@ -43,6 +43,9 @@ pub const X11Backend = struct {
     bpp: u32 = 4,
     // WM_DELETE_WINDOW atom for graceful close
     wm_delete_atom: c.xcb_atom_t,
+    // Dirty row tracking
+    dirty_y_min: u32 = std.math.maxInt(u32),
+    dirty_y_max: u32 = 0,
 
     pub fn init() !Self {
         // 1. Connect to X server
@@ -219,32 +222,40 @@ pub const X11Backend = struct {
     }
 
     pub fn markDirtyRows(self: *Self, y_start: u32, y_end: u32) void {
-        // X11 SHM presents the entire buffer; dirty tracking not needed
-        _ = self;
-        _ = y_start;
-        _ = y_end;
+        if (y_start < self.dirty_y_min) self.dirty_y_min = y_start;
+        if (y_end > self.dirty_y_max) self.dirty_y_max = y_end;
     }
 
     pub fn present(self: *Self) void {
+        if (self.dirty_y_min > self.dirty_y_max) return; // nothing to present
+
+        const y_start = self.dirty_y_min;
+        const y_end = @min(self.dirty_y_max + 1, self.height);
+        const dirty_h = y_end - y_start;
+        const shm_offset = y_start * self.stride;
+
         _ = c.xcb_shm_put_image(
             self.connection,
             self.window,
             self.gc,
             @intCast(self.width),
-            @intCast(self.height),
+            @intCast(dirty_h),
             0,
-            0, // src x, y
+            0, // src x, y (within the sub-image)
             @intCast(self.width),
-            @intCast(self.height),
+            @intCast(dirty_h),
             0,
-            0, // dst x, y
+            @intCast(y_start), // dst x, y
             self.screen.*.root_depth,
             c.XCB_IMAGE_FORMAT_Z_PIXMAP,
             0, // send_event
             self.shm_seg,
-            0, // offset
+            shm_offset, // offset into SHM
         );
         _ = c.xcb_flush(self.connection);
+
+        self.dirty_y_min = std.math.maxInt(u32);
+        self.dirty_y_max = 0;
     }
 
     pub fn getFd(self: *Self) ?std.posix.fd_t {

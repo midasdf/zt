@@ -124,6 +124,27 @@ pub const Term = struct {
         self.dirty.set(self.cellIndex(x, y));
     }
 
+    pub fn hasDirty(self: *const Self) bool {
+        const masks = self.dirty.unmanaged.masks;
+        const num_masks = (self.dirty.unmanaged.bit_length + @bitSizeOf(usize) - 1) / @bitSizeOf(usize);
+        for (masks[0..num_masks]) |m| {
+            if (m != 0) return true;
+        }
+        return false;
+    }
+
+    pub fn isRowDirty(self: *const Self, y: u32) bool {
+        if (y >= self.rows) return false;
+        const start = @as(usize, y) * @as(usize, self.cols);
+        const end = start + self.cols;
+        // Check individual bits in the row range
+        var i = start;
+        while (i < end) : (i += 1) {
+            if (self.dirty.isSet(i)) return true;
+        }
+        return false;
+    }
+
     pub fn clearDirty(self: *Self) void {
         const total = @as(usize, self.cols) * @as(usize, self.rows);
         self.dirty.setRangeValue(.{ .start = 0, .end = total }, false);
@@ -153,8 +174,8 @@ pub const Term = struct {
         // Mark entire scroll region dirty
         self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
 
-        // Clear TrueColor entries — regeneration is cheap since they're rare
-        self.clearAllRgb();
+        // Shift TrueColor entries to match scrolled rows
+        self.shiftRgbMapUp(shift);
     }
 
     pub fn scrollDown(self: *Self, n: u32) void {
@@ -181,8 +202,8 @@ pub const Term = struct {
         // Mark entire scroll region dirty
         self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
 
-        // Clear TrueColor entries — regeneration is cheap since they're rare
-        self.clearAllRgb();
+        // Shift TrueColor entries to match scrolled rows
+        self.shiftRgbMapDown(shift);
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
@@ -485,6 +506,55 @@ pub const Term = struct {
     fn clearAllRgb(self: *Self) void {
         self.fg_rgb_map.clearRetainingCapacity();
         self.bg_rgb_map.clearRetainingCapacity();
+    }
+
+    /// Shift RGB map entries up by `shift` rows within scroll region.
+    fn shiftRgbMapUp(self: *Self, shift: usize) void {
+        shiftOneRgbMap(&self.fg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, true);
+        shiftOneRgbMap(&self.bg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, true);
+    }
+
+    /// Shift RGB map entries down by `shift` rows within scroll region.
+    fn shiftRgbMapDown(self: *Self, shift: usize) void {
+        shiftOneRgbMap(&self.fg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, false);
+        shiftOneRgbMap(&self.bg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, false);
+    }
+
+    fn shiftOneRgbMap(
+        map: *std.AutoHashMap(usize, [3]u8),
+        alloc: Allocator,
+        cols: u32,
+        scroll_top: u32,
+        scroll_bottom: u32,
+        shift: usize,
+        comptime up: bool,
+    ) void {
+        const cols_z: usize = cols;
+        const top: usize = scroll_top;
+        const bot: usize = scroll_bottom;
+
+        var new_map = std.AutoHashMap(usize, [3]u8).init(alloc);
+        var iter = map.iterator();
+        while (iter.next()) |entry| {
+            const idx = entry.key_ptr.*;
+            const row = idx / cols_z;
+            const col = idx % cols_z;
+
+            if (row < top or row > bot) {
+                // Outside scroll region: keep
+                new_map.put(idx, entry.value_ptr.*) catch {};
+            } else if (up) {
+                if (row >= top + shift) {
+                    new_map.put((row - shift) * cols_z + col, entry.value_ptr.*) catch {};
+                }
+            } else {
+                if (row + shift <= bot) {
+                    new_map.put((row + shift) * cols_z + col, entry.value_ptr.*) catch {};
+                }
+            }
+        }
+        map.deinit();
+        map.* = new_map;
     }
 
     // TrueColor helpers
