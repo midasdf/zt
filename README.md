@@ -118,7 +118,15 @@ pub const shell = "/bin/fish";        // login shell
 
 zt embeds a pre-compiled binary font blob at compile time via `@embedFile`. Any BDF font can be used.
 
-### Using UFO (recommended for Japanese)
+### Pre-built font (recommended)
+
+Download the merged font from [zt-fonts](https://github.com/midasdf/zt-fonts) — 62,595 glyphs including Japanese (UFO), developer icons (Nerd Fonts), and emoji (GNU Unifont).
+
+```sh
+curl -Lo src/fonts/ufo-nf.bin https://github.com/midasdf/zt-fonts/raw/main/ufo-nf.bin
+```
+
+### Building from source (UFO)
 
 [UFO](https://github.com/akahuku/ufo) is a bitmap font optimized for Japanese text.
 
