@@ -1,0 +1,5 @@
+zt                 DIED          -
+st                23524      12767
+xterm             11036       4564
+alacritty        153332      86324
+ghostty            DIED          -

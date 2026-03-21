@@ -1,0 +1,30 @@
+Benchmark 1: zt
+  Time (mean ± σ):      30.8 ms ±   2.4 ms    [User: 1.1 ms, System: 2.5 ms]
+  Range (min … max):    26.2 ms …  39.1 ms    85 runs
+ 
+Benchmark 2: st
+  Time (mean ± σ):      60.4 ms ±   3.4 ms    [User: 23.7 ms, System: 6.9 ms]
+  Range (min … max):    53.9 ms …  69.3 ms    46 runs
+ 
+  Warning: Ignoring non-zero exit code.
+ 
+Benchmark 3: xterm
+  Time (mean ± σ):      42.6 ms ±   3.0 ms    [User: 9.8 ms, System: 3.7 ms]
+  Range (min … max):    38.3 ms …  58.6 ms    67 runs
+ 
+Benchmark 4: alacritty
+  Time (mean ± σ):     117.7 ms ±   6.4 ms    [User: 62.8 ms, System: 24.1 ms]
+  Range (min … max):   108.5 ms … 133.4 ms    30 runs
+ 
+Benchmark 5: ghostty
+  Time (mean ± σ):     972.7 ms ±  36.7 ms    [User: 349.2 ms, System: 163.4 ms]
+  Range (min … max):   907.0 ms … 1057.9 ms    30 runs
+ 
+  Warning: Ignoring non-zero exit code.
+ 
+Summary
+  zt ran
+    1.38 ± 0.15 times faster than xterm
+    1.96 ± 0.19 times faster than st
+    3.82 ± 0.37 times faster than alacritty
+   31.55 ± 2.76 times faster than ghostty

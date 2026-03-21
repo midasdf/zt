@@ -31,6 +31,52 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 | Build time | < 1s | < 1s |
 | Source | 4,312 lines across 11 files |  |
 
+## Benchmarks
+
+Measured on Intel i5-12450H, pinned to 1 CPU core, under Xvfb (pure X11). All terminals compiled or installed from Arch Linux packages. Wayland disabled to ensure consistent X11-only comparison.
+
+Tools: [hyperfine](https://github.com/sharkdp/hyperfine) for startup, `/usr/bin/time -v` for throughput + RSS.
+
+### Startup time (30 runs, 1 core)
+
+| Terminal | Mean | vs zt |
+|----------|------|-------|
+| **zt** | **30ms** | 1.0x |
+| xterm | 41ms | 1.4x |
+| st | 57ms | 1.9x |
+| alacritty | 110ms | 3.7x |
+| ghostty | 908ms | 30x |
+
+### Throughput: 4.7MB dense ASCII (5 runs, 1 core)
+
+| Terminal | Time | MB/s | Peak RSS |
+|----------|------|------|----------|
+| **zt** | **0.008s** | **568** | **5.7 MB** |
+| st | 0.162s | 28 | 24 MB |
+| xterm | 0.188s | 24 | 14 MB |
+| alacritty | 0.256s | 18 | 180 MB |
+| ghostty | 0.992s | 4.6 | 307 MB |
+
+### Constrained environment (512MB RAM + 1 core)
+
+Simulates RPi Zero 2W-class hardware using `systemd-run --scope -p MemoryMax=512M` + `taskset -c 0`.
+
+| Terminal | Startup | Throughput (4.7MB) | Peak RSS |
+|----------|---------|-------------------|----------|
+| **zt** | **20ms** | **0.022s** | **6 MB** |
+| xterm | 30ms | 0.198s | 14 MB |
+| st | 50ms | 0.188s | 24 MB |
+| alacritty | 100ms | 0.274s | 181 MB |
+| ghostty | 970ms | 1.024s | 307 MB |
+
+<details>
+<summary>Workload details</summary>
+
+Throughput workloads tested: `seq 100000` (plain text scroll), dense ASCII (random printable 80-col × 60K lines), TrueColor gradient (5K lines with `\e[38;2;r;g;b` sequences), Unicode/CJK mix, and cursor movement stress (50K random CUP jumps). zt was fastest across all workloads.
+
+Benchmark script: [`bench.sh`](bench.sh)
+</details>
+
 ## Build
 
 Requires Zig 0.15+.

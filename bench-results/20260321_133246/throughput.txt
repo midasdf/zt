@@ -1,0 +1,3 @@
+--- seq-100k (576K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+/home/midasdf/zt/bench.sh: 行 159: bc: command not found

@@ -1,0 +1,40 @@
+--- seq-100k (576K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0140s         0s       5720       35.4
+st                .1040s     .0480s      24332        4.8
+xterm             .1160s     .0980s      13524        4.3
+alacritty         .1760s     .1540s     177480        2.8
+ghostty           .9900s     .5120s     307208         .5
+
+--- dense-ascii (4.7M) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0080s         0s       5720      567.9
+st                .1620s     .1000s      24272       28.3
+xterm             .1880s     .1640s      13644       24.4
+alacritty         .2560s     .2380s     180264       17.9
+ghostty           .9920s     .5240s     307312        4.6
+
+--- truecolor (292K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0080s         0s       5720       24.6
+st                .0460s     .0220s      24344        4.3
+xterm             .0300s     .0140s      13672        6.6
+alacritty         .1140s     .0980s     166512        1.7
+ghostty           .9660s     .5180s     301596         .2
+
+--- unicode (300K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0080s         0s       5720       24.6
+st                .0420s     .0240s      24380        4.7
+xterm             .0340s     .0160s      13556        5.8
+alacritty         .1220s     .1080s     168272        1.6
+ghostty           .9780s     .5200s     300392         .2
+
+--- cursor-stress (416K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0080s         0s       5720       49.3
+st                .0460s     .0240s      24356        8.6
+xterm             .0380s     .0200s      11316       10.4
+alacritty         .1160s     .0980s     155188        3.4
+ghostty           .9780s     .5240s     297736         .4
+

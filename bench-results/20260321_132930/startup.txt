@@ -1,0 +1,6 @@
+Benchmark 1: zt
+  Time (mean ± σ):      31.5 ms ±   2.8 ms    [User: 0.8 ms, System: 2.6 ms]
+  Range (min … max):    27.1 ms …  41.0 ms    92 runs
+ 
+Benchmark 2: st
+Error: Command terminated with non-zero exit code 1 in the first warmup run. Use the '-i'/'--ignore-failure' option if you want to ignore this. Alternatively, use the '--show-output' option to debug what went wrong.

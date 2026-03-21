@@ -1,0 +1,5 @@
+zt               0.0200s
+st               0.0500s
+xterm            0.0300s
+alacritty        0.1000s
+ghostty          0.9700s

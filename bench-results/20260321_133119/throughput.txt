@@ -1,0 +1,2 @@
+--- seq-100k (576K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
