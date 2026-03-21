@@ -246,6 +246,11 @@ pub fn main() !void {
         try Backend.init();
     defer backend.deinit();
 
+    // 1b. Post-init for X11 (XKB + XIM, needs stable self pointer)
+    if (config.backend == .x11) {
+        backend.postInit();
+    }
+
     // 2. Save console state (fbdev only, noop for X11)
     try backend.saveConsoleState();
     defer backend.restoreConsoleState();
@@ -369,6 +374,16 @@ pub fn main() !void {
                                                 running = false;
                                                 break;
                                             }
+                                        }
+                                    }
+                                },
+                                .text => |text_ev| {
+                                    // IME committed text → write UTF-8 directly to PTY
+                                    const text = text_ev.slice();
+                                    if (text.len > 0) {
+                                        if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, epoll_fd)) {
+                                            running = false;
+                                            break;
                                         }
                                     }
                                 },

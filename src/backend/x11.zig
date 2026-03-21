@@ -6,12 +6,25 @@ const c = @cImport({
     @cInclude("xcb/xcb.h");
     @cInclude("xcb/shm.h");
     @cInclude("sys/shm.h");
+    @cInclude("xcb-imdkit/imclient.h");
+    @cInclude("xkbcommon/xkbcommon.h");
+    @cInclude("xkbcommon/xkbcommon-x11.h");
 });
 
 pub const Event = union(enum) {
     key: KeyEvent,
+    text: TextEvent,
     resize: ResizeEvent,
     close: void,
+};
+
+pub const TextEvent = struct {
+    data: [128]u8 = undefined,
+    len: u32 = 0,
+
+    pub fn slice(self: *const TextEvent) []const u8 {
+        return self.data[0..self.len];
+    }
 };
 
 pub const KeyEvent = struct {
@@ -46,6 +59,20 @@ pub const X11Backend = struct {
     // Dirty row tracking
     dirty_y_min: u32 = std.math.maxInt(u32),
     dirty_y_max: u32 = 0,
+    // XKB (keyboard layout)
+    xkb_ctx: ?*c.xkb_context = null,
+    xkb_keymap: ?*c.xkb_keymap = null,
+    xkb_state: ?*c.xkb_state = null,
+    // XIM (Input Method)
+    xim: ?*c.xcb_xim_t = null,
+    xic: c.xcb_xic_t = 0,
+    xim_connected: bool = false,
+    xim_active: bool = false,
+    committed_text: TextEvent = .{},
+    has_committed: bool = false,
+    forwarded_key: KeyEvent = undefined,
+    has_forwarded_key: bool = false,
+    screen_id: c_int = 0,
 
     pub fn init() !Self {
         // 1. Connect to X server
@@ -174,7 +201,7 @@ pub const X11Backend = struct {
         _ = c.xcb_map_window(connection, window);
         _ = c.xcb_flush(connection);
 
-        return Self{
+        const self = Self{
             .connection = connection,
             .window = window,
             .gc = gc,
@@ -186,10 +213,186 @@ pub const X11Backend = struct {
             .height = height,
             .stride = stride,
             .wm_delete_atom = wm_delete_atom,
+            .screen_id = screen_num,
+        };
+
+        // NOTE: XKB and XIM are initialized via postInit() after the struct
+        // is at its final memory address. init() returns by value, so 'self'
+        // here would become a dangling pointer in callbacks.
+
+        return self;
+    }
+
+    /// Must be called after init() when the struct is at its final address.
+    /// Initializes XKB (keyboard layout) and XIM (input method).
+    pub fn postInit(self: *Self) void {
+        self.initXkb();
+        self.initXim();
+    }
+
+    fn initXkb(self: *Self) void {
+        // Set up XKB extension
+        const xkb_result = c.xkb_x11_setup_xkb_extension(
+            self.connection,
+            c.XKB_X11_MIN_MAJOR_XKB_VERSION,
+            c.XKB_X11_MIN_MINOR_XKB_VERSION,
+            c.XKB_X11_SETUP_XKB_EXTENSION_NO_FLAGS,
+            null,
+            null,
+            null,
+            null,
+        );
+        if (xkb_result == 0) return;
+
+        const ctx = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS) orelse return;
+        self.xkb_ctx = ctx;
+
+        const device_id = c.xkb_x11_get_core_keyboard_device_id(self.connection);
+        if (device_id < 0) return;
+
+        const km = c.xkb_x11_keymap_new_from_device(ctx, self.connection, device_id, c.XKB_KEYMAP_COMPILE_NO_FLAGS) orelse return;
+        self.xkb_keymap = km;
+
+        const state = c.xkb_x11_state_new_from_device(km, self.connection, device_id) orelse return;
+        self.xkb_state = state;
+    }
+
+    /// Check if an evdev keycode is a special key (arrows, function keys, etc.)
+    /// that should be handled via escape sequences, not as text.
+    fn isSpecialKey(evdev_keycode: u16) bool {
+        const K = input_mod.KEY;
+        return switch (evdev_keycode) {
+            K.ESC, K.ENTER, K.BACKSPACE, K.TAB,
+            K.UP, K.DOWN, K.LEFT, K.RIGHT,
+            K.HOME, K.END, K.INSERT, K.DELETE,
+            K.PAGEUP, K.PAGEDOWN,
+            K.F1, K.F2, K.F3, K.F4, K.F5, K.F6,
+            K.F7, K.F8, K.F9, K.F10, K.F11, K.F12,
+            => true,
+            else => false,
         };
     }
 
+    fn initXim(self: *Self) void {
+        // Try XMODIFIERS first (user-configured), then auto-detect common IMEs
+        const im_names = [_]?[*:0]const u8{ null, "@im=fcitx", "@im=ibus" };
+        var xim: ?*c.xcb_xim_t = null;
+        for (im_names) |name| {
+            xim = c.xcb_xim_create(self.connection, self.screen_id, name);
+            if (xim != null) break;
+        }
+        if (xim == null) return;
+        self.xim = xim;
+
+        c.xcb_xim_set_use_utf8_string(xim.?, true);
+
+        // Static lifetime — xcb_xim_set_im_callback stores the pointer
+        const S = struct {
+            var callbacks = c.xcb_xim_im_callback{
+            .set_event_mask = null,
+            .forward_event = forwardEventCallback,
+            .commit_string = commitStringCallback,
+            .geometry = null,
+            .preedit_start = null,
+            .preedit_draw = null,
+            .preedit_caret = null,
+            .preedit_done = null,
+            .status_start = null,
+            .status_draw_text = null,
+            .status_draw_bitmap = null,
+            .status_done = null,
+            .sync = null,
+            .disconnected = disconnectedCallback,
+        };
+        };
+        c.xcb_xim_set_im_callback(xim.?, &S.callbacks, @ptrCast(self));
+
+        _ = c.xcb_xim_open(xim.?, ximOpenCallback, true, @ptrCast(self));
+        _ = c.xcb_flush(self.connection);
+    }
+
+    fn ximOpenCallback(xim: ?*c.xcb_xim_t, user_data: ?*anyopaque) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(user_data));
+        self.xim_connected = true;
+
+        // Create Input Context with XIMPreeditNothing | XIMStatusNothing
+        const input_style: u32 = 0x0008 | 0x0400; // XIMPreeditNothing | XIMStatusNothing
+        _ = c.xcb_xim_create_ic(
+            xim,
+            ximCreateIcCallback,
+            user_data,
+            c.XCB_XIM_XNInputStyle,
+            &input_style,
+            c.XCB_XIM_XNClientWindow,
+            &self.window,
+            c.XCB_XIM_XNFocusWindow,
+            &self.window,
+            @as(?*anyopaque, null),
+        );
+    }
+
+    fn ximCreateIcCallback(_: ?*c.xcb_xim_t, ic: c.xcb_xic_t, user_data: ?*anyopaque) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(user_data));
+        self.xic = ic;
+        if (self.xim) |xim| {
+            _ = c.xcb_xim_set_ic_focus(xim, ic);
+        }
+    }
+
+    fn commitStringCallback(
+        _: ?*c.xcb_xim_t,
+        _: c.xcb_xic_t,
+        _: u32,
+        str: [*c]u8,
+        length: u32,
+        _: [*c]u32,
+        _: usize,
+        user_data: ?*anyopaque,
+    ) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(user_data));
+        const len = @min(length, 128);
+        @memcpy(self.committed_text.data[0..len], str[0..len]);
+        self.committed_text.len = len;
+        self.has_committed = true;
+    }
+
+    fn forwardEventCallback(
+        _: ?*c.xcb_xim_t,
+        _: c.xcb_xic_t,
+        event: ?*c.xcb_key_press_event_t,
+        user_data: ?*anyopaque,
+    ) callconv(.c) void {
+        // IME didn't consume this key — inject it back as a regular key event
+        const self: *Self = @ptrCast(@alignCast(user_data));
+        if (event) |ev| {
+            self.forwarded_key = .{
+                .keycode = ev.detail -| 8,
+                .pressed = true,
+                .modifiers = xcbStateToMods(ev.state),
+            };
+            self.has_forwarded_key = true;
+        }
+    }
+
+    fn disconnectedCallback(_: ?*c.xcb_xim_t, user_data: ?*anyopaque) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(user_data));
+        self.xim_connected = false;
+        self.xic = 0;
+    }
+
     pub fn deinit(self: *Self) void {
+        // Clean up XIM
+        if (self.xim) |xim| {
+            if (self.xim_connected) {
+                c.xcb_xim_close(xim);
+            }
+            c.xcb_xim_destroy(xim);
+            self.xim = null;
+        }
+        // Clean up XKB
+        if (self.xkb_state) |s| c.xkb_state_unref(s);
+        if (self.xkb_keymap) |km| c.xkb_keymap_unref(km);
+        if (self.xkb_ctx) |ctx| c.xkb_context_unref(ctx);
         // Detach SHM from X server
         _ = c.xcb_shm_detach(self.connection, self.shm_seg);
         // Detach from process
@@ -300,18 +503,103 @@ pub const X11Backend = struct {
     }
 
     pub fn pollEvents(self: *Self) ?Event {
+        // First, check if XIM callbacks produced events
+        if (self.has_committed) {
+            self.has_committed = false;
+            return .{ .text = self.committed_text };
+        }
+        if (self.has_forwarded_key) {
+            self.has_forwarded_key = false;
+            return .{ .key = self.forwarded_key };
+        }
+
         const event = c.xcb_poll_for_event(self.connection) orelse return null;
         defer std.c.free(event);
+
+        // Let XIM filter the event first — MUST run even before xim_connected
+        // because xcb-imdkit uses this to process the XIM protocol handshake
+        if (self.xim) |xim| {
+            if (c.xcb_xim_filter_event(xim, event)) {
+                // XIM consumed the event — check if it produced committed text
+                if (self.has_committed) {
+                    self.has_committed = false;
+                    return .{ .text = self.committed_text };
+                }
+                if (self.has_forwarded_key) {
+                    self.has_forwarded_key = false;
+                    return .{ .key = self.forwarded_key };
+                }
+                return null;
+            }
+        }
 
         const event_type = event.*.response_type & 0x7F;
         switch (event_type) {
             c.XCB_KEY_PRESS => {
                 const key: *c.xcb_key_press_event_t = @ptrCast(@alignCast(event));
+                const mods = xcbStateToMods(key.*.state);
+                const evdev_keycode = key.*.detail -| 8;
+                const xcb_keycode: u32 = key.*.detail;
+
+                // Shift+Space → toggle IME via XIM trigger
+                if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt and !mods.meta) {
+                    if (self.xim) |xim| {
+                        if (self.xim_connected and self.xic != 0) {
+                            if (c.xcb_xim_trigger_notify(xim, self.xic, 0, self.xim_active)) {
+                                self.xim_active = !self.xim_active;
+                                return null; // consume the event
+                            }
+                        }
+                    }
+                }
+
+                // Special keys (Enter, Backspace, arrows, Fn...) → KeyEvent for escape sequence handling
+                if (isSpecialKey(evdev_keycode)) {
+                    return .{ .key = .{
+                        .keycode = evdev_keycode,
+                        .pressed = true,
+                        .modifiers = mods,
+                    } };
+                }
+
+                // Ctrl+letter → KeyEvent (for ctrl sequences like Ctrl+C)
+                if (mods.ctrl) {
+                    return .{ .key = .{
+                        .keycode = evdev_keycode,
+                        .pressed = true,
+                        .modifiers = mods,
+                    } };
+                }
+
+                // Use XKB for layout-aware text translation
+                if (self.xkb_state) |state| {
+                    var xkb_buf: [128]u8 = undefined;
+                    const len = c.xkb_state_key_get_utf8(state, xcb_keycode, &xkb_buf, xkb_buf.len);
+                    if (len > 0) {
+                        const ulen: u32 = @intCast(len);
+                        var text_ev: TextEvent = .{};
+                        if (mods.alt) {
+                            // Alt+key → prefix with ESC
+                            text_ev.data[0] = 0x1b;
+                            const clamped = @min(ulen, 127);
+                            @memcpy(text_ev.data[1 .. 1 + clamped], xkb_buf[0..clamped]);
+                            text_ev.len = clamped + 1;
+                        } else {
+                            const clamped = @min(ulen, 128);
+                            @memcpy(text_ev.data[0..clamped], xkb_buf[0..clamped]);
+                            text_ev.len = clamped;
+                        }
+                        return .{ .text = text_ev };
+                    }
+                    // XKB returned nothing (modifier-only key etc.) → ignore
+                    return null;
+                }
+
+                // Fallback: no XKB → use hardcoded keymap via KeyEvent
                 return .{ .key = .{
-                    // XCB keycodes are offset by 8 from evdev keycodes
-                    .keycode = key.*.detail -| 8,
+                    .keycode = evdev_keycode,
                     .pressed = true,
-                    .modifiers = xcbStateToMods(key.*.state),
+                    .modifiers = mods,
                 } };
             },
             c.XCB_KEY_RELEASE => {

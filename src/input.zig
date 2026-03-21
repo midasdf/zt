@@ -1,4 +1,5 @@
 const std = @import("std");
+const config = @import("config");
 const testing = std.testing;
 
 /// Linux evdev keycodes (from linux/input-event-codes.h).
@@ -86,6 +87,12 @@ pub const KEY = struct {
     pub const DELETE = 111;
     pub const LEFTMETA = 125;
     pub const RIGHTMETA = 126;
+    // JIS-specific keys
+    pub const RO = 89; // \ and _ on JIS
+    pub const HENKAN = 92;
+    pub const KATAKANAHIRAGANA = 93;
+    pub const MUHENKAN = 94;
+    pub const YEN = 124; // ¥ and | on JIS
 };
 
 pub const Modifiers = packed struct(u8) {
@@ -101,12 +108,11 @@ const KeyEntry = struct {
     shifted: u8,
 };
 
-/// US QWERTY keymap: keycode -> (normal, shifted) character.
+/// Keymap: keycode -> (normal, shifted) character.
+/// Layout selected at comptime via -Dkeymap=us|jp
 const keymap: [256]?KeyEntry = buildKeymap();
 
-fn buildKeymap() [256]?KeyEntry {
-    var map = [_]?KeyEntry{null} ** 256;
-    // Letters
+fn buildLetters(map: *[256]?KeyEntry) void {
     map[KEY.A] = .{ .normal = 'a', .shifted = 'A' };
     map[KEY.B] = .{ .normal = 'b', .shifted = 'B' };
     map[KEY.C] = .{ .normal = 'c', .shifted = 'C' };
@@ -133,7 +139,12 @@ fn buildKeymap() [256]?KeyEntry {
     map[KEY.X] = .{ .normal = 'x', .shifted = 'X' };
     map[KEY.Y] = .{ .normal = 'y', .shifted = 'Y' };
     map[KEY.Z] = .{ .normal = 'z', .shifted = 'Z' };
-    // Numbers
+    map[KEY.COMMA] = .{ .normal = ',', .shifted = '<' };
+    map[KEY.DOT] = .{ .normal = '.', .shifted = '>' };
+    map[KEY.SLASH] = .{ .normal = '/', .shifted = '?' };
+}
+
+fn buildUsSymbols(map: *[256]?KeyEntry) void {
     map[KEY.@"1"] = .{ .normal = '1', .shifted = '!' };
     map[KEY.@"2"] = .{ .normal = '2', .shifted = '@' };
     map[KEY.@"3"] = .{ .normal = '3', .shifted = '#' };
@@ -144,7 +155,6 @@ fn buildKeymap() [256]?KeyEntry {
     map[KEY.@"8"] = .{ .normal = '8', .shifted = '*' };
     map[KEY.@"9"] = .{ .normal = '9', .shifted = '(' };
     map[KEY.@"0"] = .{ .normal = '0', .shifted = ')' };
-    // Symbols
     map[KEY.MINUS] = .{ .normal = '-', .shifted = '_' };
     map[KEY.EQUAL] = .{ .normal = '=', .shifted = '+' };
     map[KEY.LEFTBRACE] = .{ .normal = '[', .shifted = '{' };
@@ -153,9 +163,38 @@ fn buildKeymap() [256]?KeyEntry {
     map[KEY.APOSTROPHE] = .{ .normal = '\'', .shifted = '"' };
     map[KEY.GRAVE] = .{ .normal = '`', .shifted = '~' };
     map[KEY.BACKSLASH] = .{ .normal = '\\', .shifted = '|' };
-    map[KEY.COMMA] = .{ .normal = ',', .shifted = '<' };
-    map[KEY.DOT] = .{ .normal = '.', .shifted = '>' };
-    map[KEY.SLASH] = .{ .normal = '/', .shifted = '?' };
+}
+
+fn buildJpSymbols(map: *[256]?KeyEntry) void {
+    map[KEY.@"1"] = .{ .normal = '1', .shifted = '!' };
+    map[KEY.@"2"] = .{ .normal = '2', .shifted = '"' };
+    map[KEY.@"3"] = .{ .normal = '3', .shifted = '#' };
+    map[KEY.@"4"] = .{ .normal = '4', .shifted = '$' };
+    map[KEY.@"5"] = .{ .normal = '5', .shifted = '%' };
+    map[KEY.@"6"] = .{ .normal = '6', .shifted = '&' };
+    map[KEY.@"7"] = .{ .normal = '7', .shifted = '\'' };
+    map[KEY.@"8"] = .{ .normal = '8', .shifted = '(' };
+    map[KEY.@"9"] = .{ .normal = '9', .shifted = ')' };
+    map[KEY.@"0"] = .{ .normal = '0', .shifted = '0' }; // Shift+0 = nothing useful on JIS
+    map[KEY.MINUS] = .{ .normal = '-', .shifted = '=' };
+    map[KEY.EQUAL] = .{ .normal = '^', .shifted = '~' };
+    map[KEY.LEFTBRACE] = .{ .normal = '@', .shifted = '`' };
+    map[KEY.RIGHTBRACE] = .{ .normal = '[', .shifted = '{' };
+    map[KEY.SEMICOLON] = .{ .normal = ';', .shifted = '+' };
+    map[KEY.APOSTROPHE] = .{ .normal = ':', .shifted = '*' };
+    map[KEY.GRAVE] = .{ .normal = ']', .shifted = '}' }; // Hankaku/Zenkaku position, but used as ] on some JIS
+    map[KEY.BACKSLASH] = .{ .normal = ']', .shifted = '}' };
+    map[KEY.RO] = .{ .normal = '\\', .shifted = '_' };
+    map[KEY.YEN] = .{ .normal = '\\', .shifted = '|' }; // ¥ key → backslash for terminal
+}
+
+fn buildKeymap() [256]?KeyEntry {
+    var map = [_]?KeyEntry{null} ** 256;
+    buildLetters(&map);
+    switch (config.keymap) {
+        .us => buildUsSymbols(&map),
+        .jp => buildJpSymbols(&map),
+    }
     return map;
 }
 

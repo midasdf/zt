@@ -13,6 +13,8 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 - **Dual backend** — framebuffer direct rendering (no X11/Wayland) or XCB + SHM under X11
 - **Comptime everything** — backend, font, palette all resolved at compile time. Zero runtime cost for unused code paths
 - **Damage tracking** — per-cell dirty bitmap, row-level skip, dirty region present (X11 sends only changed rows)
+- **XKB keyboard layout** — any X11 keyboard layout works automatically via libxkbcommon (US, JP, DE, FR, etc.)
+- **Input method (XIM)** — Japanese/Chinese/Korean input via fcitx5, ibus, etc. Auto-detected, no env vars needed
 - **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim), DEC modes, alternate screen
 - **CJK wide character support** — correct double-width rendering for Japanese, Chinese, Korean
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
@@ -27,9 +29,9 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 |---|---|---|
 | Code size | ~56 KB | ~61 KB |
 | Binary (with 59K-glyph font) | 2.7 MB | 2.7 MB |
-| Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb |
+| Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 4,312 lines across 11 files |  |
+| Source | 4,701 lines across 11 files |  |
 
 ## Benchmarks
 
@@ -88,6 +90,9 @@ zig build -Doptimize=ReleaseSmall
 # X11 — runs under window managers
 zig build -Dbackend=x11 -Doptimize=ReleaseSmall
 
+# fbdev with JIS keyboard layout (default: us)
+zig build -Dkeymap=jp -Doptimize=ReleaseSmall
+
 # Cross-compile for aarch64 (fbdev, static binary)
 zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
 
@@ -101,6 +106,7 @@ Edit `config.zig` and rebuild — [st](https://st.suckless.org/)-style, no runti
 
 ```zig
 pub const backend: Backend = .fbdev;  // .fbdev or .x11
+pub const keymap: Keymap = .us;       // .us or .jp (fbdev only; X11 uses XKB)
 pub const default_fg: u8 = 7;        // white
 pub const default_bg: u8 = 0;        // black
 pub const font_width: u32 = 8;       // cell width (half-width)
@@ -151,8 +157,8 @@ epoll event loop (single-threaded)
 │   └── VT parser (byte-by-byte state machine)
 │       └── Action executor → Cell grid mutations
 ├── Input handler
-│   ├── evdev (fbdev) — raw keyboard events
-│   └── XCB key events (X11) — with modifier tracking
+│   ├── evdev (fbdev) — raw keyboard events, compile-time keymap (US/JP)
+│   └── X11 — XKB layout-aware translation + XIM input method (fcitx5/ibus)
 ├── Renderer
 │   ├── hasDirty() bitmask check → skip if nothing changed
 │   ├── isRowDirty() → skip clean rows
@@ -172,15 +178,15 @@ epoll event loop (single-threaded)
 |------|-------|---------|
 | `src/vt.zig` | 1,008 | VT parser state machine + action executor (CSI, SGR, DEC modes, OSC) |
 | `src/term.zig` | 809 | Cell grid, dirty bitmap, scroll, erase, TrueColor sparse maps |
-| `src/input.zig` | 488 | US QWERTY keymap, evdev code translation, modifier handling |
-| `src/main.zig` | 475 | Event loop, signal/timer setup, PTY drain, write buffering, render orchestration |
-| `src/backend/x11.zig` | 373 | XCB window, SHM setup/resize, dirty region present, event polling |
+| `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
+| `src/main.zig` | 510 | Event loop, signal/timer setup, PTY drain, write buffering, render orchestration |
+| `src/backend/x11.zig` | 661 | XCB window, SHM, XKB keyboard layout, XIM input method, event polling |
 | `src/font.zig` | 318 | BDF parser (comptime), binary blob loader, ASCII glyph cache |
 | `src/backend/fbdev.zig` | 316 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
 | `src/render.zig` | 262 | Pixel rendering (BGRA32/RGB565/RGB24), palette, glyph blit, cursor |
 | `src/pty.zig` | 188 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
-| `config.zig` | 16 | Compile-time configuration |
-| `build.zig` | 59 | Build system with backend selection |
+| `config.zig` | 23 | Compile-time configuration (backend, keymap, font, colors) |
+| `build.zig` | 67 | Build system with backend and keymap selection |
 
 ## Supported escape sequences
 
@@ -270,7 +276,8 @@ vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, r
 - No scrollback buffer — only the current viewport is kept
 - No clipboard (OSC 52 parsed but not acted on)
 - No mouse support
-- US QWERTY keymap hardcoded (evdev codes mapped at compile time)
+- fbdev keymap is compile-time only (US/JP); X11 uses XKB for any layout
+- No inline pre-edit display — IME candidate window is handled by the input method (fcitx5 default)
 - No font fallback chain — single embedded font
 - No ligatures
 - No sixel/image protocol support

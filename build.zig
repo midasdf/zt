@@ -7,8 +7,12 @@ pub fn build(b: *std.Build) void {
     const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev or x11") orelse "fbdev";
     const is_x11 = std.mem.eql(u8, backend_opt, "x11");
 
+    const keymap_opt = b.option([]const u8, "keymap", "Keyboard layout: us or jp (default: us)") orelse "us";
+    const use_jp_keymap = std.mem.eql(u8, keymap_opt, "jp");
+
     const options = b.addOptions();
     options.addOption(bool, "use_x11", is_x11);
+    options.addOption(bool, "use_jp_keymap", use_jp_keymap);
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
@@ -35,6 +39,10 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("xcb");
         exe.linkSystemLibrary("xcb-shm");
         exe.linkSystemLibrary("xcb-xkb");
+        exe.linkSystemLibrary("xcb-imdkit");
+        exe.linkSystemLibrary("xcb-util");
+        exe.linkSystemLibrary("xkbcommon");
+        exe.linkSystemLibrary("xkbcommon-x11");
         exe.linkLibC();
     }
 
