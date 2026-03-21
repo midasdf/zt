@@ -86,6 +86,8 @@ pub const X11Backend = struct {
     has_committed: bool = false,
     forwarded_keycode: u8 = 0, // XCB keycode (detail) from forward_event callback
     has_forwarded_key: bool = false,
+    pending_xim_keycode: u8 = 0, // key sent to IM, awaiting response
+    has_pending_xim: bool = false,
     paste_buf: PasteEvent = .{},
     screen_id: c_int = 0,
 
@@ -441,6 +443,7 @@ pub const X11Backend = struct {
         @memcpy(self.committed_text.data[0..len], data[0..len]);
         self.committed_text.len = @intCast(len);
         self.has_committed = true;
+        self.has_pending_xim = false;
     }
 
     fn forwardEventCallback(
@@ -456,6 +459,7 @@ pub const X11Backend = struct {
             if (!is_press) return; // ignore key release from IM
             self.forwarded_keycode = ev.detail;
             self.has_forwarded_key = true;
+            self.has_pending_xim = false;
         }
     }
 
@@ -598,7 +602,15 @@ pub const X11Backend = struct {
             return self.processKeycode(self.forwarded_keycode);
         }
 
-        const event = c.xcb_poll_for_event(self.connection) orelse return null;
+        const event = c.xcb_poll_for_event(self.connection) orelse {
+            // No XCB event — if we have a pending XIM key with no response,
+            // process it directly as fallback (prevents freeze if IM is unresponsive)
+            if (self.has_pending_xim) {
+                self.has_pending_xim = false;
+                return self.processKeycode(self.pending_xim_keycode);
+            }
+            return null;
+        };
         defer std.c.free(event);
 
         // Let XIM filter the event first — MUST run even before xim_connected
@@ -636,6 +648,9 @@ pub const X11Backend = struct {
                 // and replies via commit_string or forward_event callback
                 if (self.xim) |xim| {
                     if (self.xim_connected and self.xic != 0) {
+                        // Save pending key for fallback if IM doesn't respond
+                        self.pending_xim_keycode = key.*.detail;
+                        self.has_pending_xim = true;
                         _ = c.xcb_xim_forward_event(xim, self.xic, key);
                         // Check if forwarding produced immediate results
                         if (self.has_committed) {
