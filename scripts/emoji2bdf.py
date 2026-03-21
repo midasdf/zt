@@ -137,8 +137,8 @@ def render_emoji(font, cp, cell_w, cell_h, render_size):
     if bbox is None:
         return None
 
-    # Render at large size
-    big = Image.new('L', (render_size, render_size), 0)
+    # Render at large size with color support
+    big = Image.new('RGBA', (render_size, render_size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(big)
 
     # Center the glyph
@@ -146,7 +146,10 @@ def render_emoji(font, cp, cell_w, cell_h, render_size):
     gh = bbox[3] - bbox[1]
     x_off = (render_size - gw) // 2 - bbox[0]
     y_off = (render_size - gh) // 2 - bbox[1]
-    draw.text((x_off, y_off), char, fill=255, font=font)
+    draw.text((x_off, y_off), char, fill=255, font=font, embedded_color=True)
+
+    # Convert to grayscale (handles both color and mono emoji)
+    big = big.convert('L')
 
     # Downscale to cell size with antialiasing
     small = big.resize((cell_w, cell_h), Image.LANCZOS)
