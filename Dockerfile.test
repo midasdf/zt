@@ -1,0 +1,47 @@
+FROM archlinux:latest
+
+# Install dependencies
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+    zig \
+    xorg-server-xvfb \
+    xdotool \
+    xterm \
+    libxcb \
+    xcb-util \
+    xcb-util-keysyms \
+    xcb-imdkit \
+    libxkbcommon \
+    libxkbcommon-x11 \
+    xclip \
+    fish \
+    bash \
+    coreutils \
+    procps-ng \
+    xorg-xdpyinfo \
+    xorg-xwininfo \
+    xdg-utils \
+    vim \
+    nano \
+    less \
+    man-db \
+    python \
+    ripgrep \
+    tree \
+    git \
+    && pacman -Scc --noconfirm
+
+WORKDIR /zt
+COPY . /zt/
+
+# Build X11 backend (debug for GPA leak check + release for perf)
+RUN zig build -Dbackend=x11 && \
+    cp zig-out/bin/zt /usr/local/bin/zt-debug && \
+    zig build -Dbackend=x11 -Doptimize=ReleaseSmall && \
+    cp zig-out/bin/zt /usr/local/bin/zt-release
+
+# Test script
+COPY test-xvfb.sh /test-xvfb.sh
+RUN chmod +x /test-xvfb.sh
+
+CMD ["/test-xvfb.sh"]
