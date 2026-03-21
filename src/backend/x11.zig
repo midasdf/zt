@@ -94,11 +94,9 @@ pub const X11Backend = struct {
         }
         const screen = iter.data orelse return error.NoScreen;
 
-        // 3. Dimensions: fill the screen, rounded down to cell grid
-        const screen_w: u32 = @intCast(screen.*.width_in_pixels);
-        const screen_h: u32 = @intCast(screen.*.height_in_pixels);
-        const width: u32 = (screen_w / config.font_width) * config.font_width;
-        const height: u32 = (screen_h / config.font_height) * config.font_height;
+        // 3. Dimensions: 80x24 cells (standard terminal size)
+        const width: u32 = 80 * config.font_width;
+        const height: u32 = 24 * config.font_height;
         const stride: u32 = width * 4;
 
         // 4. Create window
