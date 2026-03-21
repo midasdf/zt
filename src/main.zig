@@ -219,6 +219,26 @@ pub fn main() !void {
     else
         std.heap.page_allocator;
 
+    // 0. Parse command-line arguments
+    var exec_argv: ?[]const [:0]const u8 = null;
+    const args = std.process.argsAlloc(allocator) catch null;
+    defer if (args) |a| std.process.argsFree(allocator, a);
+    if (args) |argv| {
+        var i: usize = 1; // skip argv[0]
+        while (i < argv.len) : (i += 1) {
+            if (std.mem.eql(u8, argv[i], "-e")) {
+                if (i + 1 >= argv.len) {
+                    const stderr_msg = "zt: -e requires a command\n";
+                    _ = std.posix.write(2, stderr_msg) catch {};
+                    std.process.exit(1);
+                }
+                // Everything after -e is the command + args
+                exec_argv = argv[i + 1 ..];
+                break;
+            }
+        }
+    }
+
     // 1. Init backend
     var backend = if (config.backend == .fbdev)
         try Backend.init(allocator)
@@ -242,7 +262,7 @@ pub fn main() !void {
     defer term.deinit();
 
     // 6. Spawn PTY
-    var pty = try Pty.spawn(@intCast(cols), @intCast(rows), config.shell);
+    var pty = try Pty.spawn(@intCast(cols), @intCast(rows), config.shell, exec_argv);
     defer pty.deinit();
 
     // 7. Setup signals

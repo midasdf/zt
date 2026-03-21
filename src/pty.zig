@@ -20,7 +20,7 @@ pub const Pty = struct {
     master_fd: posix.fd_t,
     child_pid: posix.pid_t,
 
-    pub fn spawn(cols: u16, rows: u16, shell_path: [*:0]const u8) !Pty {
+    pub fn spawn(cols: u16, rows: u16, shell_path: [*:0]const u8, exec_argv: ?[]const [:0]const u8) !Pty {
         // 1. Open /dev/ptmx
         const master_fd = try posix.open(
             "/dev/ptmx",
@@ -121,16 +121,28 @@ pub const Pty = struct {
                 row_env,
             };
 
-            // h. execve (use shell_path as argv[0] — login shell convention
-            //    would use "-fish" but that requires building a new string)
-            const argv: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{
-                shell_path,
-                "--login",
-            };
-
-            _ = posix.execveZ(shell_path, argv, env) catch {
-                _ = posix.write(2, "zt: execve failed\n") catch {};
-            };
+            // h. execve
+            if (exec_argv) |eargv| {
+                // -e mode: build null-terminated argv for execve
+                var exec_ptrs: [64:null]?[*:0]const u8 = .{null} ** 64;
+                const count = @min(eargv.len, 63);
+                for (0..count) |idx| {
+                    exec_ptrs[idx] = eargv[idx].ptr;
+                }
+                const exec_path: [*:0]const u8 = eargv[0].ptr;
+                _ = posix.execveZ(exec_path, &exec_ptrs, env) catch {
+                    _ = posix.write(2, "zt: execve failed\n") catch {};
+                };
+            } else {
+                // Default: login shell
+                const argv: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{
+                    shell_path,
+                    "--login",
+                };
+                _ = posix.execveZ(shell_path, argv, env) catch {
+                    _ = posix.write(2, "zt: execve failed\n") catch {};
+                };
+            }
             std.posix.exit(1);
         }
 
@@ -175,7 +187,7 @@ pub const Pty = struct {
 };
 
 test "Pty: spawn and read echo output" {
-    var pty = try Pty.spawn(80, 24, "/bin/echo");
+    var pty = try Pty.spawn(80, 24, "/bin/echo", null);
     defer pty.deinit();
 
     // Wait for output
