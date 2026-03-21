@@ -557,6 +557,14 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             term.cursor_y = @min(@as(u32, @intCast(row)), term.rows -| 1);
         },
         'm' => handleSgr(csi, term), // SGR
+        'c' => { // DA1 — device attributes
+            if (csi.private_marker == 0) {
+                if (writer_fd) |fd| {
+                    // Report as VT220 with basic capabilities
+                    _ = std.posix.write(fd, "\x1b[?62;22c") catch {};
+                }
+            }
+        },
         'n' => { // DSR — device status report
             if (csi.private_marker == 0 and pc > 0 and p[0] == 6) {
                 if (writer_fd) |fd| {

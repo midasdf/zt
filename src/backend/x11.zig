@@ -70,7 +70,7 @@ pub const X11Backend = struct {
     xim_active: bool = false,
     committed_text: TextEvent = .{},
     has_committed: bool = false,
-    forwarded_key: KeyEvent = undefined,
+    forwarded_keycode: u8 = 0, // XCB keycode (detail) from forward_event callback
     has_forwarded_key: bool = false,
     screen_id: c_int = 0,
 
@@ -273,6 +273,33 @@ pub const X11Backend = struct {
         };
     }
 
+    /// Convert an XCB keycode (detail) to an Event using XKB or fallback keymap.
+    fn processKeycode(self: *Self, xcb_keycode: u8) ?Event {
+        const evdev_keycode: u16 = @as(u16, xcb_keycode) -| 8;
+
+        // Special keys → KeyEvent
+        if (isSpecialKey(evdev_keycode)) {
+            return .{ .key = .{ .keycode = evdev_keycode, .pressed = true, .modifiers = .{} } };
+        }
+
+        // XKB text translation
+        if (self.xkb_state) |state| {
+            var xkb_buf: [128]u8 = undefined;
+            const len = c.xkb_state_key_get_utf8(state, xcb_keycode, &xkb_buf, xkb_buf.len);
+            if (len > 0) {
+                const ulen: u32 = @intCast(len);
+                var text_ev: TextEvent = .{};
+                const clamped = @min(ulen, 128);
+                @memcpy(text_ev.data[0..clamped], xkb_buf[0..clamped]);
+                text_ev.len = clamped;
+                return .{ .text = text_ev };
+            }
+        }
+
+        // Fallback
+        return .{ .key = .{ .keycode = evdev_keycode, .pressed = true, .modifiers = .{} } };
+    }
+
     fn initXim(self: *Self) void {
         // Try XMODIFIERS first (user-configured), then auto-detect common IMEs
         const im_names = [_]?[*:0]const u8{ null, "@im=fcitx", "@im=ibus" };
@@ -350,9 +377,21 @@ pub const X11Backend = struct {
         user_data: ?*anyopaque,
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(user_data));
-        const len = @min(length, 128);
-        @memcpy(self.committed_text.data[0..len], str[0..len]);
-        self.committed_text.len = len;
+        var data = str[0..length];
+
+        // Strip ISO 2022 Compound Text wrappers if present
+        // ESC % G (switch to UTF-8) = 1b 25 47
+        if (data.len >= 3 and data[0] == 0x1b and data[1] == 0x25 and data[2] == 0x47) {
+            data = data[3..];
+        }
+        // ESC % @ (switch back to Latin-1) = 1b 25 40
+        if (data.len >= 3 and data[data.len - 3] == 0x1b and data[data.len - 2] == 0x25 and data[data.len - 1] == 0x40) {
+            data = data[0 .. data.len - 3];
+        }
+
+        const len = @min(data.len, 128);
+        @memcpy(self.committed_text.data[0..len], data[0..len]);
+        self.committed_text.len = @intCast(len);
         self.has_committed = true;
     }
 
@@ -365,11 +404,9 @@ pub const X11Backend = struct {
         // IME didn't consume this key — inject it back as a regular key event
         const self: *Self = @ptrCast(@alignCast(user_data));
         if (event) |ev| {
-            self.forwarded_key = .{
-                .keycode = ev.detail -| 8,
-                .pressed = true,
-                .modifiers = xcbStateToMods(ev.state),
-            };
+            const is_press = (ev.response_type & 0x7F) == c.XCB_KEY_PRESS;
+            if (!is_press) return; // ignore key release from IM
+            self.forwarded_keycode = ev.detail;
             self.has_forwarded_key = true;
         }
     }
@@ -510,7 +547,7 @@ pub const X11Backend = struct {
         }
         if (self.has_forwarded_key) {
             self.has_forwarded_key = false;
-            return .{ .key = self.forwarded_key };
+            return self.processKeycode(self.forwarded_keycode);
         }
 
         const event = c.xcb_poll_for_event(self.connection) orelse return null;
@@ -527,7 +564,7 @@ pub const X11Backend = struct {
                 }
                 if (self.has_forwarded_key) {
                     self.has_forwarded_key = false;
-                    return .{ .key = self.forwarded_key };
+                    return self.processKeycode(self.forwarded_keycode);
                 }
                 return null;
             }
@@ -553,7 +590,7 @@ pub const X11Backend = struct {
                         }
                         if (self.has_forwarded_key) {
                             self.has_forwarded_key = false;
-                            return .{ .key = self.forwarded_key };
+                            return self.processKeycode(self.forwarded_keycode);
                         }
                         return null; // wait for async response
                     }
@@ -622,13 +659,6 @@ pub const X11Backend = struct {
             },
             c.XCB_KEY_RELEASE => {
                 const key: *c.xcb_key_release_event_t = @ptrCast(@alignCast(event));
-                // Forward to XIM if active
-                if (self.xim) |xim| {
-                    if (self.xim_connected and self.xic != 0) {
-                        _ = c.xcb_xim_forward_event(xim, self.xic, @ptrCast(@alignCast(event)));
-                        return null;
-                    }
-                }
                 return .{ .key = .{
                     .keycode = key.*.detail -| 8,
                     .pressed = false,
