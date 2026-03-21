@@ -121,7 +121,7 @@ pub const X11Backend = struct {
         );
 
         // 6. Set up WM_DELETE_WINDOW protocol
-        const protocols_cookie = c.xcb_intern_atom(connection, 1, 12, "WM_PROTOCOLS");
+        const protocols_cookie = c.xcb_intern_atom(connection, 0, 12, "WM_PROTOCOLS");
         const delete_cookie = c.xcb_intern_atom(connection, 0, 16, "WM_DELETE_WINDOW");
 
         const protocols_reply = c.xcb_intern_atom_reply(connection, protocols_cookie, null);
@@ -336,6 +336,7 @@ pub const X11Backend = struct {
                 }
                 return null;
             },
+            c.XCB_DESTROY_NOTIFY => return .close,
             else => return null,
         }
     }
