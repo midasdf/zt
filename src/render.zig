@@ -113,11 +113,11 @@ pub fn renderCell(
         bg_color = tmp;
     }
 
-    // 3. Handle dim
+    // 3. Handle dim — reduce foreground intensity (60% brightness)
     if (cell.attrs.dim) {
-        fg_color.r /= 2;
-        fg_color.g /= 2;
-        fg_color.b /= 2;
+        fg_color.r = @intCast(@as(u16, fg_color.r) * 3 / 5);
+        fg_color.g = @intCast(@as(u16, fg_color.g) * 3 / 5);
+        fg_color.b = @intCast(@as(u16, fg_color.b) * 3 / 5);
     }
 
     // 4. Bytes per pixel
