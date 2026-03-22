@@ -554,6 +554,18 @@ pub const X11Backend = struct {
         return c.xcb_get_file_descriptor(self.connection);
     }
 
+    /// Query the actual window geometry from the X server.
+    /// Used to detect WM-initiated resizes that happened during init.
+    pub fn queryGeometry(self: *Self) struct { w: u32, h: u32 } {
+        const cookie = c.xcb_get_geometry(self.connection, self.window);
+        const reply = c.xcb_get_geometry_reply(self.connection, cookie, null);
+        if (reply) |r| {
+            defer std.c.free(r);
+            return .{ .w = r.*.width, .h = r.*.height };
+        }
+        return .{ .w = self.width, .h = self.height };
+    }
+
     pub fn resize(self: *Self, w: u32, h: u32) !void {
         if (w == self.width and h == self.height) return;
 
@@ -602,6 +614,10 @@ pub const X11Backend = struct {
             return self.processKeycode(self.forwarded_keycode);
         }
 
+        // Loop until we find a handled event or the queue is empty.
+        // Unhandled event types (ReparentNotify, MapNotify, etc.) are skipped
+        // so they don't block processing of subsequent events like ConfigureNotify.
+        while (true) {
         const event = c.xcb_poll_for_event(self.connection) orelse {
             // No XCB event — if we have a pending XIM key with no response,
             // process it directly as fallback (prevents freeze if IM is unresponsive)
@@ -626,7 +642,7 @@ pub const X11Backend = struct {
                     self.has_forwarded_key = false;
                     return self.processKeycode(self.forwarded_keycode);
                 }
-                return null;
+                continue; // XIM consumed event but produced nothing, try next
             }
         }
 
@@ -784,8 +800,9 @@ pub const X11Backend = struct {
                 return null;
             },
             c.XCB_DESTROY_NOTIFY => return .close,
-            else => return null,
+            else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
         }
+        } // while (true)
     }
 
     // No VT switching for X11

@@ -301,7 +301,25 @@ pub fn main() !void {
         }
     }
 
-    // 10. Event loop
+    // 10. Sync with actual window geometry.
+    //     A tiling WM may have resized our window between creation and now
+    //     (e.g., during MapRequest handling). Query the real X11 geometry and
+    //     update PTY/term/backend to match. This handles the initial resize
+    //     that ConfigureNotify-based detection might miss due to XCB buffering.
+    if (config.backend == .x11) {
+        const actual = backend.queryGeometry();
+        if (actual.w > 0 and actual.h > 0 and (actual.w != backend.getWidth() or actual.h != backend.getHeight())) {
+            const new_cols = actual.w / config.font_width;
+            const new_rows = actual.h / config.font_height;
+            if (new_cols > 0 and new_rows > 0) {
+                term.resize(new_cols, new_rows) catch {};
+                pty.resize(@intCast(new_cols), @intCast(new_rows)) catch {};
+                backend.resize(actual.w, actual.h) catch {};
+            }
+        }
+    }
+
+    // 11. Event loop
     var parser = vt.Parser{};
     var running = true;
     var mod_state: input.Modifiers = .{};
