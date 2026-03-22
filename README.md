@@ -27,11 +27,10 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 |  | fbdev | X11 |
 |---|---|---|
-| Code size | ~56 KB | ~61 KB |
-| Binary (with 59K-glyph font) | 2.7 MB | 2.7 MB |
+| Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 4,701 lines across 11 files |  |
+| Source | 4,854 lines across 11 files |  |
 
 ## Benchmarks
 
@@ -95,6 +94,10 @@ zig build -Dkeymap=jp -Doptimize=ReleaseSmall
 
 # Cross-compile for aarch64 (fbdev, static binary)
 zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
+
+# Cross-compile for aarch64 (X11, needs target sysroot with XCB libs/headers)
+zig build -Dtarget=aarch64-linux-gnu.2.38 -Dbackend=x11 -Doptimize=ReleaseSmall \
+  --search-prefix /path/to/aarch64-sysroot
 
 # Run tests
 zig build test
@@ -184,15 +187,15 @@ epoll event loop (single-threaded)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,008 | VT parser state machine + action executor (CSI, SGR, DEC modes, OSC) |
+| `src/vt.zig` | 1,016 | VT parser state machine + action executor (CSI, SGR, DEC modes, OSC) |
 | `src/term.zig` | 809 | Cell grid, dirty bitmap, scroll, erase, TrueColor sparse maps |
+| `src/main.zig` | 543 | Event loop, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
-| `src/main.zig` | 510 | Event loop, signal/timer setup, PTY drain, write buffering, render orchestration |
-| `src/backend/x11.zig` | 661 | XCB window, SHM, XKB keyboard layout, XIM input method, event polling |
+| `src/backend/x11.zig` | 842 | XCB window, SHM, XKB keyboard layout, XIM input method, event polling |
 | `src/font.zig` | 318 | BDF parser (comptime), binary blob loader, ASCII glyph cache |
 | `src/backend/fbdev.zig` | 316 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
 | `src/render.zig` | 262 | Pixel rendering (BGRA32/RGB565/RGB24), palette, glyph blit, cursor |
-| `src/pty.zig` | 188 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
+| `src/pty.zig` | 221 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
 | `config.zig` | 23 | Compile-time configuration (backend, keymap, font, colors) |
 | `build.zig` | 67 | Build system with backend and keymap selection |
 
