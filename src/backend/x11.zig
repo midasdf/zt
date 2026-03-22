@@ -89,6 +89,7 @@ pub const X11Backend = struct {
     has_forwarded_key: bool = false,
     pending_xim_keycode: u8 = 0, // key sent to IM, awaiting response
     has_pending_xim: bool = false,
+    suppress_xim_result: bool = false, // discard next XIM result (IME toggle key)
     paste_buf: PasteEvent = .{},
     screen_id: c_int = 0,
 
@@ -608,11 +609,19 @@ pub const X11Backend = struct {
         // First, check if XIM callbacks produced events
         if (self.has_committed) {
             self.has_committed = false;
-            return .{ .text = self.committed_text };
+            if (self.suppress_xim_result) {
+                self.suppress_xim_result = false;
+            } else {
+                return .{ .text = self.committed_text };
+            }
         }
         if (self.has_forwarded_key) {
             self.has_forwarded_key = false;
-            return self.processKeycode(self.forwarded_keycode);
+            if (self.suppress_xim_result) {
+                self.suppress_xim_result = false;
+            } else {
+                return self.processKeycode(self.forwarded_keycode);
+            }
         }
 
         // Loop until we find a handled event or the queue is empty.
@@ -620,12 +629,6 @@ pub const X11Backend = struct {
         // so they don't block processing of subsequent events like ConfigureNotify.
         while (true) {
         const event = c.xcb_poll_for_event(self.connection) orelse {
-            // No XCB event — if we have a pending XIM key with no response,
-            // process it directly as fallback (prevents freeze if IM is unresponsive)
-            if (self.has_pending_xim) {
-                self.has_pending_xim = false;
-                return self.processKeycode(self.pending_xim_keycode);
-            }
             return null;
         };
         defer std.c.free(event);
@@ -637,11 +640,19 @@ pub const X11Backend = struct {
                 // XIM consumed the event — check if it produced committed text
                 if (self.has_committed) {
                     self.has_committed = false;
-                    return .{ .text = self.committed_text };
+                    if (self.suppress_xim_result) {
+                        self.suppress_xim_result = false;
+                    } else {
+                        return .{ .text = self.committed_text };
+                    }
                 }
                 if (self.has_forwarded_key) {
                     self.has_forwarded_key = false;
-                    return self.processKeycode(self.forwarded_keycode);
+                    if (self.suppress_xim_result) {
+                        self.suppress_xim_result = false;
+                    } else {
+                        return self.processKeycode(self.forwarded_keycode);
+                    }
                 }
                 continue; // XIM consumed event but produced nothing, try next
             }
@@ -669,6 +680,17 @@ pub const X11Backend = struct {
                 if (!mods.ctrl) {
                     if (self.xim) |xim| {
                         if (self.xim_connected and self.xic != 0) {
+                            // Shift+Space → let fcitx5 toggle IME, but suppress
+                            // the leaked space character it sends back.
+                            // For any other key, clear stale suppress flag so
+                            // committed text from actual input isn't discarded.
+                            const is_ime_toggle = evdev_keycode == 57 and mods.shift and !mods.alt and !mods.meta;
+                            if (is_ime_toggle) {
+                                self.suppress_xim_result = true;
+                            } else {
+                                self.suppress_xim_result = false;
+                            }
+
                             // Save pending key for fallback if IM doesn't respond
                             self.pending_xim_keycode = key.*.detail;
                             self.has_pending_xim = true;
@@ -676,25 +698,21 @@ pub const X11Backend = struct {
                             // Check if forwarding produced immediate results
                             if (self.has_committed) {
                                 self.has_committed = false;
-                                return .{ .text = self.committed_text };
+                                if (!self.suppress_xim_result) {
+                                    return .{ .text = self.committed_text };
+                                }
+                                self.suppress_xim_result = false;
+                                return null;
                             }
                             if (self.has_forwarded_key) {
                                 self.has_forwarded_key = false;
-                                return self.processKeycode(self.forwarded_keycode);
+                                if (!self.suppress_xim_result) {
+                                    return self.processKeycode(self.forwarded_keycode);
+                                }
+                                self.suppress_xim_result = false;
+                                return null;
                             }
                             return null; // wait for async response
-                        }
-                    }
-                }
-
-                // Shift+Space → toggle IME via XIM trigger
-                if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt and !mods.meta) {
-                    if (self.xim) |xim| {
-                        if (self.xim_connected and self.xic != 0) {
-                            if (c.xcb_xim_trigger_notify(xim, self.xic, 0, self.xim_active)) {
-                                self.xim_active = !self.xim_active;
-                                return null; // consume the event
-                            }
                         }
                     }
                 }
