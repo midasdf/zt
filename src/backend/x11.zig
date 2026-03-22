@@ -661,23 +661,28 @@ pub const X11Backend = struct {
                 }
 
                 // Forward key to XIM if IC is active — IM server processes
-                // and replies via commit_string or forward_event callback
-                if (self.xim) |xim| {
-                    if (self.xim_connected and self.xic != 0) {
-                        // Save pending key for fallback if IM doesn't respond
-                        self.pending_xim_keycode = key.*.detail;
-                        self.has_pending_xim = true;
-                        _ = c.xcb_xim_forward_event(xim, self.xic, key);
-                        // Check if forwarding produced immediate results
-                        if (self.has_committed) {
-                            self.has_committed = false;
-                            return .{ .text = self.committed_text };
+                // and replies via commit_string or forward_event callback.
+                // Skip XIM for Ctrl-modified keys: XIM is for text composition,
+                // and Ctrl+letter must produce control characters (e.g. Ctrl+P = 0x10)
+                // without IM interference.
+                if (!mods.ctrl) {
+                    if (self.xim) |xim| {
+                        if (self.xim_connected and self.xic != 0) {
+                            // Save pending key for fallback if IM doesn't respond
+                            self.pending_xim_keycode = key.*.detail;
+                            self.has_pending_xim = true;
+                            _ = c.xcb_xim_forward_event(xim, self.xic, key);
+                            // Check if forwarding produced immediate results
+                            if (self.has_committed) {
+                                self.has_committed = false;
+                                return .{ .text = self.committed_text };
+                            }
+                            if (self.has_forwarded_key) {
+                                self.has_forwarded_key = false;
+                                return self.processKeycode(self.forwarded_keycode);
+                            }
+                            return null; // wait for async response
                         }
-                        if (self.has_forwarded_key) {
-                            self.has_forwarded_key = false;
-                            return self.processKeycode(self.forwarded_keycode);
-                        }
-                        return null; // wait for async response
                     }
                 }
 
