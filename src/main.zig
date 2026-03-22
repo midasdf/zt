@@ -430,6 +430,11 @@ pub fn main() !void {
                                         };
                                     }
                                 },
+                                .expose => {
+                                    // Force full redraw — mark all term cells dirty
+                                    const total = @as(usize, term.cols) * @as(usize, term.rows);
+                                    term.dirty.setRangeValue(.{ .start = 0, .end = total }, true);
+                                },
                                 .close => {
                                     running = false;
                                 },

@@ -16,6 +16,7 @@ pub const Event = union(enum) {
     text: TextEvent,
     paste: PasteEvent,
     resize: ResizeEvent,
+    expose: void,
     close: void,
 };
 
@@ -760,11 +761,11 @@ pub const X11Backend = struct {
                 if (cfg.*.width != self.width or cfg.*.height != self.height) {
                     return .{ .resize = .{ .width = cfg.*.width, .height = cfg.*.height } };
                 }
-                return null;
+                continue; // Size unchanged — skip, process next event
             },
             c.XCB_SELECTION_NOTIFY => {
                 const sel: *c.xcb_selection_notify_event_t = @ptrCast(@alignCast(event));
-                if (sel.*.property == 0) return null; // selection request failed
+                if (sel.*.property == 0) continue; // selection request failed
 
                 // Read the property data
                 const prop_cookie = c.xcb_get_property(
@@ -788,21 +789,20 @@ pub const X11Backend = struct {
                         return .{ .paste = self.paste_buf };
                     }
                 }
-                return null;
+                continue; // property data empty — skip
             },
             c.XCB_EXPOSE => {
-                // Window (re-)exposed — repaint entire buffer
-                self.dirty_y_min = 0;
-                self.dirty_y_max = self.height -| 1;
-                self.present();
-                return null;
+                // Window (re-)exposed — tell main loop to force full redraw.
+                // Don't present() here: after a resize the SHM buffer is zeroed,
+                // and presenting it would flash a black frame.
+                return .expose;
             },
             c.XCB_CLIENT_MESSAGE => {
                 const msg: *c.xcb_client_message_event_t = @ptrCast(@alignCast(event));
                 if (msg.*.data.data32[0] == self.wm_delete_atom) {
                     return .close;
                 }
-                return null;
+                continue; // Non-delete client message — skip
             },
             c.XCB_DESTROY_NOTIFY => return .close,
             else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
