@@ -361,10 +361,7 @@ pub fn main() !void {
                                 running = false;
                                 break;
                             }
-                            for (pty_buf[0..bytes_read]) |byte| {
-                                const action = parser.feed(byte);
-                                vt.executeActionWithFd(action, &term, pty.master_fd);
-                            }
+                            vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                         }
                     }
                 },
@@ -530,6 +527,7 @@ pub fn main() !void {
         }
         term.clearDirty();
         backend.present();
+        backend.flush();
     }
 }
 

@@ -133,31 +133,61 @@ pub fn renderCell(
     const px_y = cell_y * font_h;
 
     // 6. Fill background rect
-    for (0..font_h) |row| {
-        const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
-        for (0..render_w) |col| {
-            const offset = row_offset + @as(u32, @intCast(col)) * bpp;
-            if (offset + bpp > max_offset) continue;
-            writePixel(buffer, offset, bg_color, pixel_format);
+    if (pixel_format == .bgra32) {
+        // Fast path: memset entire row with packed BGRA pattern
+        const bg_packed = [4]u8{ bg_color.b, bg_color.g, bg_color.r, 0xFF };
+        for (0..font_h) |row| {
+            const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
+            if (row_offset + render_w * 4 > max_offset) continue;
+            const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
+            @memset(pixels[0..render_w], bg_packed);
+        }
+    } else {
+        for (0..font_h) |row| {
+            const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
+            for (0..render_w) |col| {
+                const offset = row_offset + @as(u32, @intCast(col)) * bpp;
+                if (offset + bpp > max_offset) continue;
+                writePixel(buffer, offset, bg_color, pixel_format);
+            }
         }
     }
 
     // 7. Draw glyph bitmap
     if (glyph) |g| {
         const bytes_per_row = (g.width + 7) / 8;
-        for (0..@min(g.height, font_h)) |row| {
-            for (0..@min(g.width, render_w)) |col| {
-                const byte_idx = row * bytes_per_row + col / 8;
-                const bit = @as(u8, 0x80) >> @intCast(col % 8);
-                if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
-                    const offset = (px_y + @as(u32, @intCast(row))) * stride + (px_x + @as(u32, @intCast(col))) * bpp;
-                    if (offset + bpp > max_offset) continue;
-                    writePixel(buffer, offset, fg_color, pixel_format);
-                    // Bold: draw 1px to the right
-                    if (cell.attrs.bold and col + 1 < render_w) {
-                        const bold_offset = offset + bpp;
-                        if (bold_offset + bpp <= max_offset) {
-                            writePixel(buffer, bold_offset, fg_color, pixel_format);
+        if (pixel_format == .bgra32) {
+            // Fast path: direct 4-byte writes for BGRA32
+            const fg_packed = [4]u8{ fg_color.b, fg_color.g, fg_color.r, 0xFF };
+            for (0..@min(g.height, font_h)) |row| {
+                const row_base = (px_y + @as(u32, @intCast(row))) * stride + px_x * 4;
+                if (row_base + render_w * 4 > max_offset) continue;
+                for (0..@min(g.width, render_w)) |col| {
+                    const byte_idx = row * bytes_per_row + col / 8;
+                    const bit = @as(u8, 0x80) >> @intCast(col % 8);
+                    if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
+                        const px_off = row_base + @as(u32, @intCast(col)) * 4;
+                        @as(*[4]u8, @ptrCast(buffer.ptr + px_off)).* = fg_packed;
+                        if (cell.attrs.bold and col + 1 < render_w) {
+                            @as(*[4]u8, @ptrCast(buffer.ptr + px_off + 4)).* = fg_packed;
+                        }
+                    }
+                }
+            }
+        } else {
+            for (0..@min(g.height, font_h)) |row| {
+                for (0..@min(g.width, render_w)) |col| {
+                    const byte_idx = row * bytes_per_row + col / 8;
+                    const bit = @as(u8, 0x80) >> @intCast(col % 8);
+                    if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
+                        const offset = (px_y + @as(u32, @intCast(row))) * stride + (px_x + @as(u32, @intCast(col))) * bpp;
+                        if (offset + bpp > max_offset) continue;
+                        writePixel(buffer, offset, fg_color, pixel_format);
+                        if (cell.attrs.bold and col + 1 < render_w) {
+                            const bold_offset = offset + bpp;
+                            if (bold_offset + bpp <= max_offset) {
+                                writePixel(buffer, bold_offset, fg_color, pixel_format);
+                            }
                         }
                     }
                 }
@@ -179,10 +209,18 @@ pub fn renderCell(
     // 8. Underline: draw horizontal line at font_h - 2
     if (cell.attrs.underline) {
         const row_offset = (px_y + font_h - 2) * stride + px_x * bpp;
-        for (0..render_w) |col| {
-            const offset = row_offset + @as(u32, @intCast(col)) * bpp;
-            if (offset + bpp > max_offset) continue;
-            writePixel(buffer, offset, fg_color, pixel_format);
+        if (pixel_format == .bgra32) {
+            const fg_packed = [4]u8{ fg_color.b, fg_color.g, fg_color.r, 0xFF };
+            if (row_offset + render_w * 4 <= max_offset) {
+                const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
+                @memset(pixels[0..render_w], fg_packed);
+            }
+        } else {
+            for (0..render_w) |col| {
+                const offset = row_offset + @as(u32, @intCast(col)) * bpp;
+                if (offset + bpp > max_offset) continue;
+                writePixel(buffer, offset, fg_color, pixel_format);
+            }
         }
     }
 }

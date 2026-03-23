@@ -137,11 +137,39 @@ pub const Term = struct {
         if (y >= self.rows) return false;
         const start = @as(usize, y) * @as(usize, self.cols);
         const end = start + self.cols;
-        // Check individual bits in the row range
-        var i = start;
-        while (i < end) : (i += 1) {
-            if (self.dirty.isSet(i)) return true;
+        const masks = self.dirty.unmanaged.masks;
+        const bit_size = @bitSizeOf(usize);
+
+        var word_idx = start / bit_size;
+        const word_end = (end + bit_size - 1) / bit_size;
+        const start_bit: std.math.Log2Int(usize) = @intCast(start % bit_size);
+        const end_bit = end % bit_size;
+
+        if (word_idx == word_end - 1) {
+            // Row fits in a single word
+            var mask = masks[word_idx];
+            if (start_bit > 0) mask &= ~((@as(usize, 1) << start_bit) - 1);
+            if (end_bit > 0) mask &= (@as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(end_bit))) - 1;
+            return mask != 0;
         }
+
+        // First partial word
+        if (start_bit > 0) {
+            if (masks[word_idx] & ~((@as(usize, 1) << start_bit) - 1) != 0) return true;
+            word_idx += 1;
+        }
+
+        // Full words in the middle
+        const full_end = if (end_bit > 0) word_end - 1 else word_end;
+        for (masks[word_idx..full_end]) |m| {
+            if (m != 0) return true;
+        }
+
+        // Last partial word
+        if (end_bit > 0) {
+            if (masks[word_end - 1] & ((@as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(end_bit))) - 1) != 0) return true;
+        }
+
         return false;
     }
 
@@ -495,6 +523,7 @@ pub const Term = struct {
 
     /// Remove TrueColor entries for cell indices in [start, end).
     fn clearRgbRange(self: *Self, start: usize, end: usize) void {
+        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
         var idx = start;
         while (idx < end) : (idx += 1) {
             _ = self.fg_rgb_map.remove(idx);
@@ -510,12 +539,14 @@ pub const Term = struct {
 
     /// Shift RGB map entries up by `shift` rows within scroll region.
     fn shiftRgbMapUp(self: *Self, shift: usize) void {
+        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
         shiftOneRgbMap(&self.fg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, true);
         shiftOneRgbMap(&self.bg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, true);
     }
 
     /// Shift RGB map entries down by `shift` rows within scroll region.
     fn shiftRgbMapDown(self: *Self, shift: usize) void {
+        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
         shiftOneRgbMap(&self.fg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, false);
         shiftOneRgbMap(&self.bg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, false);
     }
@@ -806,4 +837,71 @@ test "Term: TrueColor sparse map" {
     try testing.expectEqual(@as(u8, 255), rgb.?[0]);
     try testing.expectEqual(@as(u8, 128), rgb.?[1]);
     try testing.expectEqual(@as(u8, 0), rgb.?[2]);
+}
+
+test "Term: isRowDirty with clean and dirty rows" {
+    var term = try Term.init(testing.allocator, 80, 5);
+    defer term.deinit();
+    term.clearDirty();
+    // All rows should be clean
+    for (0..5) |y| {
+        try testing.expect(!term.isRowDirty(@intCast(y)));
+    }
+    // Mark one cell dirty in row 2
+    term.markDirty(10, 2);
+    try testing.expect(!term.isRowDirty(0));
+    try testing.expect(!term.isRowDirty(1));
+    try testing.expect(term.isRowDirty(2));
+    try testing.expect(!term.isRowDirty(3));
+    try testing.expect(!term.isRowDirty(4));
+}
+
+test "Term: isRowDirty with word-boundary-aligned columns" {
+    // 64 cols = exactly 1 word per row (on 64-bit)
+    var term = try Term.init(testing.allocator, 64, 3);
+    defer term.deinit();
+    term.clearDirty();
+    try testing.expect(!term.isRowDirty(0));
+    term.markDirty(0, 0);
+    try testing.expect(term.isRowDirty(0));
+    try testing.expect(!term.isRowDirty(1));
+}
+
+test "Term: isRowDirty with small column count" {
+    // 5 cols — row fits in a single word, partial bits
+    var term = try Term.init(testing.allocator, 5, 3);
+    defer term.deinit();
+    term.clearDirty();
+    term.markDirty(4, 1); // last col of row 1
+    try testing.expect(!term.isRowDirty(0));
+    try testing.expect(term.isRowDirty(1));
+    try testing.expect(!term.isRowDirty(2));
+}
+
+test "Term: isRowDirty spanning multiple words" {
+    // 200 cols — spans ~3+ words per row on 64-bit
+    var term = try Term.init(testing.allocator, 200, 2);
+    defer term.deinit();
+    term.clearDirty();
+    try testing.expect(!term.isRowDirty(0));
+    try testing.expect(!term.isRowDirty(1));
+    // Dirty a cell in the middle of row 1 (will be in a middle word)
+    term.markDirty(130, 1);
+    try testing.expect(!term.isRowDirty(0));
+    try testing.expect(term.isRowDirty(1));
+}
+
+test "Term: isRowDirty first and last cell" {
+    var term = try Term.init(testing.allocator, 80, 2);
+    defer term.deinit();
+    term.clearDirty();
+    // First cell of row 0
+    term.markDirty(0, 0);
+    try testing.expect(term.isRowDirty(0));
+    try testing.expect(!term.isRowDirty(1));
+    term.clearDirty();
+    // Last cell of row 1
+    term.markDirty(79, 1);
+    try testing.expect(!term.isRowDirty(0));
+    try testing.expect(term.isRowDirty(1));
 }

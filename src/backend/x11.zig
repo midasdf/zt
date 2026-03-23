@@ -546,10 +546,14 @@ pub const X11Backend = struct {
             self.shm_seg,
             shm_offset, // offset into SHM
         );
-        _ = c.xcb_flush(self.connection);
-
         self.dirty_y_min = std.math.maxInt(u32);
         self.dirty_y_max = 0;
+    }
+
+    /// Flush XCB output buffer. Called once per event loop iteration
+    /// after present() to batch put_image requests.
+    pub fn flush(self: *Self) void {
+        _ = c.xcb_flush(self.connection);
     }
 
     pub fn getFd(self: *Self) ?std.posix.fd_t {

@@ -245,6 +245,9 @@ pub const FbdevBackend = struct {
         self.dirty_y_max = 0;
     }
 
+    /// No-op for fbdev — present() writes directly to framebuffer.
+    pub fn flush(_: *Self) void {}
+
     pub fn getFd(self: *Self) ?std.posix.fd_t {
         _ = self;
         return null;

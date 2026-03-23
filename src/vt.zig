@@ -376,6 +376,28 @@ pub const Parser = struct {
 // Action Executor
 // =============================================================================
 
+/// Bulk-feed a data buffer, using a fast path for contiguous printable ASCII
+/// in ground state (bypasses Action union overhead).
+pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void {
+    var i: usize = 0;
+    while (i < data.len) {
+        // Fast path: ground state + printable ASCII run
+        if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E) {
+            const start = i;
+            while (i < data.len and data[i] >= 0x20 and data[i] <= 0x7E) : (i += 1) {}
+            // Bulk print — all ASCII, never wide, bypass Action union
+            for (data[start..i]) |byte| {
+                handlePrint(@as(u21, byte), term);
+            }
+            continue;
+        }
+        // Slow path: control/escape sequences, UTF-8
+        const action = parser.feed(data[i]);
+        executeActionWithFd(action, term, writer_fd);
+        i += 1;
+    }
+}
+
 pub fn executeAction(action: Action, term: *Term) void {
     executeActionWithFd(action, term, null);
 }
