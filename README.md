@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 30ms startup. 568 MB/s throughput. 5MB RAM RSS. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 3.5ms startup. 1,382 MB/s throughput. 4.3MB RSS. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -36,13 +36,38 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 Measured on Intel i5-12450H, 1 CPU core, Xvfb. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and historical results.
 
-| | Startup (30 runs) | Throughput 4.7MB | Peak RSS |
+### Startup (30 runs)
+
+| | Time | vs zt |
+|---|---|---|
+| **zt** | **3.5ms** | 1.0x |
+| xterm | 14.5ms | 4.1x |
+| st | 33.2ms | 9.5x |
+| alacritty | 100.8ms | 28.8x |
+| kitty | 204.2ms | 58.3x |
+| ghostty | 382.6ms | 109x |
+
+### Throughput (4.7MB dense ASCII)
+
+| | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **30ms** | **0.008s (568 MB/s)** | **5.7 MB** |
-| xterm | 41ms | 0.188s | 14 MB |
-| st | 57ms | 0.162s | 24 MB |
-| alacritty | 110ms | 0.256s | 180 MB |
-| ghostty | 908ms | 0.992s | 307 MB |
+| **zt** | **3.4ms** | **1,382** | 1.0x |
+| st | 149.4ms | 31.5 | 44x |
+| xterm | 160.1ms | 29.4 | 47x |
+| alacritty | 210.9ms | 22.3 | 62x |
+| kitty | 296.6ms | 15.8 | 87x |
+| ghostty | 596.3ms | 7.9 | 176x |
+
+### Peak RSS
+
+| | RSS |
+|---|---|
+| **zt** | **4.3 MB** |
+| xterm | 13.2 MB |
+| st | 25.1 MB |
+| alacritty | 128.2 MB |
+| kitty | 149.1 MB |
+| ghostty | 228.2 MB |
 
 ## Build
 
