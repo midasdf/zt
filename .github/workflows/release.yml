@@ -9,16 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-linux-gnu
-            arch: amd64
-            suffix: x86_64-linux
-          - target: aarch64-linux-gnu
-            arch: arm64
-            suffix: aarch64-linux
+  build-x86_64:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -28,53 +19,73 @@ jobs:
           curl -L "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" | tar -xJ
           echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
 
-      - name: Enable multiarch
-        if: matrix.arch == 'arm64'
-        run: sudo dpkg --add-architecture arm64
-
-      - name: Configure arm64 APT sources
-        if: matrix.arch == 'arm64'
+      - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxcb-shm0-dev libxcb-xkb-dev \
+            libxcb-util-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb-imdkit-dev
+
+      - name: Build
+        run: zig build -Dbackend=x11 -Doptimize=ReleaseSmall
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zt-x86_64-linux
+          path: zig-out/bin/zt
+
+  build-aarch64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          curl -L "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+
+      - name: Enable multiarch and install aarch64 dependencies
+        run: |
+          sudo dpkg --add-architecture arm64
           # Restrict existing sources to amd64
           sudo sed -i 's/^Types: deb$/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
           # Add arm64 from ports
-          cat <<'EOF' | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
+          cat <<'SOURCES' | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
           Types: deb
           URIs: http://ports.ubuntu.com/ubuntu-ports
           Suites: noble noble-updates noble-security
           Components: main restricted universe
           Architectures: arm64
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          EOF
-
-      - name: Install dependencies
-        run: |
+          SOURCES
           sudo apt-get update
-          ARCH=${{ matrix.arch }}
           sudo apt-get install -y \
-            libxcb1-dev:${ARCH} \
-            libxcb-shm0-dev:${ARCH} \
-            libxcb-xkb-dev:${ARCH} \
-            libxcb-util-dev:${ARCH} \
-            libxkbcommon-dev:${ARCH} \
-            libxkbcommon-x11-dev:${ARCH} \
-            libxcb-imdkit-dev:${ARCH}
+            libxcb1-dev:arm64 libxcb-shm0-dev:arm64 libxcb-xkb-dev:arm64 \
+            libxcb-util-dev:arm64 libxkbcommon-dev:arm64 libxkbcommon-x11-dev:arm64 \
+            libxcb-imdkit-dev:arm64
+
+      - name: Create aarch64 sysroot
+        run: |
+          mkdir -p /tmp/aarch64-sysroot
+          ln -s /usr/lib/aarch64-linux-gnu /tmp/aarch64-sysroot/lib
+          ln -s /usr/include /tmp/aarch64-sysroot/include
 
       - name: Build
         run: |
-          zig build \
-            -Dbackend=x11 \
-            -Doptimize=ReleaseSmall \
-            -Dtarget=${{ matrix.target }}
+          zig build -Dbackend=x11 -Doptimize=ReleaseSmall \
+            -Dtarget=aarch64-linux-gnu \
+            --search-prefix /tmp/aarch64-sysroot
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zt-${{ matrix.suffix }}
+          name: zt-aarch64-linux
           path: zig-out/bin/zt
 
   release:
-    needs: build
+    needs: [build-x86_64, build-aarch64]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
