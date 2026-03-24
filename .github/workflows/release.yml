@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-linux-gnu
+            arch: amd64
+            suffix: x86_64-linux
+          - target: aarch64-linux-gnu
+            arch: arm64
+            suffix: aarch64-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Enable multiarch
+        if: matrix.arch == 'arm64'
+        run: sudo dpkg --add-architecture arm64
+
+      - name: Configure arm64 APT sources
+        if: matrix.arch == 'arm64'
+        run: |
+          # Restrict existing sources to amd64
+          sudo sed -i 's/^Types: deb$/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
+          # Add arm64 from ports
+          cat <<'EOF' | sudo tee /etc/apt/sources.list.d/arm64-ports.sources
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: noble noble-updates noble-security
+          Components: main restricted universe
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          ARCH=${{ matrix.arch }}
+          sudo apt-get install -y \
+            libxcb1-dev:${ARCH} \
+            libxcb-shm0-dev:${ARCH} \
+            libxcb-xkb-dev:${ARCH} \
+            libxcb-util-dev:${ARCH} \
+            libxkbcommon-dev:${ARCH} \
+            libxkbcommon-x11-dev:${ARCH} \
+            libxcb-imdkit-dev:${ARCH}
+
+      - name: Build
+        run: |
+          zig build \
+            -Dbackend=x11 \
+            -Doptimize=ReleaseSmall \
+            -Dtarget=${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zt-${{ matrix.suffix }}
+          path: zig-out/bin/zt
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Rename binaries
+        run: |
+          mv zt-x86_64-linux/zt zt-x86_64-linux-x11
+          mv zt-aarch64-linux/zt zt-aarch64-linux-x11
+          chmod +x zt-*-linux-x11
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            zt-x86_64-linux-x11 \
+            zt-aarch64-linux-x11
