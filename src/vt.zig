@@ -386,7 +386,6 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         // Safe because ASCII is never wide and doesn't need TrueColor cleanup.
         if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E) {
             const cols = term.cols;
-            const has_truecolor = term.current_fg_rgb != null or term.current_bg_rgb != null;
             while (i < data.len and data[i] >= 0x20 and data[i] <= 0x7E) {
                 // Line wrap
                 if (term.cursor_x >= cols) {
@@ -396,12 +395,6 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     } else {
                         term.cursor_x = cols - 1;
                     }
-                }
-                if (has_truecolor) {
-                    // Rare case: TrueColor active, use full path
-                    handlePrint(@as(u21, data[i]), term);
-                    i += 1;
-                    continue;
                 }
                 // Bulk write: compute run length that fits on current line
                 const remaining = cols - term.cursor_x;
@@ -421,6 +414,24 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                         .bg = term.current_bg,
                         .attrs = term.current_attrs,
                     };
+                }
+                // Clear stale RGB entries for overwritten cells
+                if (term.fg_rgb_map.count() > 0) {
+                    for (0..count) |j| _ = term.fg_rgb_map.remove(phys_start + j);
+                }
+                if (term.bg_rgb_map.count() > 0) {
+                    for (0..count) |j| _ = term.bg_rgb_map.remove(phys_start + j);
+                }
+                // Set TrueColor for bulk-written cells
+                if (term.current_fg_rgb) |rgb| {
+                    for (0..count) |j| {
+                        term.fg_rgb_map.put(phys_start + j, rgb) catch {};
+                    }
+                }
+                if (term.current_bg_rgb) |rgb| {
+                    for (0..count) |j| {
+                        term.bg_rgb_map.put(phys_start + j, rgb) catch {};
+                    }
                 }
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
@@ -1074,4 +1085,19 @@ test "Executor: tab stops every 8 columns" {
     term.cursor_x = 3;
     executeAction(parser.feed(0x09), &term); // HT
     try testing.expectEqual(@as(u32, 8), term.cursor_x);
+}
+
+test "Executor: TrueColor bulk ASCII preserves RGB" {
+    var t = try Term.init(testing.allocator, 80, 24);
+    defer t.deinit();
+    var parser = Parser{};
+
+    const input = "\x1b[38;2;255;128;0mABCDE";
+    feedBulk(&parser, input, &t, null);
+
+    for (0..5) |x| {
+        const rgb = t.getFgRgb(@intCast(x), 0);
+        try testing.expect(rgb != null);
+        try testing.expectEqual([3]u8{ 255, 128, 0 }, rgb.?);
+    }
 }
