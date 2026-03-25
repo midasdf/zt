@@ -489,6 +489,39 @@ pub fn main() !void {
             continue;
         }
 
+        // Apply accumulated scroll shift via pixel buffer memmove
+        if (term.scroll_row_shift != 0) {
+            const pbuf = backend.getBuffer();
+            const pstride = backend.getStride();
+            const row_shift = term.scroll_row_shift;
+            term.scroll_row_shift = 0;
+
+            const ch = config.cell_height;
+            const region_px_top = @as(usize, term.scroll_shift_top) * ch;
+            const region_px_bot = (@as(usize, term.scroll_shift_bot) + 1) * ch;
+            const region_byte_top = region_px_top * pstride;
+            const region_byte_bot = region_px_bot * pstride;
+            const region_bytes = region_byte_bot - region_byte_top;
+            const pixel_shift = @as(i32, row_shift) * @as(i32, @intCast(ch));
+
+            if (pixel_shift > 0) {
+                const byte_shift = @as(usize, @intCast(pixel_shift)) * pstride;
+                if (byte_shift < region_bytes) {
+                    const src = pbuf[region_byte_top + byte_shift .. region_byte_bot];
+                    const dst = pbuf[region_byte_top .. region_byte_bot - byte_shift];
+                    std.mem.copyForwards(u8, dst, src);
+                }
+            } else {
+                const byte_shift = @as(usize, @intCast(-pixel_shift)) * pstride;
+                if (byte_shift < region_bytes) {
+                    const src = pbuf[region_byte_top .. region_byte_bot - byte_shift];
+                    const dst = pbuf[region_byte_top + byte_shift .. region_byte_bot];
+                    std.mem.copyBackwards(u8, dst, src);
+                }
+            }
+            backend.markDirtyRows(@intCast(region_px_top), @intCast(region_px_bot -| 1));
+        }
+
         const buf = backend.getBuffer();
         const stride = backend.getStride();
         var y: u32 = 0;

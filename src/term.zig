@@ -50,6 +50,12 @@ pub const Term = struct {
     scroll_top: u32 = 0,
     scroll_bottom: u32 = 0,
 
+    // Scroll accumulator: number of rows shifted (positive = up, negative = down)
+    // Applied as pixel buffer memmove in main.zig render loop
+    scroll_row_shift: i32 = 0,
+    scroll_shift_top: u32 = 0,
+    scroll_shift_bot: u32 = 0,
+
     // Current drawing state
     current_fg: u8 = 7,
     current_bg: u8 = 0,
@@ -225,7 +231,12 @@ pub const Term = struct {
             self.row_map[bot + 1 - shift + s] = saved[s];
         }
 
-        // Only mark recycled (cleared) rows dirty — existing rows didn't change content
+        // Accumulate scroll shift for pixel buffer memmove in render loop.
+        // Only mark recycled (cleared) rows dirty — moved rows will be
+        // corrected by pixel buffer memmove before cell rendering.
+        self.scroll_row_shift += @as(i32, @intCast(shift));
+        self.scroll_shift_top = @intCast(top);
+        self.scroll_shift_bot = @intCast(bot);
         for (0..shift) |s| {
             const row = bot + 1 - shift + s;
             self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
@@ -260,7 +271,10 @@ pub const Term = struct {
             self.row_map[top + s] = saved[shift - 1 - s];
         }
 
-        // Only mark recycled (cleared) rows dirty
+        // Accumulate scroll shift (negative = scroll down)
+        self.scroll_row_shift -= @as(i32, @intCast(shift));
+        self.scroll_shift_top = @intCast(top);
+        self.scroll_shift_bot = @intCast(bot);
         for (0..shift) |s| {
             const row = top + s;
             self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
@@ -298,6 +312,7 @@ pub const Term = struct {
         self.rows = new_rows;
         self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
+        self.scroll_row_shift = 0;
 
         // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
@@ -324,6 +339,7 @@ pub const Term = struct {
     }
 
     pub fn switchScreen(self: *Self, alt: bool) !void {
+        self.scroll_row_shift = 0;
         if (alt == self.is_alt_screen) return;
 
         const total = @as(usize, self.cols) * @as(usize, self.rows);
