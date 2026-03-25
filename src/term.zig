@@ -331,12 +331,37 @@ pub const Term = struct {
         self.cursor_y = @intCast(@as(u32, @intCast(std.math.clamp(new_y, 0, @as(i64, self.rows) - 1))));
     }
 
+    /// Fix wide character boundaries at the edges of an erase/delete range.
+    /// If the range starts on a wide_dummy, clear the wide cell to the left.
+    /// If the range ends on a wide cell, clear the dummy to the right.
+    fn fixWideBoundaries(self: *Self, start: usize, end: usize) void {
+        if (start > 0 and start < self.cells.len) {
+            if (self.cells[start].attrs.wide_dummy) {
+                self.cells[start - 1] = Cell{};
+                self.dirty.set(start - 1);
+            }
+        }
+        if (end < self.cells.len) {
+            if (self.cells[end].attrs.wide_dummy) {
+                self.cells[end] = Cell{};
+                self.dirty.set(end);
+            }
+        }
+        if (end > 0 and end <= self.cells.len) {
+            if (self.cells[end - 1].attrs.wide) {
+                self.cells[end - 1] = Cell{};
+                self.dirty.set(end - 1);
+            }
+        }
+    }
+
     pub fn eraseDisplay(self: *Self, mode: u8) void {
         switch (mode) {
             0 => {
                 // Erase below cursor (from cursor to end)
                 const start = self.cellIndex(self.cursor_x, self.cursor_y);
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
+                self.fixWideBoundaries(start, total);
                 @memset(self.cells[start..total], Cell{});
                 self.dirty.setRangeValue(.{ .start = start, .end = total }, true);
                 self.clearRgbRange(start, total);
@@ -344,6 +369,7 @@ pub const Term = struct {
             1 => {
                 // Erase above cursor (from start to cursor inclusive)
                 const end = self.cellIndex(self.cursor_x, self.cursor_y) + 1;
+                self.fixWideBoundaries(0, end);
                 @memset(self.cells[0..end], Cell{});
                 self.dirty.setRangeValue(.{ .start = 0, .end = end }, true);
                 self.clearRgbRange(0, end);
@@ -369,6 +395,7 @@ pub const Term = struct {
                 // Erase right of cursor (inclusive)
                 const start = row_start + @as(usize, self.cursor_x);
                 const end = row_start + cols;
+                self.fixWideBoundaries(start, end);
                 @memset(self.cells[start..end], Cell{});
                 self.dirty.setRangeValue(.{ .start = start, .end = end }, true);
                 self.clearRgbRange(start, end);
@@ -376,6 +403,7 @@ pub const Term = struct {
             1 => {
                 // Erase left of cursor (inclusive)
                 const end = row_start + @as(usize, self.cursor_x) + 1;
+                self.fixWideBoundaries(row_start, end);
                 @memset(self.cells[row_start..end], Cell{});
                 self.dirty.setRangeValue(.{ .start = row_start, .end = end }, true);
                 self.clearRgbRange(row_start, end);
@@ -472,6 +500,8 @@ pub const Term = struct {
         const remaining = cols - cx;
         const count = @min(n, @as(u32, @intCast(remaining)));
         const row_start = cy * cols;
+
+        self.fixWideBoundaries(row_start + cx, row_start + cx + count);
 
         // Shift characters left
         const copy_len = remaining - count;

@@ -499,11 +499,8 @@ pub fn main() !void {
                 if (term.isDirty(x, y)) {
                     const cell = term.getCell(x, y);
 
-                    // Wide_dummy dirty → re-render the wide cell to the left
-                    if (cell.attrs.wide_dummy) {
-                        if (x > 0) term.markDirty(x - 1, y);
-                        continue;
-                    }
+                    // Skip wide_dummy cells — rendered by the wide cell to the left
+                    if (cell.attrs.wide_dummy) continue;
 
                     const fg_rgb = term.getFgRgb(x, y);
                     const bg_rgb = term.getBgRgb(x, y);
