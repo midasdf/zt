@@ -353,6 +353,16 @@ test "Render: renderCell scale=2 writes 2x2 pixel blocks" {
     const col7_offset = row5_start + 7 * bpp;
     try testing.expect(buffer[col7_offset + 2] > 0); // R channel at (7, 5)
 
+    // Verify all 4 corners of the 2x2 block
+    const col7_row4 = row4_start + 7 * bpp;
+    try testing.expect(buffer[col7_row4 + 2] > 0); // top-right at (7, 4)
+    const col6_row5 = row5_start + 6 * bpp;
+    try testing.expect(buffer[col6_row5 + 2] > 0); // bottom-left at (6, 5)
+
+    // bmp_col=2 is not set in 0x18, so screen col 4-5 in row 4 must be background
+    const col4_row4 = row4_start + 4 * bpp;
+    try testing.expectEqual(@as(u8, 0), buffer[col4_row4 + 2]);
+
     // Bitmap row 1 = 0x00, so screen row 2 (second sub-row of bitmap row 1) is background
     const screen_row2 = 2 * stride;
     const screen_col3 = screen_row2 + 3 * bpp;
