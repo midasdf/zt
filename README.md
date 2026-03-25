@@ -80,18 +80,35 @@ Measured on Intel i5-12450H, 1 CPU core, Xvfb. See [zt-bench](https://github.com
 
 Requires Zig 0.15+.
 
+### Build Profiles
+
+**PC (maximum speed):**
+```sh
+zig build -Dbackend=x11 -Doptimize=ReleaseFast
+```
+
+**HackberryPi (minimum size):**
+```sh
+zig build -Doptimize=ReleaseSmall
+```
+
+ReleaseFast enables aggressive inlining, loop unrolling, and SIMD auto-vectorization.
+ReleaseSmall minimizes binary size for constrained devices (512MB RAM).
+
+### Examples
+
 ```sh
 # fbdev (default) — runs on bare Linux console
 zig build -Doptimize=ReleaseSmall
 
 # X11 — runs under window managers
-zig build -Dbackend=x11 -Doptimize=ReleaseSmall
+zig build -Dbackend=x11 -Doptimize=ReleaseFast
 
 # X11 with 2x pixel scaling for PC/HiDPI displays
-zig build -Dbackend=x11 -Dscale=2 -Doptimize=ReleaseSmall
+zig build -Dbackend=x11 -Dscale=2 -Doptimize=ReleaseFast
 
 # X11 with 4x pixel scaling for 4K displays
-zig build -Dbackend=x11 -Dscale=4 -Doptimize=ReleaseSmall
+zig build -Dbackend=x11 -Dscale=4 -Doptimize=ReleaseFast
 
 # fbdev with JIS keyboard layout (default: us)
 zig build -Dkeymap=jp -Doptimize=ReleaseSmall
@@ -100,7 +117,7 @@ zig build -Dkeymap=jp -Doptimize=ReleaseSmall
 zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
 
 # Cross-compile for aarch64 (X11, needs target sysroot with XCB libs/headers)
-zig build -Dtarget=aarch64-linux-gnu.2.38 -Dbackend=x11 -Doptimize=ReleaseSmall \
+zig build -Dtarget=aarch64-linux-gnu.2.38 -Dbackend=x11 -Doptimize=ReleaseFast \
   --search-prefix /path/to/aarch64-sysroot
 
 # Run tests
