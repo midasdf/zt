@@ -114,8 +114,8 @@ pub const X11Backend = struct {
         const screen = iter.data orelse return error.NoScreen;
 
         // 3. Dimensions: 80x24 cells (standard terminal size)
-        const width: u32 = 80 * config.font_width;
-        const height: u32 = 24 * config.font_height;
+        const width: u32 = 80 * config.cell_width;
+        const height: u32 = 24 * config.cell_height;
         const stride: u32 = width * 4;
 
         // 4. Create window

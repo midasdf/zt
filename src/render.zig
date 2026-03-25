@@ -99,7 +99,9 @@ pub fn renderCell(
     comptime font_h: u32,
     comptime pixel_format: PixelFormat,
     comptime wide: bool,
+    comptime scale: u32,
 ) void {
+    _ = scale; // reserved for future scaled rendering (Task 3)
     const render_w: u32 = if (wide) font_w * 2 else font_w;
 
     // 1. Determine fg/bg colors
@@ -238,14 +240,13 @@ pub fn renderCursor(
     comptime font_h: u32,
     comptime pixel_format: PixelFormat,
     comptime wide: bool,
+    comptime scale: u32,
 ) void {
-    // Block cursor = render cell with fg/bg swapped
     var inverted = cell;
     const tmp = inverted.fg;
     inverted.fg = inverted.bg;
     inverted.bg = tmp;
-    // Swap RGB overrides too (fg becomes bg, bg becomes fg)
-    renderCell(buffer, stride, cell_x, cell_y, inverted, bg_rgb_override, fg_rgb_override, glyph, font_w, font_h, pixel_format, wide);
+    renderCell(buffer, stride, cell_x, cell_y, inverted, bg_rgb_override, fg_rgb_override, glyph, font_w, font_h, pixel_format, wide, scale);
 }
 
 // --- Tests ---
@@ -283,7 +284,7 @@ test "Render: renderCell writes pixels to buffer" {
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
     const glyph = GlyphView{ .codepoint = 'A', .width = 8, .height = 16, .bitmap = &bitmap };
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false);
+    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, 1);
 
     // Row 2 (0x18 = bits 3,4) should have white pixels at columns 3 and 4
     const row2_start = 2 * stride;

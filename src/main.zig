@@ -259,8 +259,8 @@ pub fn main() !void {
     backend.setupVtSwitching() catch {};
 
     // 4. Calculate grid dimensions
-    const cols: u32 = backend.getWidth() / config.font_width;
-    const rows: u32 = backend.getHeight() / config.font_height;
+    const cols: u32 = backend.getWidth() / config.cell_width;
+    const rows: u32 = backend.getHeight() / config.cell_height;
 
     // 5. Init term
     var term = try Term.init(allocator, cols, rows);
@@ -309,8 +309,8 @@ pub fn main() !void {
     if (config.backend == .x11) {
         const actual = backend.queryGeometry();
         if (actual.w > 0 and actual.h > 0 and (actual.w != backend.getWidth() or actual.h != backend.getHeight())) {
-            const new_cols = actual.w / config.font_width;
-            const new_rows = actual.h / config.font_height;
+            const new_cols = actual.w / config.cell_width;
+            const new_rows = actual.h / config.cell_height;
             if (new_cols > 0 and new_rows > 0) {
                 term.resize(new_cols, new_rows) catch {};
                 pty.resize(@intCast(new_cols), @intCast(new_rows)) catch {};
@@ -413,8 +413,8 @@ pub fn main() !void {
                                     }
                                 },
                                 .resize => |rsz| {
-                                    const new_cols = rsz.width / config.font_width;
-                                    const new_rows = rsz.height / config.font_height;
+                                    const new_cols = rsz.width / config.cell_width;
+                                    const new_rows = rsz.height / config.cell_height;
                                     if (new_cols > 0 and new_rows > 0) {
                                         term.resize(new_cols, new_rows) catch |err| {
                                             std.log.err("term resize: {}", .{err});
@@ -509,19 +509,19 @@ pub fn main() !void {
 
                     if (cell.attrs.wide) {
                         if (is_cursor) {
-                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true);
+                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
                         } else {
-                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true);
+                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
                         }
                     } else {
                         if (is_cursor) {
-                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false);
+                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
                         } else {
-                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false);
+                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
                         }
                     }
 
-                    backend.markDirtyRows(y * config.font_height, (y + 1) * config.font_height - 1);
+                    backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
                 }
             }
         }
