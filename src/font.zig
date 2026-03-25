@@ -76,9 +76,29 @@ pub fn FontBlob(comptime blob: []const u8) type {
         };
 
         pub fn getGlyph(codepoint: u21) ?GlyphView {
-            // Fast path: ASCII
+            // Fast path: ASCII (comptime cache)
             if (codepoint < 128) return ascii_cache[codepoint];
-            return getGlyphSlow(codepoint);
+
+            // Runtime cache for non-ASCII (function-local static via struct pattern)
+            const S = struct {
+                const CACHE_SIZE: usize = 256;
+                // valid=false means empty slot (avoids confusion with codepoint 0)
+                var keys: [CACHE_SIZE]u21 = [_]u21{0} ** CACHE_SIZE;
+                var vals: [CACHE_SIZE]?GlyphView = [_]?GlyphView{null} ** CACHE_SIZE;
+                var valid: [CACHE_SIZE]bool = [_]bool{false} ** CACHE_SIZE;
+            };
+
+            const idx = codepoint % S.CACHE_SIZE;
+            if (S.valid[idx] and S.keys[idx] == codepoint) {
+                return S.vals[idx];
+            }
+
+            // Cache miss: binary search
+            const result = getGlyphSlow(codepoint);
+            S.keys[idx] = codepoint;
+            S.vals[idx] = result;
+            S.valid[idx] = true;
+            return result;
         }
 
         fn getGlyphSlow(codepoint: u21) ?GlyphView {
@@ -315,4 +335,19 @@ test "CJK double-width glyph" {
     try std.testing.expectEqual(@as(u32, 16), g.?.height);
     // 2 bytes per row * 16 rows = 32 bytes total
     try std.testing.expectEqual(@as(usize, 32), g.?.bitmap.len);
+}
+
+test "FontBlob: repeated non-ASCII lookup returns same glyph" {
+    const BlobFont = FontBlob(@embedFile("fonts/ufo-nf.bin"));
+
+    const g1 = BlobFont.getGlyph(0x3042);
+    try std.testing.expect(g1 != null);
+
+    const g2 = BlobFont.getGlyph(0x3042);
+    try std.testing.expect(g2 != null);
+
+    try std.testing.expectEqual(g1.?.codepoint, g2.?.codepoint);
+    try std.testing.expectEqual(g1.?.width, g2.?.width);
+    try std.testing.expectEqual(g1.?.height, g2.?.height);
+    try std.testing.expectEqual(g1.?.bitmap.len, g2.?.bitmap.len);
 }
