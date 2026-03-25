@@ -502,23 +502,25 @@ pub fn main() !void {
                     // Skip wide_dummy cells — rendered by the wide cell to the left
                     if (cell.attrs.wide_dummy) continue;
 
-                    const fg_rgb = term.getFgRgb(x, y);
-                    const bg_rgb = term.getBgRgb(x, y);
+                    var fg_rgb = term.getFgRgb(x, y);
+                    var bg_rgb = term.getBgRgb(x, y);
                     const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
                     const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
 
+                    var render_cell = cell.*;
+                    if (is_cursor) {
+                        const tmp_idx = render_cell.fg;
+                        render_cell.fg = render_cell.bg;
+                        render_cell.bg = tmp_idx;
+                        const tmp_rgb = fg_rgb;
+                        fg_rgb = bg_rgb;
+                        bg_rgb = tmp_rgb;
+                    }
+
                     if (cell.attrs.wide) {
-                        if (is_cursor) {
-                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
-                        } else {
-                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
-                        }
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
                     } else {
-                        if (is_cursor) {
-                            render.renderCursor(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
-                        } else {
-                            render.renderCell(buf, stride, x, y, cell.*, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
-                        }
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
                     }
 
                     backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
