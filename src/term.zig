@@ -32,6 +32,7 @@ pub const Term = struct {
     cells: []Cell,
     row_map: []u32, // row_map[logical_row] = physical_row
     dirty: std.DynamicBitSet, // indexed by logical position (y * cols + x)
+    dirty_flag: bool = false, // O(1) hasDirty check
 
     // Alternate screen buffer
     alt_cells: ?[]Cell = null,
@@ -127,7 +128,7 @@ pub const Term = struct {
         const phys_idx = self.cellIndex(x, y);
         self.cells[phys_idx] = cell;
         self.dirty.set(self.dirtyIndex(x, y, self.cols));
-        // Clear stale TrueColor overrides (skip hash lookup when maps are empty)
+        self.dirty_flag = true;
         if (self.fg_rgb_map.count() > 0) _ = self.fg_rgb_map.remove(phys_idx);
         if (self.bg_rgb_map.count() > 0) _ = self.bg_rgb_map.remove(phys_idx);
     }
@@ -139,15 +140,11 @@ pub const Term = struct {
     pub fn markDirty(self: *Self, x: u32, y: u32) void {
         if (x >= self.cols or y >= self.rows) return;
         self.dirty.set(self.dirtyIndex(x, y, self.cols));
+        self.dirty_flag = true;
     }
 
     pub fn hasDirty(self: *const Self) bool {
-        const masks = self.dirty.unmanaged.masks;
-        const num_masks = (self.dirty.unmanaged.bit_length + @bitSizeOf(usize) - 1) / @bitSizeOf(usize);
-        for (masks[0..num_masks]) |m| {
-            if (m != 0) return true;
-        }
-        return false;
+        return self.dirty_flag;
     }
 
     pub fn isRowDirty(self: *const Self, y: u32) bool {
@@ -189,6 +186,13 @@ pub const Term = struct {
     pub fn clearDirty(self: *Self) void {
         const total = @as(usize, self.cols) * @as(usize, self.rows);
         self.dirty.setRangeValue(.{ .start = 0, .end = total }, false);
+        self.dirty_flag = false;
+    }
+
+    /// Mark a range of logical cells dirty and set the O(1) flag
+    pub inline fn markDirtyRange(self: *Self, range: std.bit_set.Range) void {
+        self.dirty.setRangeValue(range, true);
+        self.dirty_flag = true;
     }
 
     pub fn scrollUp(self: *Self, n: u32) void {
@@ -221,8 +225,11 @@ pub const Term = struct {
             self.row_map[bot + 1 - shift + s] = saved[s];
         }
 
-        // Mark entire scroll region dirty (logical)
-        self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
+        // Only mark recycled (cleared) rows dirty — existing rows didn't change content
+        for (0..shift) |s| {
+            const row = bot + 1 - shift + s;
+            self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+        }
     }
 
     pub fn scrollDown(self: *Self, n: u32) void {
@@ -253,8 +260,11 @@ pub const Term = struct {
             self.row_map[top + s] = saved[shift - 1 - s];
         }
 
-        // Mark entire scroll region dirty (logical)
-        self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
+        // Only mark recycled (cleared) rows dirty
+        for (0..shift) |s| {
+            const row = top + s;
+            self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+        }
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
@@ -355,7 +365,7 @@ pub const Term = struct {
         }
 
         self.is_alt_screen = alt;
-        self.dirty.setRangeValue(.{ .start = 0, .end = total }, true);
+        self.markDirtyRange(.{ .start = 0, .end = total });
     }
 
     pub fn moveCursorTo(self: *Self, x: u32, y: u32) void {
@@ -415,7 +425,7 @@ pub const Term = struct {
                 }
                 const logical_start = start_y * cols + start_x;
                 const total = @as(usize, self.rows) * cols;
-                self.dirty.setRangeValue(.{ .start = logical_start, .end = total }, true);
+                self.markDirtyRange(.{ .start = logical_start, .end = total });
                 self.clearRgbRange(start_y, self.rows, 0);
             },
             1 => {
@@ -428,7 +438,7 @@ pub const Term = struct {
                     const to: usize = if (y == end_y) end_x + 1 else cols;
                     @memset(self.cells[phys * cols .. phys * cols + to], Cell{});
                 }
-                self.dirty.setRangeValue(.{ .start = 0, .end = end_y * cols + end_x + 1 }, true);
+                self.markDirtyRange(.{ .start = 0, .end = end_y * cols + end_x + 1 });
                 self.clearRgbRange(0, end_y + 1, 0);
             },
             2, 3 => {
@@ -436,7 +446,7 @@ pub const Term = struct {
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
                 @memset(self.cells[0..total], Cell{});
                 for (0..self.rows) |i| self.row_map[i] = @intCast(i);
-                self.dirty.setRangeValue(.{ .start = 0, .end = total }, true);
+                self.markDirtyRange(.{ .start = 0, .end = total });
                 self.clearAllRgb();
             },
             else => {},
@@ -454,19 +464,19 @@ pub const Term = struct {
                 const cx: usize = self.cursor_x;
                 self.fixWideBoundaries(row_start + cx, row_start + cols);
                 @memset(self.cells[phys * cols + cx .. (phys + 1) * cols], Cell{});
-                self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cols }, true);
+                self.markDirtyRange(.{ .start = row_start + cx, .end = row_start + cols });
                 self.clearRgbPhysRange(phys * cols + cx, (phys + 1) * cols);
             },
             1 => {
                 const cx: usize = self.cursor_x;
                 self.fixWideBoundaries(row_start, row_start + cx + 1);
                 @memset(self.cells[phys * cols .. phys * cols + cx + 1], Cell{});
-                self.dirty.setRangeValue(.{ .start = row_start, .end = row_start + cx + 1 }, true);
+                self.markDirtyRange(.{ .start = row_start, .end = row_start + cx + 1 });
                 self.clearRgbPhysRange(phys * cols, phys * cols + cx + 1);
             },
             2 => {
                 @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-                self.dirty.setRangeValue(.{ .start = row_start, .end = row_start + cols }, true);
+                self.markDirtyRange(.{ .start = row_start, .end = row_start + cols });
                 self.clearRgbPhysRange(phys * cols, (phys + 1) * cols);
             },
             else => {},
@@ -522,7 +532,7 @@ pub const Term = struct {
             self.row_map[cy + s] = saved[count - 1 - s];
         }
 
-        self.dirty.setRangeValue(.{ .start = cy * cols, .end = (bot + 1) * cols }, true);
+        self.markDirtyRange(.{ .start = cy * cols, .end = (bot + 1) * cols });
     }
 
     pub fn deleteLines(self: *Self, n: u32) void {
@@ -553,7 +563,7 @@ pub const Term = struct {
             self.row_map[bot + 1 - count + s] = saved[s];
         }
 
-        self.dirty.setRangeValue(.{ .start = cy * cols, .end = (bot + 1) * cols }, true);
+        self.markDirtyRange(.{ .start = cy * cols, .end = (bot + 1) * cols });
     }
 
     pub fn deleteChars(self: *Self, n: u32) void {
@@ -578,7 +588,7 @@ pub const Term = struct {
         // Clear rightmost characters
         @memset(self.cells[row_base + cols - count .. row_base + cols], Cell{});
 
-        self.dirty.setRangeValue(.{ .start = logical_row_start + cx, .end = logical_row_start + cols }, true);
+        self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cols });
         self.clearRgbPhysRange(row_base + cx, row_base + cols);
     }
 
@@ -601,7 +611,7 @@ pub const Term = struct {
         // Clear inserted characters
         @memset(self.cells[row_base + cx .. row_base + cx + count], Cell{});
 
-        self.dirty.setRangeValue(.{ .start = logical_row_start + cx, .end = logical_row_start + cols }, true);
+        self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cols });
         self.clearRgbPhysRange(row_base + cx, row_base + cols);
     }
 
@@ -617,7 +627,7 @@ pub const Term = struct {
 
         @memset(self.cells[row_base + cx .. row_base + cx + count], Cell{});
 
-        self.dirty.setRangeValue(.{ .start = logical_row_start + cx, .end = logical_row_start + cx + count }, true);
+        self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cx + count });
         self.clearRgbPhysRange(row_base + cx, row_base + cx + count);
     }
 
@@ -668,6 +678,7 @@ pub const Term = struct {
     }
 
     pub fn getFgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {
+        if (self.fg_rgb_map.count() == 0) return null;
         return self.fg_rgb_map.get(self.cellIndex(x, y));
     }
 
@@ -676,6 +687,7 @@ pub const Term = struct {
     }
 
     pub fn getBgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {
+        if (self.bg_rgb_map.count() == 0) return null;
         return self.bg_rgb_map.get(self.cellIndex(x, y));
     }
 };

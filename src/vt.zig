@@ -424,7 +424,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 }
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
-                term.dirty.setRangeValue(.{ .start = logical_start, .end = logical_start + count }, true);
+                term.markDirtyRange(.{ .start = logical_start, .end = logical_start + count });
                 term.cursor_x += count;
                 i += count;
             }
