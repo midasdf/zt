@@ -101,8 +101,9 @@ pub fn renderCell(
     comptime wide: bool,
     comptime scale: u32,
 ) void {
-    _ = scale; // reserved for future scaled rendering (Task 3)
     const render_w: u32 = if (wide) font_w * 2 else font_w;
+    const scaled_w: u32 = render_w * scale;
+    const scaled_h: u32 = font_h * scale;
 
     // 1. Determine fg/bg colors
     var fg_color = if (fg_rgb_override) |rgb| Color{ .r = rgb[0], .g = rgb[1], .b = rgb[2] } else palette[cell.fg];
@@ -115,7 +116,7 @@ pub fn renderCell(
         bg_color = tmp;
     }
 
-    // 3. Handle dim — reduce foreground intensity (60% brightness)
+    // 3. Handle dim
     if (cell.attrs.dim) {
         fg_color.r = @intCast(@as(u16, fg_color.r) * 3 / 5);
         fg_color.g = @intCast(@as(u16, fg_color.g) * 3 / 5);
@@ -129,25 +130,24 @@ pub fn renderCell(
         .rgb24 => 3,
     };
 
-    // 5. Bounds limits to prevent buffer overflow
+    // 5. Bounds + scaled pixel offset
     const max_offset = buffer.len;
-    const px_x = cell_x * font_w;
-    const px_y = cell_y * font_h;
+    const px_x = cell_x * font_w * scale;
+    const px_y = cell_y * font_h * scale;
 
-    // 6. Fill background rect
+    // 6. Fill background rect (scaled dimensions)
     if (pixel_format == .bgra32) {
-        // Fast path: memset entire row with packed BGRA pattern
         const bg_packed = [4]u8{ bg_color.b, bg_color.g, bg_color.r, 0xFF };
-        for (0..font_h) |row| {
+        for (0..scaled_h) |row| {
             const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
-            if (row_offset + render_w * 4 > max_offset) continue;
+            if (row_offset + scaled_w * 4 > max_offset) continue;
             const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
-            @memset(pixels[0..render_w], bg_packed);
+            @memset(pixels[0..scaled_w], bg_packed);
         }
     } else {
-        for (0..font_h) |row| {
+        for (0..scaled_h) |row| {
             const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
-            for (0..render_w) |col| {
+            for (0..scaled_w) |col| {
                 const offset = row_offset + @as(u32, @intCast(col)) * bpp;
                 if (offset + bpp > max_offset) continue;
                 writePixel(buffer, offset, bg_color, pixel_format);
@@ -155,40 +155,62 @@ pub fn renderCell(
         }
     }
 
-    // 7. Draw glyph bitmap
+    // 7. Draw glyph bitmap (iterate at original size, write scale x scale blocks)
     if (glyph) |g| {
         const bytes_per_row = (g.width + 7) / 8;
         if (pixel_format == .bgra32) {
-            // Fast path: direct 4-byte writes for BGRA32
             const fg_packed = [4]u8{ fg_color.b, fg_color.g, fg_color.r, 0xFF };
-            for (0..@min(g.height, font_h)) |row| {
-                const row_base = (px_y + @as(u32, @intCast(row))) * stride + px_x * 4;
-                if (row_base + render_w * 4 > max_offset) continue;
-                for (0..@min(g.width, render_w)) |col| {
-                    const byte_idx = row * bytes_per_row + col / 8;
-                    const bit = @as(u8, 0x80) >> @intCast(col % 8);
+            for (0..@min(g.height, font_h)) |bmp_row| {
+                for (0..@min(g.width, render_w)) |bmp_col| {
+                    const byte_idx = bmp_row * bytes_per_row + bmp_col / 8;
+                    const bit = @as(u8, 0x80) >> @intCast(bmp_col % 8);
                     if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
-                        const px_off = row_base + @as(u32, @intCast(col)) * 4;
-                        @as(*[4]u8, @ptrCast(buffer.ptr + px_off)).* = fg_packed;
-                        if (cell.attrs.bold and col + 1 < render_w) {
-                            @as(*[4]u8, @ptrCast(buffer.ptr + px_off + 4)).* = fg_packed;
+                        const screen_x = @as(u32, @intCast(bmp_col)) * scale;
+                        for (0..scale) |sy| {
+                            const screen_y = px_y + @as(u32, @intCast(bmp_row)) * scale + @as(u32, @intCast(sy));
+                            const row_base = screen_y * stride + px_x * 4;
+                            if (row_base + (screen_x + scale) * 4 > max_offset) continue;
+                            for (0..scale) |sx| {
+                                const px_off = row_base + (screen_x + @as(u32, @intCast(sx))) * 4;
+                                @as(*[4]u8, @ptrCast(buffer.ptr + px_off)).* = fg_packed;
+                            }
+                        }
+                        // Bold: adjacent bitmap column gets a scale x scale block
+                        if (cell.attrs.bold and bmp_col + 1 < render_w) {
+                            const bold_x = (@as(u32, @intCast(bmp_col)) + 1) * scale;
+                            for (0..scale) |sy| {
+                                const screen_y = px_y + @as(u32, @intCast(bmp_row)) * scale + @as(u32, @intCast(sy));
+                                const row_base = screen_y * stride + px_x * 4;
+                                if (row_base + (bold_x + scale) * 4 > max_offset) continue;
+                                for (0..scale) |sx| {
+                                    const px_off = row_base + (bold_x + @as(u32, @intCast(sx))) * 4;
+                                    @as(*[4]u8, @ptrCast(buffer.ptr + px_off)).* = fg_packed;
+                                }
+                            }
                         }
                     }
                 }
             }
         } else {
-            for (0..@min(g.height, font_h)) |row| {
-                for (0..@min(g.width, render_w)) |col| {
-                    const byte_idx = row * bytes_per_row + col / 8;
-                    const bit = @as(u8, 0x80) >> @intCast(col % 8);
+            for (0..@min(g.height, font_h)) |bmp_row| {
+                for (0..@min(g.width, render_w)) |bmp_col| {
+                    const byte_idx = bmp_row * bytes_per_row + bmp_col / 8;
+                    const bit = @as(u8, 0x80) >> @intCast(bmp_col % 8);
                     if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
-                        const offset = (px_y + @as(u32, @intCast(row))) * stride + (px_x + @as(u32, @intCast(col))) * bpp;
-                        if (offset + bpp > max_offset) continue;
-                        writePixel(buffer, offset, fg_color, pixel_format);
-                        if (cell.attrs.bold and col + 1 < render_w) {
-                            const bold_offset = offset + bpp;
-                            if (bold_offset + bpp <= max_offset) {
-                                writePixel(buffer, bold_offset, fg_color, pixel_format);
+                        for (0..scale) |sy| {
+                            for (0..scale) |sx| {
+                                const offset = (px_y + @as(u32, @intCast(bmp_row)) * scale + @as(u32, @intCast(sy))) * stride + (px_x + @as(u32, @intCast(bmp_col)) * scale + @as(u32, @intCast(sx))) * bpp;
+                                if (offset + bpp > max_offset) continue;
+                                writePixel(buffer, offset, fg_color, pixel_format);
+                            }
+                        }
+                        if (cell.attrs.bold and bmp_col + 1 < render_w) {
+                            for (0..scale) |sy| {
+                                for (0..scale) |sx| {
+                                    const bold_offset = (px_y + @as(u32, @intCast(bmp_row)) * scale + @as(u32, @intCast(sy))) * stride + (px_x + (@as(u32, @intCast(bmp_col)) + 1) * scale + @as(u32, @intCast(sx))) * bpp;
+                                    if (bold_offset + bpp > max_offset) continue;
+                                    writePixel(buffer, bold_offset, fg_color, pixel_format);
+                                }
                             }
                         }
                     }
@@ -196,10 +218,10 @@ pub fn renderCell(
             }
         }
     } else {
-        // Missing glyph fallback: draw a box outline
-        for (0..font_h) |row| {
-            for (0..render_w) |col| {
-                if (row == 0 or row == font_h - 1 or col == 0 or col == render_w - 1) {
+        // Missing glyph fallback: box outline with scale-pixel border
+        for (0..scaled_h) |row| {
+            for (0..scaled_w) |col| {
+                if (row < scale or row >= scaled_h - scale or col < scale or col >= scaled_w - scale) {
                     const offset = (px_y + @as(u32, @intCast(row))) * stride + (px_x + @as(u32, @intCast(col))) * bpp;
                     if (offset + bpp > max_offset) continue;
                     writePixel(buffer, offset, fg_color, pixel_format);
@@ -208,20 +230,26 @@ pub fn renderCell(
         }
     }
 
-    // 8. Underline: draw horizontal line at font_h - 2
+    // 8. Underline: at (font_h - 2) * scale with scale-pixel thickness
     if (cell.attrs.underline) {
-        const row_offset = (px_y + font_h - 2) * stride + px_x * bpp;
+        const ul_start = (font_h - 2) * scale;
         if (pixel_format == .bgra32) {
             const fg_packed = [4]u8{ fg_color.b, fg_color.g, fg_color.r, 0xFF };
-            if (row_offset + render_w * 4 <= max_offset) {
-                const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
-                @memset(pixels[0..render_w], fg_packed);
+            for (0..scale) |s| {
+                const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + px_x * bpp;
+                if (row_offset + scaled_w * 4 <= max_offset) {
+                    const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
+                    @memset(pixels[0..scaled_w], fg_packed);
+                }
             }
         } else {
-            for (0..render_w) |col| {
-                const offset = row_offset + @as(u32, @intCast(col)) * bpp;
-                if (offset + bpp > max_offset) continue;
-                writePixel(buffer, offset, fg_color, pixel_format);
+            for (0..scale) |s| {
+                const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + px_x * bpp;
+                for (0..scaled_w) |col| {
+                    const offset = row_offset + @as(u32, @intCast(col)) * bpp;
+                    if (offset + bpp > max_offset) continue;
+                    writePixel(buffer, offset, fg_color, pixel_format);
+                }
             }
         }
     }
@@ -298,4 +326,35 @@ test "Render: writePixel RGB565 format" {
     // Pure red in RGB565 = 0xF800 = little-endian: 0x00, 0xF8
     try testing.expectEqual(@as(u8, 0x00), buf[0]);
     try testing.expectEqual(@as(u8, 0xF8), buf[1]);
+}
+
+test "Render: renderCell scale=2 writes 2x2 pixel blocks" {
+    const w = 8;
+    const h = 16;
+    const scale = 2;
+    const bpp = 4;
+    const stride = w * scale * bpp; // 64 bytes per row (16 pixels wide)
+    var buffer: [stride * h * scale]u8 = [_]u8{0} ** (stride * h * scale);
+
+    // Bitmap row 2 = 0x18 = 00011000 (bits 3 and 4 set)
+    const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
+    const glyph = GlyphView{ .codepoint = 'A', .width = 8, .height = 16, .bitmap = &bitmap };
+
+    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, scale);
+
+    // Bitmap pixel (3, 2) at scale=2 → screen pixels (6, 4), (7, 4), (6, 5), (7, 5)
+    // Check top-left of 2x2 block: screen row 4, col 6
+    const row4_start = 4 * stride;
+    const col6_offset = row4_start + 6 * bpp;
+    try testing.expect(buffer[col6_offset + 2] > 0); // R channel at (6, 4)
+
+    // Check bottom-right of 2x2 block: screen row 5, col 7
+    const row5_start = 5 * stride;
+    const col7_offset = row5_start + 7 * bpp;
+    try testing.expect(buffer[col7_offset + 2] > 0); // R channel at (7, 5)
+
+    // Bitmap row 1 = 0x00, so screen row 2 (second sub-row of bitmap row 1) is background
+    const screen_row2 = 2 * stride;
+    const screen_col3 = screen_row2 + 3 * bpp;
+    try testing.expectEqual(@as(u8, 0), buffer[screen_col3 + 2]); // must be background
 }
