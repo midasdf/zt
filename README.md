@@ -13,17 +13,22 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 ## Features
 
 - **Dual backend** — framebuffer direct rendering (no X11/Wayland) or XCB + SHM under X11
-- **Comptime everything** — backend, font, palette all resolved at compile time. Zero runtime cost for unused code paths
-- **Damage tracking** — per-cell dirty bitmap, row-level skip, dirty region present (X11 sends only changed rows)
+- **Comptime everything** — backend, font, palette, pixel scale all resolved at compile time. Zero runtime cost for unused code paths
+- **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI/PC displays. Integer scaling renders each bitmap pixel as an NxN block. Same font blob, no quality loss
+- **Row-map scroll** — O(1) scroll via row indirection table instead of cell copying. 60K scrolls move 44MB of pointers vs 880MB of cell data
+- **Damage tracking** — per-cell dirty bitmap with O(1) flag, row-level skip, dirty region present. Scroll marks only recycled rows dirty
+- **Double-buffered SHM** — tear-free X11 rendering with lazy second-buffer init (no startup cost)
 - **XKB keyboard layout** — any X11 keyboard layout works automatically via libxkbcommon (US, JP, DE, FR, etc.)
-- **Input method (XIM)** — Japanese/Chinese/Korean input via fcitx5, ibus, etc. Auto-detected, no env vars needed
+- **Input method (XIM)** — Japanese/Chinese/Korean input via fcitx5, ibus, etc. Lazy-initialized on first key press
 - **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim), DEC modes, alternate screen
-- **CJK wide character support** — correct double-width rendering for Japanese, Chinese, Korean
+- **CJK wide character support** — correct double-width rendering with wide-char boundary repair on erase/delete
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
+- **Bulk ASCII fast path** — VT parser writes directly to cell array with range-based dirty marking, bypassing per-char overhead
 - **PTY drain loop** — reads all available data before rendering, reducing frame count during bulk output
 - **Write buffering** — PTY writes buffered on backpressure with EPOLLOUT retry
+- **ConfigureNotify coalescing** — drag-resize processes only the final size, skipping intermediate reallocation
 - **No libc** (fbdev) — pure `std.posix` syscalls, single static binary
-- **74 unit tests** across 7 modules
+- **70 unit tests** across 7 modules
 
 ## Numbers
 
@@ -32,7 +37,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 | Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 4,854 lines across 11 files |  |
+| Source | 5,250 lines across 11 files |  |
 
 ## Benchmarks
 
@@ -82,6 +87,12 @@ zig build -Doptimize=ReleaseSmall
 # X11 — runs under window managers
 zig build -Dbackend=x11 -Doptimize=ReleaseSmall
 
+# X11 with 2x pixel scaling for PC/HiDPI displays
+zig build -Dbackend=x11 -Dscale=2 -Doptimize=ReleaseSmall
+
+# X11 with 4x pixel scaling for 4K displays
+zig build -Dbackend=x11 -Dscale=4 -Doptimize=ReleaseSmall
+
 # fbdev with JIS keyboard layout (default: us)
 zig build -Dkeymap=jp -Doptimize=ReleaseSmall
 
@@ -101,12 +112,15 @@ zig build test
 Edit `config.zig` and rebuild — [st](https://st.suckless.org/)-style, no runtime config files.
 
 ```zig
-pub const backend: Backend = .fbdev;  // .fbdev or .x11
-pub const keymap: Keymap = .us;       // .us or .jp (fbdev only; X11 uses XKB)
+pub const backend: Backend = .fbdev;  // .fbdev or .x11 (set via -Dbackend)
+pub const keymap: Keymap = .us;       // .us or .jp (set via -Dkeymap; fbdev only, X11 uses XKB)
 pub const default_fg: u8 = 7;        // white
 pub const default_bg: u8 = 0;        // black
-pub const font_width: u32 = 8;       // cell width (half-width)
-pub const font_height: u32 = 16;     // cell height
+pub const font_width: u32 = 8;       // bitmap glyph width (half-width)
+pub const font_height: u32 = 16;     // bitmap glyph height
+pub const scale: u32 = 1;            // pixel scale factor: 1, 2, or 4 (set via -Dscale)
+pub const cell_width = font_width * scale;   // screen cell width
+pub const cell_height = font_height * scale; // screen cell height
 pub const shell = "/bin/fish";        // login shell
 ```
 
@@ -127,17 +141,22 @@ See [zt-fonts](https://github.com/midasdf/zt-fonts) for BDF sources, build scrip
 epoll event loop (single-threaded)
 ├── PTY reader (64KB buffer, drain loop)
 │   └── VT parser (byte-by-byte state machine)
-│       └── Action executor → Cell grid mutations
+│       ├── ASCII fast path: bulk write to cells[] + range dirty
+│       └── Action executor → Cell grid mutations via row_map
 ├── Input handler
 │   ├── evdev (fbdev) — raw keyboard events, compile-time keymap (US/JP)
-│   └── X11 — XKB layout-aware translation + XIM input method (fcitx5/ibus)
+│   └── X11 — XKB + XIM (lazy-initialized on first key press)
+├── Term grid
+│   ├── row_map[logical] → physical: O(1) scroll via pointer rotation
+│   ├── Dirty bitmap (logical order) with O(1) hasDirty flag
+│   └── TrueColor sparse maps (physical keys, no shift on scroll)
 ├── Renderer
-│   ├── hasDirty() bitmask check → skip if nothing changed
+│   ├── hasDirty() O(1) flag check → skip if nothing changed
 │   ├── isRowDirty() → skip clean rows
-│   └── Per-cell: glyph lookup → pixel composition
+│   └── Per-cell: glyph lookup → scaled pixel composition (memcpy row duplication)
 ├── Backend
 │   ├── fbdev: shadow buffer → dirty row memcpy to /dev/fb0 mmap
-│   └── X11: SHM buffer → dirty region xcb_shm_put_image
+│   └── X11: double-buffered SHM → dirty region xcb_shm_put_image
 ├── Signal handling (signalfd: SIGCHLD, SIGTERM, SIGINT, SIGHUP)
 ├── VT switching (fbdev: SIGUSR1/2 for console switch)
 ├── Cursor blink (timerfd, 500ms interval)
@@ -148,17 +167,17 @@ epoll event loop (single-threaded)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,016 | VT parser state machine + action executor (CSI, SGR, DEC modes, OSC) |
-| `src/term.zig` | 809 | Cell grid, dirty bitmap, scroll, erase, TrueColor sparse maps |
-| `src/main.zig` | 543 | Event loop, signal/timer setup, PTY drain, write buffering, render orchestration |
+| `src/vt.zig` | 1,077 | VT parser state machine + action executor (CSI, SGR, DEC modes, OSC), bulk ASCII fast path |
+| `src/backend/x11.zig` | 951 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
+| `src/term.zig` | 819 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, TrueColor sparse maps |
+| `src/main.zig` | 541 | Event loop, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
-| `src/backend/x11.zig` | 842 | XCB window, SHM, XKB keyboard layout, XIM input method, event polling |
+| `src/render.zig` | 374 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
+| `src/backend/fbdev.zig` | 319 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
 | `src/font.zig` | 318 | BDF parser (comptime), binary blob loader, ASCII glyph cache |
-| `src/backend/fbdev.zig` | 316 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
-| `src/render.zig` | 262 | Pixel rendering (BGRA32/RGB565/RGB24), palette, glyph blit, cursor |
 | `src/pty.zig` | 221 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
-| `config.zig` | 23 | Compile-time configuration (backend, keymap, font, colors) |
-| `build.zig` | 67 | Build system with backend and keymap selection |
+| `config.zig` | 33 | Compile-time configuration (backend, keymap, font, colors, scale) |
+| `build.zig` | 70 | Build system with backend, keymap, and scale selection |
 
 ## Supported escape sequences
 
