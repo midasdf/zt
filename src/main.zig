@@ -504,7 +504,7 @@ pub fn main() !void {
 
                     const fg_rgb = term.getFgRgb(x, y);
                     const bg_rgb = term.getBgRgb(x, y);
-                    const glyph = FontType.getGlyph(cell.char);
+                    const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
                     const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
 
                     if (cell.attrs.wide) {

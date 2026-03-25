@@ -221,7 +221,7 @@ pub fn renderCell(
                 }
             }
         }
-    } else {
+    } else if (cell.char != ' ' and cell.char != 0) {
         // Missing glyph fallback: box outline with scale-pixel border
         for (0..scaled_h) |row| {
             for (0..scaled_w) |col| {
@@ -371,4 +371,19 @@ test "Render: renderCell scale=2 writes 2x2 pixel blocks" {
     const screen_row2 = 2 * stride;
     const screen_col3 = screen_row2 + 3 * bpp;
     try testing.expectEqual(@as(u8, 0), buffer[screen_col3 + 2]); // must be background
+}
+
+test "Render: space with null glyph produces background only" {
+    const w = 8;
+    const h = 16;
+    const bpp = 4;
+    const stride = w * bpp;
+    var buffer: [stride * h]u8 = [_]u8{0} ** (stride * h);
+
+    renderCell(&buffer, stride, 0, 0, .{ .char = ' ', .fg = 7, .bg = 0 }, null, null, null, w, h, .bgra32, false, 1);
+
+    try testing.expectEqual(@as(u8, 0), buffer[2]);
+
+    const interior = 4 * stride + 4 * bpp;
+    try testing.expectEqual(@as(u8, 0), buffer[interior + 2]);
 }
