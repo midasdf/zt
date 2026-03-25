@@ -13,6 +13,16 @@ pub const default_bg: u8 = 0;
 pub const font_width: u32 = 8;
 pub const font_height: u32 = 16;
 
+pub const scale: u32 = build_options.scale;
+pub const cell_width: u32 = font_width * scale;
+pub const cell_height: u32 = font_height * scale;
+
+comptime {
+    if (scale != 1 and scale != 2 and scale != 4) {
+        @compileError("scale must be 1, 2, or 4");
+    }
+}
+
 pub const Keymap = enum {
     us,
     jp,

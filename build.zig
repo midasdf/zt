@@ -10,9 +10,12 @@ pub fn build(b: *std.Build) void {
     const keymap_opt = b.option([]const u8, "keymap", "Keyboard layout: us or jp (default: us)") orelse "us";
     const use_jp_keymap = std.mem.eql(u8, keymap_opt, "jp");
 
+    const scale_opt = b.option(u32, "scale", "Pixel scale factor: 1, 2, or 4 (default: 1)") orelse 1;
+
     const options = b.addOptions();
     options.addOption(bool, "use_x11", is_x11);
     options.addOption(bool, "use_jp_keymap", use_jp_keymap);
+    options.addOption(u32, "scale", scale_opt);
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
