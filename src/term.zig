@@ -113,9 +113,9 @@ pub const Term = struct {
         const idx = self.cellIndex(x, y);
         self.cells[idx] = cell;
         self.dirty.set(idx);
-        // Clear stale TrueColor overrides so palette-only cells don't inherit old RGB
-        _ = self.fg_rgb_map.remove(idx);
-        _ = self.bg_rgb_map.remove(idx);
+        // Clear stale TrueColor overrides (skip hash lookup when maps are empty)
+        if (self.fg_rgb_map.count() > 0) _ = self.fg_rgb_map.remove(idx);
+        if (self.bg_rgb_map.count() > 0) _ = self.bg_rgb_map.remove(idx);
     }
 
     pub fn isDirty(self: *const Self, x: u32, y: u32) bool {

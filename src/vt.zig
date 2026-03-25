@@ -382,12 +382,50 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
     var i: usize = 0;
     while (i < data.len) {
         // Fast path: ground state + printable ASCII run
+        // Writes directly to cells[] array, bypassing setCell/handlePrint overhead.
+        // Safe because ASCII is never wide and doesn't need TrueColor cleanup.
         if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E) {
-            const start = i;
-            while (i < data.len and data[i] >= 0x20 and data[i] <= 0x7E) : (i += 1) {}
-            // Bulk print — all ASCII, never wide, bypass Action union
-            for (data[start..i]) |byte| {
-                handlePrint(@as(u21, byte), term);
+            const cols = term.cols;
+            const has_truecolor = term.current_fg_rgb != null or term.current_bg_rgb != null;
+            while (i < data.len and data[i] >= 0x20 and data[i] <= 0x7E) {
+                // Line wrap
+                if (term.cursor_x >= cols) {
+                    if (term.decawm) {
+                        term.cursor_x = 0;
+                        term.insertNewline();
+                    } else {
+                        term.cursor_x = cols - 1;
+                    }
+                }
+                if (has_truecolor) {
+                    // Rare case: TrueColor active, use full path
+                    handlePrint(@as(u21, data[i]), term);
+                    i += 1;
+                    continue;
+                }
+                // Bulk write: compute run length that fits on current line
+                const remaining = cols - term.cursor_x;
+                const row_start = @as(usize, term.cursor_y) * @as(usize, cols);
+                var count: u32 = 0;
+                while (count < remaining and i + count < data.len and data[i + count] >= 0x20 and data[i + count] <= 0x7E) {
+                    count += 1;
+                }
+                if (count == 0) break;
+                // Write cells directly
+                const cell_start = row_start + term.cursor_x;
+                for (0..count) |j| {
+                    const idx = cell_start + j;
+                    term.cells[idx] = .{
+                        .char = @as(u21, data[i + j]),
+                        .fg = term.current_fg,
+                        .bg = term.current_bg,
+                        .attrs = term.current_attrs,
+                    };
+                }
+                // Bulk dirty
+                term.dirty.setRangeValue(.{ .start = cell_start, .end = cell_start + count }, true);
+                term.cursor_x += count;
+                i += count;
             }
             continue;
         }
