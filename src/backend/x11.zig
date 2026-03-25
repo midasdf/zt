@@ -90,6 +90,7 @@ pub const X11Backend = struct {
     pending_xim_keycode: u8 = 0, // key sent to IM, awaiting response
     has_pending_xim: bool = false,
     suppress_xim_result: bool = false, // discard next XIM result (IME toggle key)
+    pending_event: ?*c.xcb_generic_event_t = null, // event pushed back during coalescing
     paste_buf: PasteEvent = .{},
     screen_id: c_int = 0,
 
@@ -632,7 +633,10 @@ pub const X11Backend = struct {
         // Unhandled event types (ReparentNotify, MapNotify, etc.) are skipped
         // so they don't block processing of subsequent events like ConfigureNotify.
         while (true) {
-        const event = c.xcb_poll_for_event(self.connection) orelse {
+        const event = if (self.pending_event) |pe| blk: {
+            self.pending_event = null;
+            break :blk pe;
+        } else c.xcb_poll_for_event(self.connection) orelse {
             return null;
         };
         defer std.c.free(event);
@@ -780,10 +784,28 @@ pub const X11Backend = struct {
             },
             c.XCB_CONFIGURE_NOTIFY => {
                 const cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(event));
-                if (cfg.*.width != self.width or cfg.*.height != self.height) {
-                    return .{ .resize = .{ .width = cfg.*.width, .height = cfg.*.height } };
+                var latest_w: u32 = cfg.*.width;
+                var latest_h: u32 = cfg.*.height;
+                // Coalesce: drain all queued ConfigureNotify, keep only last size
+                while (c.xcb_poll_for_queued_event(self.connection)) |next| {
+                    const next_type = next.*.response_type & 0x7F;
+                    if (next_type == c.XCB_CONFIGURE_NOTIFY) {
+                        const next_cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(next));
+                        latest_w = next_cfg.*.width;
+                        latest_h = next_cfg.*.height;
+                        std.c.free(next);
+                    } else {
+                        // Non-ConfigureNotify event — push it back by processing later
+                        // We can't push back, so just handle it and break
+                        // Store this event for next pollEvents call
+                        self.pending_event = next;
+                        break;
+                    }
                 }
-                continue; // Size unchanged — skip, process next event
+                if (latest_w != self.width or latest_h != self.height) {
+                    return .{ .resize = .{ .width = latest_w, .height = latest_h } };
+                }
+                continue;
             },
             c.XCB_SELECTION_NOTIFY => {
                 const sel: *c.xcb_selection_notify_event_t = @ptrCast(@alignCast(event));
