@@ -405,25 +405,26 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 }
                 // Bulk write: compute run length that fits on current line
                 const remaining = cols - term.cursor_x;
-                const row_start = @as(usize, term.cursor_y) * @as(usize, cols);
+                const phys_row = term.row_map[term.cursor_y];
+                const phys_base = @as(usize, phys_row) * @as(usize, cols);
                 var count: u32 = 0;
                 while (count < remaining and i + count < data.len and data[i + count] >= 0x20 and data[i + count] <= 0x7E) {
                     count += 1;
                 }
                 if (count == 0) break;
-                // Write cells directly
-                const cell_start = row_start + term.cursor_x;
+                // Write cells directly to physical row
+                const phys_start = phys_base + term.cursor_x;
                 for (0..count) |j| {
-                    const idx = cell_start + j;
-                    term.cells[idx] = .{
+                    term.cells[phys_start + j] = .{
                         .char = @as(u21, data[i + j]),
                         .fg = term.current_fg,
                         .bg = term.current_bg,
                         .attrs = term.current_attrs,
                     };
                 }
-                // Bulk dirty
-                term.dirty.setRangeValue(.{ .start = cell_start, .end = cell_start + count }, true);
+                // Bulk dirty (logical index)
+                const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
+                term.dirty.setRangeValue(.{ .start = logical_start, .end = logical_start + count }, true);
                 term.cursor_x += count;
                 i += count;
             }

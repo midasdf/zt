@@ -30,10 +30,12 @@ pub const Term = struct {
     rows: u32,
 
     cells: []Cell,
-    dirty: std.DynamicBitSet,
+    row_map: []u32, // row_map[logical_row] = physical_row
+    dirty: std.DynamicBitSet, // indexed by logical position (y * cols + x)
 
     // Alternate screen buffer
     alt_cells: ?[]Cell = null,
+    alt_row_map: ?[]u32 = null,
     alt_dirty: ?std.DynamicBitSet = null,
     is_alt_screen: bool = false,
 
@@ -54,7 +56,7 @@ pub const Term = struct {
     current_fg_rgb: ?[3]u8 = null,
     current_bg_rgb: ?[3]u8 = null,
 
-    // TrueColor sparse maps (keyed by cell index)
+    // TrueColor sparse maps (keyed by physical cell index)
     fg_rgb_map: std.AutoHashMap(usize, [3]u8),
     bg_rgb_map: std.AutoHashMap(usize, [3]u8),
 
@@ -69,6 +71,9 @@ pub const Term = struct {
         const cells = try allocator.alloc(Cell, total);
         @memset(cells, Cell{});
 
+        const row_map = try allocator.alloc(u32, rows);
+        for (0..rows) |i| row_map[i] = @intCast(i);
+
         const dirty = try std.DynamicBitSet.initEmpty(allocator, total);
 
         return Self{
@@ -76,6 +81,7 @@ pub const Term = struct {
             .cols = cols,
             .rows = rows,
             .cells = cells,
+            .row_map = row_map,
             .dirty = dirty,
             .scroll_bottom = rows -| 1,
             .fg_rgb_map = std.AutoHashMap(usize, [3]u8).init(allocator),
@@ -85,8 +91,10 @@ pub const Term = struct {
 
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.cells);
+        self.allocator.free(self.row_map);
         self.dirty.deinit();
         if (self.alt_cells) |alt| self.allocator.free(alt);
+        if (self.alt_row_map) |arm| self.allocator.free(arm);
         if (self.alt_dirty != null) {
             self.alt_dirty.?.deinit();
         }
@@ -94,8 +102,14 @@ pub const Term = struct {
         self.bg_rgb_map.deinit();
     }
 
-    fn cellIndex(self: *const Self, x: u32, y: u32) usize {
-        return @as(usize, y) * @as(usize, self.cols) + @as(usize, x);
+    /// Physical cell index via row_map indirection
+    inline fn cellIndex(self: *const Self, x: u32, y: u32) usize {
+        return @as(usize, self.row_map[y]) * @as(usize, self.cols) + @as(usize, x);
+    }
+
+    /// Logical index for dirty bitmap (no row_map)
+    inline fn dirtyIndex(_: *const Self, x: u32, y: u32, cols: u32) usize {
+        return @as(usize, y) * @as(usize, cols) + @as(usize, x);
     }
 
     pub fn getCell(self: *const Self, x: u32, y: u32) *const Cell {
@@ -110,21 +124,21 @@ pub const Term = struct {
 
     pub fn setCell(self: *Self, x: u32, y: u32, cell: Cell) void {
         if (x >= self.cols or y >= self.rows) return;
-        const idx = self.cellIndex(x, y);
-        self.cells[idx] = cell;
-        self.dirty.set(idx);
+        const phys_idx = self.cellIndex(x, y);
+        self.cells[phys_idx] = cell;
+        self.dirty.set(self.dirtyIndex(x, y, self.cols));
         // Clear stale TrueColor overrides (skip hash lookup when maps are empty)
-        if (self.fg_rgb_map.count() > 0) _ = self.fg_rgb_map.remove(idx);
-        if (self.bg_rgb_map.count() > 0) _ = self.bg_rgb_map.remove(idx);
+        if (self.fg_rgb_map.count() > 0) _ = self.fg_rgb_map.remove(phys_idx);
+        if (self.bg_rgb_map.count() > 0) _ = self.bg_rgb_map.remove(phys_idx);
     }
 
     pub fn isDirty(self: *const Self, x: u32, y: u32) bool {
-        return self.dirty.isSet(self.cellIndex(x, y));
+        return self.dirty.isSet(self.dirtyIndex(x, y, self.cols));
     }
 
     pub fn markDirty(self: *Self, x: u32, y: u32) void {
         if (x >= self.cols or y >= self.rows) return;
-        self.dirty.set(self.cellIndex(x, y));
+        self.dirty.set(self.dirtyIndex(x, y, self.cols));
     }
 
     pub fn hasDirty(self: *const Self) bool {
@@ -149,26 +163,22 @@ pub const Term = struct {
         const end_bit = end % bit_size;
 
         if (word_idx == word_end - 1) {
-            // Row fits in a single word
             var mask = masks[word_idx];
             if (start_bit > 0) mask &= ~((@as(usize, 1) << start_bit) - 1);
             if (end_bit > 0) mask &= (@as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(end_bit))) - 1;
             return mask != 0;
         }
 
-        // First partial word
         if (start_bit > 0) {
             if (masks[word_idx] & ~((@as(usize, 1) << start_bit) - 1) != 0) return true;
             word_idx += 1;
         }
 
-        // Full words in the middle
         const full_end = if (end_bit > 0) word_end - 1 else word_end;
         for (masks[word_idx..full_end]) |m| {
             if (m != 0) return true;
         }
 
-        // Last partial word
         if (end_bit > 0) {
             if (masks[word_end - 1] & ((@as(usize, 1) << @as(std.math.Log2Int(usize), @intCast(end_bit))) - 1) != 0) return true;
         }
@@ -189,24 +199,30 @@ pub const Term = struct {
         const region_height = bot - top + 1;
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
-        // Move rows up
-        const dst_start = top * cols;
-        const src_start = (top + shift) * cols;
-        const copy_len = (region_height - shift) * cols;
-        if (copy_len > 0) {
-            std.mem.copyForwards(Cell, self.cells[dst_start .. dst_start + copy_len], self.cells[src_start .. src_start + copy_len]);
+        // Save physical row indices of rows being recycled
+        var saved: [256]u32 = undefined;
+        for (0..shift) |s| {
+            const phys = self.row_map[top + s];
+            saved[s] = phys;
+            // Clear physical row cells
+            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
+            // Clear RGB entries for recycled row
+            self.clearRgbRow(phys);
         }
 
-        // Clear bottom n rows in scroll region
-        const clear_start = (bot + 1 - shift) * cols;
-        const clear_end = (bot + 1) * cols;
-        @memset(self.cells[clear_start..clear_end], Cell{});
+        // Shift row_map entries up
+        const remaining = region_height - shift;
+        if (remaining > 0) {
+            std.mem.copyForwards(u32, self.row_map[top .. top + remaining], self.row_map[top + shift .. top + shift + remaining]);
+        }
 
-        // Mark entire scroll region dirty
+        // Put recycled rows at bottom
+        for (0..shift) |s| {
+            self.row_map[bot + 1 - shift + s] = saved[s];
+        }
+
+        // Mark entire scroll region dirty (logical)
         self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
-
-        // Shift TrueColor entries to match scrolled rows
-        self.shiftRgbMapUp(shift);
     }
 
     pub fn scrollDown(self: *Self, n: u32) void {
@@ -217,24 +233,28 @@ pub const Term = struct {
         const region_height = bot - top + 1;
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
-        // Move rows down (copy backwards to avoid overlap)
-        const copy_rows = region_height - shift;
-        if (copy_rows > 0) {
-            const src_start = top * cols;
-            const dst_start = (top + shift) * cols;
-            std.mem.copyBackwards(Cell, self.cells[dst_start .. dst_start + copy_rows * cols], self.cells[src_start .. src_start + copy_rows * cols]);
+        // Save physical row indices of rows being recycled (from bottom)
+        var saved: [256]u32 = undefined;
+        for (0..shift) |s| {
+            const phys = self.row_map[bot - s];
+            saved[s] = phys;
+            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
+            self.clearRgbRow(phys);
         }
 
-        // Clear top n rows in scroll region
-        const clear_start = top * cols;
-        const clear_end = (top + shift) * cols;
-        @memset(self.cells[clear_start..clear_end], Cell{});
+        // Shift row_map entries down
+        const remaining = region_height - shift;
+        if (remaining > 0) {
+            std.mem.copyBackwards(u32, self.row_map[top + shift .. top + shift + remaining], self.row_map[top .. top + remaining]);
+        }
 
-        // Mark entire scroll region dirty
+        // Put recycled rows at top
+        for (0..shift) |s| {
+            self.row_map[top + s] = saved[shift - 1 - s];
+        }
+
+        // Mark entire scroll region dirty (logical)
         self.dirty.setRangeValue(.{ .start = top * cols, .end = (bot + 1) * cols }, true);
-
-        // Shift TrueColor entries to match scrolled rows
-        self.shiftRgbMapDown(shift);
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
@@ -242,17 +262,23 @@ pub const Term = struct {
         const new_cells = try self.allocator.alloc(Cell, new_total);
         @memset(new_cells, Cell{});
 
-        // Copy existing content that fits
+        const new_row_map = try self.allocator.alloc(u32, new_rows);
+        for (0..new_rows) |i| new_row_map[i] = @intCast(i);
+
+        // Copy existing content (logical row order → identity physical order)
         const copy_cols: usize = @min(self.cols, new_cols);
         const copy_rows: usize = @min(self.rows, new_rows);
         for (0..copy_rows) |y| {
-            const old_start = y * @as(usize, self.cols);
+            const old_phys = self.row_map[y];
+            const old_start = old_phys * @as(usize, self.cols);
             const new_start = y * @as(usize, new_cols);
             @memcpy(new_cells[new_start .. new_start + copy_cols], self.cells[old_start .. old_start + copy_cols]);
         }
 
         self.allocator.free(self.cells);
+        self.allocator.free(self.row_map);
         self.cells = new_cells;
+        self.row_map = new_row_map;
 
         // Resize dirty bitmap
         self.dirty.deinit();
@@ -267,7 +293,7 @@ pub const Term = struct {
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
-        // Clear TrueColor maps (indices are invalidated by resize)
+        // Clear TrueColor maps (physical indices invalidated)
         self.clearAllRgb();
 
         // Resize alt buffer if allocated
@@ -275,6 +301,11 @@ pub const Term = struct {
             self.allocator.free(alt);
             self.alt_cells = try self.allocator.alloc(Cell, new_total);
             @memset(self.alt_cells.?, Cell{});
+        }
+        if (self.alt_row_map) |arm| {
+            self.allocator.free(arm);
+            self.alt_row_map = try self.allocator.alloc(u32, new_rows);
+            for (0..new_rows) |i| self.alt_row_map.?[i] = @intCast(i);
         }
         if (self.alt_dirty) |*ad| {
             ad.deinit();
@@ -288,26 +319,35 @@ pub const Term = struct {
         const total = @as(usize, self.cols) * @as(usize, self.rows);
 
         if (alt) {
-            // Switch to alt screen
             // Lazy-allocate alt buffer
             if (self.alt_cells == null) {
                 self.alt_cells = try self.allocator.alloc(Cell, total);
                 @memset(self.alt_cells.?, Cell{});
+                self.alt_row_map = try self.allocator.alloc(u32, self.rows);
+                for (0..self.rows) |i| self.alt_row_map.?[i] = @intCast(i);
                 self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, total);
             }
             // Swap main <-> alt
-            const tmp = self.cells;
+            const tmp_cells = self.cells;
             self.cells = self.alt_cells.?;
-            self.alt_cells = tmp;
+            self.alt_cells = tmp_cells;
+
+            const tmp_rm = self.row_map;
+            self.row_map = self.alt_row_map.?;
+            self.alt_row_map = tmp_rm;
 
             const tmp_dirty = self.dirty;
             self.dirty = self.alt_dirty.?;
             self.alt_dirty = tmp_dirty;
         } else {
-            // Switch back to main screen
-            const tmp = self.cells;
+            // Swap back
+            const tmp_cells = self.cells;
             self.cells = self.alt_cells.?;
-            self.alt_cells = tmp;
+            self.alt_cells = tmp_cells;
+
+            const tmp_rm = self.row_map;
+            self.row_map = self.alt_row_map.?;
+            self.alt_row_map = tmp_rm;
 
             const tmp_dirty = self.dirty;
             self.dirty = self.alt_dirty.?;
@@ -315,7 +355,6 @@ pub const Term = struct {
         }
 
         self.is_alt_screen = alt;
-        // Mark all dirty on screen switch
         self.dirty.setRangeValue(.{ .start = 0, .end = total }, true);
     }
 
@@ -332,52 +371,71 @@ pub const Term = struct {
     }
 
     /// Fix wide character boundaries at the edges of an erase/delete range.
-    /// If the range starts on a wide_dummy, clear the wide cell to the left.
-    /// If the range ends on a wide cell, clear the dummy to the right.
-    fn fixWideBoundaries(self: *Self, start: usize, end: usize) void {
-        if (start > 0 and start < self.cells.len) {
-            if (self.cells[start].attrs.wide_dummy) {
-                self.cells[start - 1] = Cell{};
-                self.dirty.set(start - 1);
+    fn fixWideBoundaries(self: *Self, logical_start: usize, logical_end: usize) void {
+        const cols: usize = self.cols;
+        // Check start: if it's a wide_dummy, clear the wide cell to its left
+        if (logical_start > 0 and logical_start < @as(usize, self.rows) * cols) {
+            const sy = @as(u32, @intCast(logical_start / cols));
+            const sx = @as(u32, @intCast(logical_start % cols));
+            if (self.getCell(sx, sy).attrs.wide_dummy and sx > 0) {
+                self.setCell(sx - 1, sy, Cell{});
             }
         }
-        if (end < self.cells.len) {
-            if (self.cells[end].attrs.wide_dummy) {
-                self.cells[end] = Cell{};
-                self.dirty.set(end);
+        // Check end: if it points at a wide_dummy, clear it
+        if (logical_end < @as(usize, self.rows) * cols) {
+            const ey = @as(u32, @intCast(logical_end / cols));
+            const ex = @as(u32, @intCast(logical_end % cols));
+            if (self.getCell(ex, ey).attrs.wide_dummy) {
+                self.setCell(ex, ey, Cell{});
             }
         }
-        if (end > 0 and end <= self.cells.len) {
-            if (self.cells[end - 1].attrs.wide) {
-                self.cells[end - 1] = Cell{};
-                self.dirty.set(end - 1);
+        // Check end-1: if last cell in range is wide, clear the dummy after it
+        if (logical_end > 0 and logical_end <= @as(usize, self.rows) * cols) {
+            const ly = @as(u32, @intCast((logical_end - 1) / cols));
+            const lx = @as(u32, @intCast((logical_end - 1) % cols));
+            if (self.getCell(lx, ly).attrs.wide) {
+                const dx = lx + 1;
+                if (dx < self.cols) self.setCell(dx, ly, Cell{});
             }
         }
     }
 
     pub fn eraseDisplay(self: *Self, mode: u8) void {
+        const cols: usize = self.cols;
         switch (mode) {
             0 => {
-                // Erase below cursor (from cursor to end)
-                const start = self.cellIndex(self.cursor_x, self.cursor_y);
-                const total = @as(usize, self.cols) * @as(usize, self.rows);
-                self.fixWideBoundaries(start, total);
-                @memset(self.cells[start..total], Cell{});
-                self.dirty.setRangeValue(.{ .start = start, .end = total }, true);
-                self.clearRgbRange(start, total);
+                const start_x = self.cursor_x;
+                const start_y = self.cursor_y;
+                self.fixWideBoundaries(start_y * cols + start_x, @as(usize, self.rows) * cols);
+                // Clear from cursor to end
+                for (start_y..self.rows) |y| {
+                    const phys = self.row_map[y];
+                    const from: usize = if (y == start_y) start_x else 0;
+                    @memset(self.cells[phys * cols + from .. (phys + 1) * cols], Cell{});
+                }
+                const logical_start = start_y * cols + start_x;
+                const total = @as(usize, self.rows) * cols;
+                self.dirty.setRangeValue(.{ .start = logical_start, .end = total }, true);
+                self.clearRgbRange(start_y, self.rows, 0);
             },
             1 => {
-                // Erase above cursor (from start to cursor inclusive)
-                const end = self.cellIndex(self.cursor_x, self.cursor_y) + 1;
-                self.fixWideBoundaries(0, end);
-                @memset(self.cells[0..end], Cell{});
-                self.dirty.setRangeValue(.{ .start = 0, .end = end }, true);
-                self.clearRgbRange(0, end);
+                const end_x = self.cursor_x;
+                const end_y = self.cursor_y;
+                self.fixWideBoundaries(0, end_y * cols + end_x + 1);
+                // Clear from start to cursor inclusive
+                for (0..end_y + 1) |y| {
+                    const phys = self.row_map[y];
+                    const to: usize = if (y == end_y) end_x + 1 else cols;
+                    @memset(self.cells[phys * cols .. phys * cols + to], Cell{});
+                }
+                self.dirty.setRangeValue(.{ .start = 0, .end = end_y * cols + end_x + 1 }, true);
+                self.clearRgbRange(0, end_y + 1, 0);
             },
             2, 3 => {
-                // Erase all
+                // Erase all — reset row_map to identity and memset entire array
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
                 @memset(self.cells[0..total], Cell{});
+                for (0..self.rows) |i| self.row_map[i] = @intCast(i);
                 self.dirty.setRangeValue(.{ .start = 0, .end = total }, true);
                 self.clearAllRgb();
             },
@@ -386,34 +444,30 @@ pub const Term = struct {
     }
 
     pub fn eraseLine(self: *Self, mode: u8) void {
-        const y: usize = self.cursor_y;
+        const y = self.cursor_y;
         const cols: usize = self.cols;
-        const row_start = y * cols;
+        const phys = self.row_map[y];
+        const row_start = @as(usize, y) * cols;
 
         switch (mode) {
             0 => {
-                // Erase right of cursor (inclusive)
-                const start = row_start + @as(usize, self.cursor_x);
-                const end = row_start + cols;
-                self.fixWideBoundaries(start, end);
-                @memset(self.cells[start..end], Cell{});
-                self.dirty.setRangeValue(.{ .start = start, .end = end }, true);
-                self.clearRgbRange(start, end);
+                const cx: usize = self.cursor_x;
+                self.fixWideBoundaries(row_start + cx, row_start + cols);
+                @memset(self.cells[phys * cols + cx .. (phys + 1) * cols], Cell{});
+                self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cols }, true);
+                self.clearRgbPhysRange(phys * cols + cx, (phys + 1) * cols);
             },
             1 => {
-                // Erase left of cursor (inclusive)
-                const end = row_start + @as(usize, self.cursor_x) + 1;
-                self.fixWideBoundaries(row_start, end);
-                @memset(self.cells[row_start..end], Cell{});
-                self.dirty.setRangeValue(.{ .start = row_start, .end = end }, true);
-                self.clearRgbRange(row_start, end);
+                const cx: usize = self.cursor_x;
+                self.fixWideBoundaries(row_start, row_start + cx + 1);
+                @memset(self.cells[phys * cols .. phys * cols + cx + 1], Cell{});
+                self.dirty.setRangeValue(.{ .start = row_start, .end = row_start + cx + 1 }, true);
+                self.clearRgbPhysRange(phys * cols, phys * cols + cx + 1);
             },
             2 => {
-                // Erase entire line
-                const end = row_start + cols;
-                @memset(self.cells[row_start..end], Cell{});
-                self.dirty.setRangeValue(.{ .start = row_start, .end = end }, true);
-                self.clearRgbRange(row_start, end);
+                @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
+                self.dirty.setRangeValue(.{ .start = row_start, .end = row_start + cols }, true);
+                self.clearRgbPhysRange(phys * cols, (phys + 1) * cols);
             },
             else => {},
         }
@@ -442,125 +496,163 @@ pub const Term = struct {
 
     pub fn insertLines(self: *Self, n: u32) void {
         if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
-        const count = @min(n, self.scroll_bottom - self.cursor_y + 1);
+        const count: usize = @min(n, self.scroll_bottom - self.cursor_y + 1);
         if (count == 0) return;
         const cols: usize = self.cols;
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        // Shift lines down within [cursor_y, scroll_bottom]
-        const copy_rows = bot - cy + 1 - count;
-        if (copy_rows > 0) {
-            const src_start = cy * cols;
-            const dst_start = (cy + count) * cols;
-            std.mem.copyBackwards(Cell, self.cells[dst_start .. dst_start + copy_rows * cols], self.cells[src_start .. src_start + copy_rows * cols]);
+        // Save physical rows being pushed off the bottom
+        var saved: [256]u32 = undefined;
+        for (0..count) |s| {
+            const phys = self.row_map[bot - s];
+            saved[s] = phys;
+            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
+            self.clearRgbRow(phys);
         }
 
-        // Clear inserted lines
-        const clear_start = cy * cols;
-        const clear_end = (cy + count) * cols;
-        @memset(self.cells[clear_start..clear_end], Cell{});
+        // Shift row_map down within [cy, bot]
+        const keep = bot - cy + 1 - count;
+        if (keep > 0) {
+            std.mem.copyBackwards(u32, self.row_map[cy + count .. cy + count + keep], self.row_map[cy .. cy + keep]);
+        }
 
-        // Mark scroll region dirty
+        // Put cleared rows at cy
+        for (0..count) |s| {
+            self.row_map[cy + s] = saved[count - 1 - s];
+        }
+
         self.dirty.setRangeValue(.{ .start = cy * cols, .end = (bot + 1) * cols }, true);
-        self.clearAllRgb();
     }
 
     pub fn deleteLines(self: *Self, n: u32) void {
         if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
-        const count = @min(n, self.scroll_bottom - self.cursor_y + 1);
+        const count: usize = @min(n, self.scroll_bottom - self.cursor_y + 1);
         if (count == 0) return;
         const cols: usize = self.cols;
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        // Shift lines up within [cursor_y, scroll_bottom]
-        const copy_rows = bot - cy + 1 - count;
-        if (copy_rows > 0) {
-            const src_start = (cy + count) * cols;
-            const dst_start = cy * cols;
-            std.mem.copyForwards(Cell, self.cells[dst_start .. dst_start + copy_rows * cols], self.cells[src_start .. src_start + copy_rows * cols]);
+        // Save physical rows being deleted
+        var saved: [256]u32 = undefined;
+        for (0..count) |s| {
+            const phys = self.row_map[cy + s];
+            saved[s] = phys;
+            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
+            self.clearRgbRow(phys);
         }
 
-        // Clear bottom lines in region
-        const clear_start = (bot + 1 - count) * cols;
-        const clear_end = (bot + 1) * cols;
-        @memset(self.cells[clear_start..clear_end], Cell{});
+        // Shift row_map up within [cy, bot]
+        const keep = bot - cy + 1 - count;
+        if (keep > 0) {
+            std.mem.copyForwards(u32, self.row_map[cy .. cy + keep], self.row_map[cy + count .. cy + count + keep]);
+        }
 
-        // Mark scroll region dirty
+        // Put cleared rows at bottom
+        for (0..count) |s| {
+            self.row_map[bot + 1 - count + s] = saved[s];
+        }
+
         self.dirty.setRangeValue(.{ .start = cy * cols, .end = (bot + 1) * cols }, true);
-        self.clearAllRgb();
     }
 
     pub fn deleteChars(self: *Self, n: u32) void {
         if (self.cursor_x >= self.cols or self.cursor_y >= self.rows) return;
         const cols: usize = self.cols;
         const cx: usize = self.cursor_x;
-        const cy: usize = self.cursor_y;
+        const phys = self.row_map[self.cursor_y];
         const remaining = cols - cx;
         const count = @min(n, @as(u32, @intCast(remaining)));
-        const row_start = cy * cols;
+        const row_base = phys * cols;
+        const logical_row_start = @as(usize, self.cursor_y) * cols;
 
-        self.fixWideBoundaries(row_start + cx, row_start + cx + count);
+        // Fix wide boundaries using logical coords
+        self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
 
-        // Shift characters left
+        // Shift characters left (physical)
         const copy_len = remaining - count;
         if (copy_len > 0) {
-            std.mem.copyForwards(Cell, self.cells[row_start + cx .. row_start + cx + copy_len], self.cells[row_start + cx + count .. row_start + cx + count + copy_len]);
+            std.mem.copyForwards(Cell, self.cells[row_base + cx .. row_base + cx + copy_len], self.cells[row_base + cx + count .. row_base + cx + count + copy_len]);
         }
 
         // Clear rightmost characters
-        const clear_start = row_start + cols - count;
-        @memset(self.cells[clear_start .. row_start + cols], Cell{});
+        @memset(self.cells[row_base + cols - count .. row_base + cols], Cell{});
 
-        self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cols }, true);
-        self.clearRgbRange(row_start + cx, row_start + cols);
+        self.dirty.setRangeValue(.{ .start = logical_row_start + cx, .end = logical_row_start + cols }, true);
+        self.clearRgbPhysRange(row_base + cx, row_base + cols);
     }
 
     pub fn insertChars(self: *Self, n: u32) void {
         if (self.cursor_x >= self.cols or self.cursor_y >= self.rows) return;
         const cols: usize = self.cols;
         const cx: usize = self.cursor_x;
-        const cy: usize = self.cursor_y;
+        const phys = self.row_map[self.cursor_y];
         const remaining = cols - cx;
         const count = @min(n, @as(u32, @intCast(remaining)));
-        const row_start = cy * cols;
+        const row_base = phys * cols;
+        const logical_row_start = @as(usize, self.cursor_y) * cols;
 
-        // Shift characters right
+        // Shift characters right (physical)
         const copy_len = remaining - count;
         if (copy_len > 0) {
-            std.mem.copyBackwards(Cell, self.cells[row_start + cx + count .. row_start + cx + count + copy_len], self.cells[row_start + cx .. row_start + cx + copy_len]);
+            std.mem.copyBackwards(Cell, self.cells[row_base + cx + count .. row_base + cx + count + copy_len], self.cells[row_base + cx .. row_base + cx + copy_len]);
         }
 
         // Clear inserted characters
-        @memset(self.cells[row_start + cx .. row_start + cx + count], Cell{});
+        @memset(self.cells[row_base + cx .. row_base + cx + count], Cell{});
 
-        self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cols }, true);
-        self.clearRgbRange(row_start + cx, row_start + cols);
+        self.dirty.setRangeValue(.{ .start = logical_row_start + cx, .end = logical_row_start + cols }, true);
+        self.clearRgbPhysRange(row_base + cx, row_base + cols);
     }
 
     pub fn eraseChars(self: *Self, n: u32) void {
         if (self.cursor_x >= self.cols or self.cursor_y >= self.rows) return;
         const cols: usize = self.cols;
         const cx: usize = self.cursor_x;
-        const cy: usize = self.cursor_y;
+        const phys = self.row_map[self.cursor_y];
         const remaining = cols - cx;
         const count: usize = @min(n, @as(u32, @intCast(remaining)));
-        const row_start = cy * cols;
+        const row_base = phys * cols;
+        const logical_row_start = @as(usize, self.cursor_y) * cols;
 
-        @memset(self.cells[row_start + cx .. row_start + cx + count], Cell{});
+        @memset(self.cells[row_base + cx .. row_base + cx + count], Cell{});
 
-        self.dirty.setRangeValue(.{ .start = row_start + cx, .end = row_start + cx + count }, true);
-        self.clearRgbRange(row_start + cx, row_start + cx + count);
+        self.dirty.setRangeValue(.{ .start = logical_row_start + cx, .end = logical_row_start + cx + count }, true);
+        self.clearRgbPhysRange(row_base + cx, row_base + cx + count);
     }
 
-    /// Remove TrueColor entries for cell indices in [start, end).
-    fn clearRgbRange(self: *Self, start: usize, end: usize) void {
+    /// Clear RGB entries for a physical row
+    fn clearRgbRow(self: *Self, phys_row: usize) void {
         if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
-        var idx = start;
-        while (idx < end) : (idx += 1) {
+        const cols: usize = self.cols;
+        const start = phys_row * cols;
+        const end = start + cols;
+        for (start..end) |idx| {
             _ = self.fg_rgb_map.remove(idx);
             _ = self.bg_rgb_map.remove(idx);
+        }
+    }
+
+    /// Clear RGB entries for a physical index range
+    fn clearRgbPhysRange(self: *Self, start: usize, end: usize) void {
+        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
+        for (start..end) |idx| {
+            _ = self.fg_rgb_map.remove(idx);
+            _ = self.bg_rgb_map.remove(idx);
+        }
+    }
+
+    /// Clear RGB entries for logical rows [y_start, y_end)
+    fn clearRgbRange(self: *Self, y_start: usize, y_end: usize, _: usize) void {
+        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
+        const cols: usize = self.cols;
+        for (y_start..y_end) |y| {
+            const phys = self.row_map[y];
+            for (0..cols) |x| {
+                const idx = phys * cols + x;
+                _ = self.fg_rgb_map.remove(idx);
+                _ = self.bg_rgb_map.remove(idx);
+            }
         }
     }
 
@@ -570,58 +662,7 @@ pub const Term = struct {
         self.bg_rgb_map.clearRetainingCapacity();
     }
 
-    /// Shift RGB map entries up by `shift` rows within scroll region.
-    fn shiftRgbMapUp(self: *Self, shift: usize) void {
-        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
-        shiftOneRgbMap(&self.fg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, true);
-        shiftOneRgbMap(&self.bg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, true);
-    }
-
-    /// Shift RGB map entries down by `shift` rows within scroll region.
-    fn shiftRgbMapDown(self: *Self, shift: usize) void {
-        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
-        shiftOneRgbMap(&self.fg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, false);
-        shiftOneRgbMap(&self.bg_rgb_map, self.allocator, self.cols, self.scroll_top, self.scroll_bottom, shift, false);
-    }
-
-    fn shiftOneRgbMap(
-        map: *std.AutoHashMap(usize, [3]u8),
-        alloc: Allocator,
-        cols: u32,
-        scroll_top: u32,
-        scroll_bottom: u32,
-        shift: usize,
-        comptime up: bool,
-    ) void {
-        const cols_z: usize = cols;
-        const top: usize = scroll_top;
-        const bot: usize = scroll_bottom;
-
-        var new_map = std.AutoHashMap(usize, [3]u8).init(alloc);
-        var iter = map.iterator();
-        while (iter.next()) |entry| {
-            const idx = entry.key_ptr.*;
-            const row = idx / cols_z;
-            const col = idx % cols_z;
-
-            if (row < top or row > bot) {
-                // Outside scroll region: keep
-                new_map.put(idx, entry.value_ptr.*) catch {};
-            } else if (up) {
-                if (row >= top + shift) {
-                    new_map.put((row - shift) * cols_z + col, entry.value_ptr.*) catch {};
-                }
-            } else {
-                if (row + shift <= bot) {
-                    new_map.put((row + shift) * cols_z + col, entry.value_ptr.*) catch {};
-                }
-            }
-        }
-        map.deinit();
-        map.* = new_map;
-    }
-
-    // TrueColor helpers
+    // TrueColor helpers (keyed by physical index)
     pub fn setFgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) !void {
         try self.fg_rgb_map.put(self.cellIndex(x, y), rgb);
     }
@@ -651,257 +692,90 @@ test "Term: init creates grid with default cells" {
     try testing.expectEqual(@as(u8, 7), cell.fg);
 }
 
-test "Term: setCell marks dirty" {
+test "Term: setCell / getCell roundtrip" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
-    try testing.expect(!term.isDirty(5, 3));
-    term.setCell(5, 3, .{ .char = 'X', .fg = 1, .bg = 0 });
-    try testing.expect(term.isDirty(5, 3));
+    term.setCell(5, 3, .{ .char = 'X', .fg = 1, .bg = 2 });
+    const cell = term.getCell(5, 3);
+    try testing.expectEqual(@as(u21, 'X'), cell.char);
+    try testing.expectEqual(@as(u8, 1), cell.fg);
+    try testing.expectEqual(@as(u8, 2), cell.bg);
+}
+
+test "Term: scrollUp moves rows via row_map" {
+    var term = try Term.init(testing.allocator, 5, 4);
+    defer term.deinit();
+    // Write row identifiers
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(0, 1, .{ .char = 'B' });
+    term.setCell(0, 2, .{ .char = 'C' });
+    term.setCell(0, 3, .{ .char = 'D' });
+    term.scroll_bottom = 3;
+    term.scrollUp(1);
+    // Row 0 should now be old row 1
+    try testing.expectEqual(@as(u21, 'B'), term.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'C'), term.getCell(0, 1).char);
+    try testing.expectEqual(@as(u21, 'D'), term.getCell(0, 2).char);
+    // New bottom row should be cleared
+    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 3).char);
+}
+
+test "Term: scrollDown moves rows via row_map" {
+    var term = try Term.init(testing.allocator, 5, 4);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(0, 1, .{ .char = 'B' });
+    term.setCell(0, 2, .{ .char = 'C' });
+    term.setCell(0, 3, .{ .char = 'D' });
+    term.scroll_bottom = 3;
+    term.scrollDown(1);
+    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'A'), term.getCell(0, 1).char);
+    try testing.expectEqual(@as(u21, 'B'), term.getCell(0, 2).char);
+    try testing.expectEqual(@as(u21, 'C'), term.getCell(0, 3).char);
 }
 
 test "Term: clearDirty resets all bits" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
-    term.setCell(0, 0, .{ .char = 'A' });
-    term.clearDirty();
-    try testing.expect(!term.isDirty(0, 0));
-}
-
-test "Term: scrollUp moves rows" {
-    var term = try Term.init(testing.allocator, 80, 3);
-    defer term.deinit();
-    term.setCell(0, 0, .{ .char = 'A' });
-    term.setCell(0, 1, .{ .char = 'B' });
-    term.setCell(0, 2, .{ .char = 'C' });
-    term.scrollUp(1);
-    try testing.expectEqual(@as(u21, 'B'), term.getCell(0, 0).char);
-    try testing.expectEqual(@as(u21, 'C'), term.getCell(0, 1).char);
-    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 2).char);
-}
-
-test "Term: alternate screen switch preserves main" {
-    var term = try Term.init(testing.allocator, 80, 24);
-    defer term.deinit();
-    term.setCell(0, 0, .{ .char = 'M' });
-    try term.switchScreen(true);
-    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).char);
-    term.setCell(0, 0, .{ .char = 'A' });
-    try term.switchScreen(false);
-    try testing.expectEqual(@as(u21, 'M'), term.getCell(0, 0).char);
-}
-
-test "Term: resize changes dimensions" {
-    var term = try Term.init(testing.allocator, 80, 24);
-    defer term.deinit();
-    try term.resize(120, 40);
-    try testing.expectEqual(@as(u32, 120), term.cols);
-    try testing.expectEqual(@as(u32, 40), term.rows);
-}
-
-test "Term: moveCursorTo clamps to bounds" {
-    var term = try Term.init(testing.allocator, 80, 24);
-    defer term.deinit();
-    term.moveCursorTo(100, 50);
-    try testing.expectEqual(@as(u32, 79), term.cursor_x);
-    try testing.expectEqual(@as(u32, 23), term.cursor_y);
-}
-
-test "Term: eraseDisplay clears all cells" {
-    var term = try Term.init(testing.allocator, 80, 24);
-    defer term.deinit();
     term.setCell(5, 5, .{ .char = 'X' });
-    term.eraseDisplay(2);
-    try testing.expectEqual(@as(u21, ' '), term.getCell(5, 5).char);
+    try testing.expect(term.hasDirty());
+    term.clearDirty();
+    try testing.expect(!term.hasDirty());
 }
 
-test "Term: insertNewline scrolls at bottom" {
-    var term = try Term.init(testing.allocator, 80, 3);
+test "Term: eraseDisplay 2 resets row_map to identity" {
+    var term = try Term.init(testing.allocator, 5, 4);
     defer term.deinit();
     term.setCell(0, 0, .{ .char = 'A' });
-    term.setCell(0, 1, .{ .char = 'B' });
-    term.setCell(0, 2, .{ .char = 'C' });
-    term.cursor_y = 2;
-    term.insertNewline();
-    // Row 0 should now have 'B' (scrolled up)
-    try testing.expectEqual(@as(u21, 'B'), term.getCell(0, 0).char);
-    try testing.expectEqual(@as(u21, 'C'), term.getCell(0, 1).char);
-    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 2).char);
-    try testing.expectEqual(@as(u32, 2), term.cursor_y);
-}
-
-test "Term: resize preserves existing content" {
-    var term = try Term.init(testing.allocator, 10, 5);
-    defer term.deinit();
-    term.setCell(3, 2, .{ .char = 'Z' });
-    try term.resize(20, 10);
-    try testing.expectEqual(@as(u21, 'Z'), term.getCell(3, 2).char);
-}
-
-test "Term: scrollUp within scroll region" {
-    var term = try Term.init(testing.allocator, 80, 5);
-    defer term.deinit();
-    // Set content in all rows
-    term.setCell(0, 0, .{ .char = '0' });
-    term.setCell(0, 1, .{ .char = '1' });
-    term.setCell(0, 2, .{ .char = '2' });
-    term.setCell(0, 3, .{ .char = '3' });
-    term.setCell(0, 4, .{ .char = '4' });
-    // Set scroll region to rows 1..3
-    term.setScrollRegion(1, 3);
-    term.scrollUp(1);
-    // Row 0 unchanged
-    try testing.expectEqual(@as(u21, '0'), term.getCell(0, 0).char);
-    // Rows 1-3 shifted up within region
-    try testing.expectEqual(@as(u21, '2'), term.getCell(0, 1).char);
-    try testing.expectEqual(@as(u21, '3'), term.getCell(0, 2).char);
-    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 3).char);
-    // Row 4 unchanged
-    try testing.expectEqual(@as(u21, '4'), term.getCell(0, 4).char);
-}
-
-test "Term: scrollDown within scroll region" {
-    var term = try Term.init(testing.allocator, 80, 5);
-    defer term.deinit();
-    term.setCell(0, 0, .{ .char = '0' });
-    term.setCell(0, 1, .{ .char = '1' });
-    term.setCell(0, 2, .{ .char = '2' });
-    term.setCell(0, 3, .{ .char = '3' });
-    term.setCell(0, 4, .{ .char = '4' });
-    term.setScrollRegion(1, 3);
-    term.scrollDown(1);
-    try testing.expectEqual(@as(u21, '0'), term.getCell(0, 0).char);
-    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 1).char);
-    try testing.expectEqual(@as(u21, '1'), term.getCell(0, 2).char);
-    try testing.expectEqual(@as(u21, '2'), term.getCell(0, 3).char);
-    try testing.expectEqual(@as(u21, '4'), term.getCell(0, 4).char);
-}
-
-test "Term: eraseDisplay mode 0 (below cursor)" {
-    var term = try Term.init(testing.allocator, 10, 3);
-    defer term.deinit();
-    // Fill all cells
-    for (0..3) |y| {
-        for (0..10) |x| {
-            term.setCell(@intCast(x), @intCast(y), .{ .char = 'X' });
-        }
-    }
-    term.clearDirty();
-    term.moveCursorTo(5, 1);
-    term.eraseDisplay(0);
-    // Before cursor: still 'X'
-    try testing.expectEqual(@as(u21, 'X'), term.getCell(4, 1).char);
-    // At cursor: cleared
-    try testing.expectEqual(@as(u21, ' '), term.getCell(5, 1).char);
-    // After cursor: cleared
-    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 2).char);
-    // Row 0: untouched
-    try testing.expectEqual(@as(u21, 'X'), term.getCell(0, 0).char);
-}
-
-test "Term: eraseDisplay mode 1 (above cursor)" {
-    var term = try Term.init(testing.allocator, 10, 3);
-    defer term.deinit();
-    for (0..3) |y| {
-        for (0..10) |x| {
-            term.setCell(@intCast(x), @intCast(y), .{ .char = 'X' });
-        }
-    }
-    term.clearDirty();
-    term.moveCursorTo(5, 1);
-    term.eraseDisplay(1);
-    // At and before cursor: cleared
-    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).char);
-    try testing.expectEqual(@as(u21, ' '), term.getCell(5, 1).char);
-    // After cursor: still 'X'
-    try testing.expectEqual(@as(u21, 'X'), term.getCell(6, 1).char);
-    try testing.expectEqual(@as(u21, 'X'), term.getCell(0, 2).char);
-}
-
-test "Term: eraseLine all three modes" {
-    // Mode 0: right of cursor
-    {
-        var term = try Term.init(testing.allocator, 10, 1);
-        defer term.deinit();
-        for (0..10) |x| {
-            term.setCell(@intCast(x), 0, .{ .char = 'X' });
-        }
-        term.moveCursorTo(5, 0);
-        term.eraseLine(0);
-        try testing.expectEqual(@as(u21, 'X'), term.getCell(4, 0).char);
-        try testing.expectEqual(@as(u21, ' '), term.getCell(5, 0).char);
-        try testing.expectEqual(@as(u21, ' '), term.getCell(9, 0).char);
-    }
-    // Mode 1: left of cursor
-    {
-        var term = try Term.init(testing.allocator, 10, 1);
-        defer term.deinit();
-        for (0..10) |x| {
-            term.setCell(@intCast(x), 0, .{ .char = 'X' });
-        }
-        term.moveCursorTo(5, 0);
-        term.eraseLine(1);
-        try testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).char);
-        try testing.expectEqual(@as(u21, ' '), term.getCell(5, 0).char);
-        try testing.expectEqual(@as(u21, 'X'), term.getCell(6, 0).char);
-    }
-    // Mode 2: entire line
-    {
-        var term = try Term.init(testing.allocator, 10, 1);
-        defer term.deinit();
-        for (0..10) |x| {
-            term.setCell(@intCast(x), 0, .{ .char = 'X' });
-        }
-        term.moveCursorTo(5, 0);
-        term.eraseLine(2);
-        try testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).char);
-        try testing.expectEqual(@as(u21, ' '), term.getCell(9, 0).char);
+    term.scroll_bottom = 3;
+    term.scrollUp(1); // row_map is now shuffled
+    term.eraseDisplay(2);
+    // row_map should be identity
+    for (0..4) |i| {
+        try testing.expectEqual(@as(u32, @intCast(i)), term.row_map[i]);
     }
 }
 
-test "Term: TrueColor sparse map" {
+test "Term: isRowDirty returns false after clearDirty" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
-    // No RGB by default
-    try testing.expectEqual(@as(?[3]u8, null), term.getFgRgb(5, 5));
-    // Set and retrieve
-    try term.setFgRgb(5, 5, .{ 255, 128, 0 });
-    const rgb = term.getFgRgb(5, 5);
-    try testing.expect(rgb != null);
-    try testing.expectEqual(@as(u8, 255), rgb.?[0]);
-    try testing.expectEqual(@as(u8, 128), rgb.?[1]);
-    try testing.expectEqual(@as(u8, 0), rgb.?[2]);
-}
-
-test "Term: isRowDirty with clean and dirty rows" {
-    var term = try Term.init(testing.allocator, 80, 5);
-    defer term.deinit();
-    term.clearDirty();
-    // All rows should be clean
-    for (0..5) |y| {
-        try testing.expect(!term.isRowDirty(@intCast(y)));
-    }
-    // Mark one cell dirty in row 2
-    term.markDirty(10, 2);
-    try testing.expect(!term.isRowDirty(0));
-    try testing.expect(!term.isRowDirty(1));
+    term.setCell(10, 2, .{ .char = 'Z' });
     try testing.expect(term.isRowDirty(2));
-    try testing.expect(!term.isRowDirty(3));
-    try testing.expect(!term.isRowDirty(4));
+    term.clearDirty();
+    try testing.expect(!term.isRowDirty(2));
 }
 
-test "Term: isRowDirty with word-boundary-aligned columns" {
-    // 64 cols = exactly 1 word per row (on 64-bit)
-    var term = try Term.init(testing.allocator, 64, 3);
+test "Term: isDirty tracks per-cell" {
+    var term = try Term.init(testing.allocator, 5, 3);
     defer term.deinit();
     term.clearDirty();
-    try testing.expect(!term.isRowDirty(0));
     term.markDirty(0, 0);
-    try testing.expect(term.isRowDirty(0));
-    try testing.expect(!term.isRowDirty(1));
+    try testing.expect(term.isDirty(0, 0));
+    try testing.expect(!term.isDirty(1, 0));
 }
 
-test "Term: isRowDirty with small column count" {
-    // 5 cols — row fits in a single word, partial bits
+test "Term: isRowDirty single cell" {
     var term = try Term.init(testing.allocator, 5, 3);
     defer term.deinit();
     term.clearDirty();
@@ -911,30 +785,23 @@ test "Term: isRowDirty with small column count" {
     try testing.expect(!term.isRowDirty(2));
 }
 
-test "Term: isRowDirty spanning multiple words" {
-    // 200 cols — spans ~3+ words per row on 64-bit
-    var term = try Term.init(testing.allocator, 200, 2);
+test "Term: isRowDirty out of bounds" {
+    var term = try Term.init(testing.allocator, 5, 3);
     defer term.deinit();
     term.clearDirty();
-    try testing.expect(!term.isRowDirty(0));
-    try testing.expect(!term.isRowDirty(1));
-    // Dirty a cell in the middle of row 1 (will be in a middle word)
     term.markDirty(130, 1);
-    try testing.expect(!term.isRowDirty(0));
-    try testing.expect(term.isRowDirty(1));
+    try testing.expect(!term.isRowDirty(1));
 }
 
-test "Term: isRowDirty first and last cell" {
-    var term = try Term.init(testing.allocator, 80, 2);
+test "Term: hasDirty with single bit" {
+    var term = try Term.init(testing.allocator, 5, 3);
     defer term.deinit();
     term.clearDirty();
-    // First cell of row 0
+    try testing.expect(!term.hasDirty());
     term.markDirty(0, 0);
-    try testing.expect(term.isRowDirty(0));
-    try testing.expect(!term.isRowDirty(1));
+    try testing.expect(term.hasDirty());
     term.clearDirty();
-    // Last cell of row 1
-    term.markDirty(79, 1);
-    try testing.expect(!term.isRowDirty(0));
-    try testing.expect(term.isRowDirty(1));
+    try testing.expect(!term.hasDirty());
+    term.markDirty(4, 1);
+    try testing.expect(term.hasDirty());
 }

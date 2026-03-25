@@ -92,6 +92,7 @@ pub const X11Backend = struct {
     has_pending_xim: bool = false,
     suppress_xim_result: bool = false, // discard next XIM result (IME toggle key)
     pending_event: ?*c.xcb_generic_event_t = null, // event pushed back during coalescing
+    keyboard_initialized: bool = false, // XKB + XIM lazy init on first key
     paste_buf: PasteEvent = .{},
     screen_id: c_int = 0,
 
@@ -267,7 +268,15 @@ pub const X11Backend = struct {
 
     /// Must be called after init() when the struct is at its final address.
     /// Initializes XKB (keyboard layout) and XIM (input method).
+    /// Called lazily on first key event, not at startup.
     pub fn postInit(self: *Self) void {
+        _ = self;
+        // XKB + XIM now lazy-initialized on first key press
+    }
+
+    fn ensureKeyboardInit(self: *Self) void {
+        if (self.keyboard_initialized) return;
+        self.keyboard_initialized = true;
         self.initXkb();
         self.initXim();
     }
@@ -711,6 +720,7 @@ pub const X11Backend = struct {
         const event_type = event.*.response_type & 0x7F;
         switch (event_type) {
             c.XCB_KEY_PRESS => {
+                self.ensureKeyboardInit();
                 const key: *c.xcb_key_press_event_t = @ptrCast(@alignCast(event));
                 const mods = xcbStateToMods(key.*.state);
                 const evdev_keycode = key.*.detail -| 8;
