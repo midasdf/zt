@@ -56,10 +56,11 @@ pub const X11Backend = struct {
     window: c.xcb_window_t,
     gc: c.xcb_gcontext_t,
     screen: *c.xcb_screen_t,
-    // SHM
-    shm_seg: c.xcb_shm_seg_t,
-    shm_id: c_int,
-    buffer: []u8,
+    // SHM double buffer
+    shm_seg: [2]c.xcb_shm_seg_t,
+    shm_id: [2]c_int,
+    buffers: [2][]u8,
+    buf_idx: u1 = 0, // current back buffer index
     // Dimensions
     width: u32,
     height: u32,
@@ -210,24 +211,25 @@ pub const X11Backend = struct {
         if (utf8_reply) |r| utf8_string_atom = r.*.atom;
         if (paste_reply) |r| zt_paste_atom = r.*.atom;
 
-        // 7. Set up SHM
+        // 7. Set up SHM double buffer
         const buffer_size = stride * height;
-        const shm_id = c.shmget(c.IPC_PRIVATE, buffer_size, c.IPC_CREAT | 0o600);
-        if (shm_id < 0) return error.ShmGetFailed;
-        errdefer _ = c.shmctl(shm_id, c.IPC_RMID, null);
-
-        const shm_ptr = c.shmat(shm_id, null, 0);
-        if (shm_ptr == @as(*allowzero anyopaque, @ptrFromInt(std.math.maxInt(usize)))) {
-            return error.ShmAtFailed;
+        var shm_ids: [2]c_int = undefined;
+        var shm_segs: [2]c.xcb_shm_seg_t = undefined;
+        var shm_buffers: [2][]u8 = undefined;
+        for (0..2) |bi| {
+            shm_ids[bi] = c.shmget(c.IPC_PRIVATE, buffer_size, c.IPC_CREAT | 0o600);
+            if (shm_ids[bi] < 0) return error.ShmGetFailed;
+            const ptr = c.shmat(shm_ids[bi], null, 0);
+            if (ptr == @as(*allowzero anyopaque, @ptrFromInt(std.math.maxInt(usize)))) {
+                _ = c.shmctl(shm_ids[bi], c.IPC_RMID, null);
+                return error.ShmAtFailed;
+            }
+            shm_buffers[bi] = @as([*]u8, @ptrCast(ptr))[0..buffer_size];
+            @memset(shm_buffers[bi], 0);
+            shm_segs[bi] = c.xcb_generate_id(connection);
+            _ = c.xcb_shm_attach(connection, shm_segs[bi], @intCast(shm_ids[bi]), 0);
+            _ = c.shmctl(shm_ids[bi], c.IPC_RMID, null);
         }
-        const buffer: []u8 = @as([*]u8, @ptrCast(shm_ptr))[0..buffer_size];
-        @memset(buffer, 0);
-
-        const shm_seg = c.xcb_generate_id(connection);
-        _ = c.xcb_shm_attach(connection, shm_seg, @intCast(shm_id), 0);
-
-        // Mark for deletion when detached
-        _ = c.shmctl(shm_id, c.IPC_RMID, null);
 
         // 8. Create GC
         const gc = c.xcb_generate_id(connection);
@@ -242,9 +244,9 @@ pub const X11Backend = struct {
             .window = window,
             .gc = gc,
             .screen = screen,
-            .shm_seg = shm_seg,
-            .shm_id = shm_id,
-            .buffer = buffer,
+            .shm_seg = shm_segs,
+            .shm_id = shm_ids,
+            .buffers = shm_buffers,
             .width = width,
             .height = height,
             .stride = stride,
@@ -486,9 +488,10 @@ pub const X11Backend = struct {
         if (self.xkb_keymap) |km| c.xkb_keymap_unref(km);
         if (self.xkb_ctx) |ctx| c.xkb_context_unref(ctx);
         // Detach SHM from X server
-        _ = c.xcb_shm_detach(self.connection, self.shm_seg);
-        // Detach from process
-        _ = c.shmdt(self.buffer.ptr);
+        for (0..2) |i| {
+            _ = c.xcb_shm_detach(self.connection, self.shm_seg[i]);
+            _ = c.shmdt(self.buffers[i].ptr);
+        }
         // Free GC and window
         _ = c.xcb_free_gc(self.connection, self.gc);
         _ = c.xcb_destroy_window(self.connection, self.window);
@@ -497,7 +500,7 @@ pub const X11Backend = struct {
     }
 
     pub fn getBuffer(self: *Self) []u8 {
-        return self.buffer;
+        return self.buffers[self.buf_idx];
     }
 
     pub fn getStride(self: *Self) u32 {
@@ -524,11 +527,13 @@ pub const X11Backend = struct {
     pub fn present(self: *Self) void {
         if (self.dirty_y_min > self.dirty_y_max) return; // nothing to present
 
+        const front = self.buf_idx;
         const y_start = self.dirty_y_min;
         const y_end = @min(self.dirty_y_max + 1, self.height);
         const dirty_h = y_end - y_start;
         const shm_offset = y_start * self.stride;
 
+        // Send front buffer to X server
         _ = c.xcb_shm_put_image(
             self.connection,
             self.window,
@@ -544,9 +549,18 @@ pub const X11Backend = struct {
             self.screen.*.root_depth,
             c.XCB_IMAGE_FORMAT_Z_PIXMAP,
             0, // send_event
-            self.shm_seg,
+            self.shm_seg[front],
             shm_offset, // offset into SHM
         );
+
+        // Swap to other buffer for next frame's rendering
+        const back: u1 = front ^ 1;
+        // Copy dirty region from front to new back buffer so it starts up-to-date
+        const byte_start = y_start * self.stride;
+        const byte_end = y_end * self.stride;
+        @memcpy(self.buffers[back][byte_start..byte_end], self.buffers[front][byte_start..byte_end]);
+        self.buf_idx = back;
+
         self.dirty_y_min = std.math.maxInt(u32);
         self.dirty_y_max = 0;
     }
@@ -579,32 +593,30 @@ pub const X11Backend = struct {
         const new_stride = w * 4;
         const new_size = new_stride * h;
 
-        // 1. Detach old SHM from X server
-        _ = c.xcb_shm_detach(self.connection, self.shm_seg);
-        // 2. Detach old shared memory from process
-        _ = c.shmdt(self.buffer.ptr);
+        // Recreate both SHM buffers
+        for (0..2) |i| {
+            _ = c.xcb_shm_detach(self.connection, self.shm_seg[i]);
+            _ = c.shmdt(self.buffers[i].ptr);
 
-        // 3. Create new shared memory segment
-        const new_shm_id = c.shmget(c.IPC_PRIVATE, new_size, c.IPC_CREAT | 0o600);
-        if (new_shm_id < 0) return error.ShmGetFailed;
+            const new_shm_id = c.shmget(c.IPC_PRIVATE, new_size, c.IPC_CREAT | 0o600);
+            if (new_shm_id < 0) return error.ShmGetFailed;
 
-        const new_ptr = c.shmat(new_shm_id, null, 0);
-        if (new_ptr == @as(*allowzero anyopaque, @ptrFromInt(std.math.maxInt(usize)))) {
+            const new_ptr = c.shmat(new_shm_id, null, 0);
+            if (new_ptr == @as(*allowzero anyopaque, @ptrFromInt(std.math.maxInt(usize)))) {
+                _ = c.shmctl(new_shm_id, c.IPC_RMID, null);
+                return error.ShmAtFailed;
+            }
+            self.buffers[i] = @as([*]u8, @ptrCast(new_ptr))[0..new_size];
+            @memset(self.buffers[i], 0);
+
+            const new_seg = c.xcb_generate_id(self.connection);
+            _ = c.xcb_shm_attach(self.connection, new_seg, @intCast(new_shm_id), 0);
             _ = c.shmctl(new_shm_id, c.IPC_RMID, null);
-            return error.ShmAtFailed;
+
+            self.shm_seg[i] = new_seg;
+            self.shm_id[i] = new_shm_id;
         }
-        const new_buffer: []u8 = @as([*]u8, @ptrCast(new_ptr))[0..new_size];
-        @memset(new_buffer, 0);
-
-        // 4. Attach new SHM to X server
-        const new_seg = c.xcb_generate_id(self.connection);
-        _ = c.xcb_shm_attach(self.connection, new_seg, @intCast(new_shm_id), 0);
-        _ = c.shmctl(new_shm_id, c.IPC_RMID, null);
-
-        // 5. Update state
-        self.shm_seg = new_seg;
-        self.shm_id = new_shm_id;
-        self.buffer = new_buffer;
+        self.buf_idx = 0;
         self.width = w;
         self.height = h;
         self.stride = new_stride;

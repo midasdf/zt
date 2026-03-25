@@ -161,34 +161,38 @@ pub fn renderCell(
         if (pixel_format == .bgra32) {
             const fg_packed = [4]u8{ fg_color.b, fg_color.g, fg_color.r, 0xFF };
             for (0..@min(g.height, font_h)) |bmp_row| {
+                // Write first scaled row of this bitmap row
+                const first_y = px_y + @as(u32, @intCast(bmp_row)) * scale;
+                const first_row_base = first_y * stride + px_x * 4;
+                if (first_row_base + scaled_w * 4 > max_offset) continue;
+
                 for (0..@min(g.width, render_w)) |bmp_col| {
                     const byte_idx = bmp_row * bytes_per_row + bmp_col / 8;
                     const bit = @as(u8, 0x80) >> @intCast(bmp_col % 8);
                     if (byte_idx < g.bitmap.len and g.bitmap[byte_idx] & bit != 0) {
                         const screen_x = @as(u32, @intCast(bmp_col)) * scale;
-                        for (0..scale) |sy| {
-                            const screen_y = px_y + @as(u32, @intCast(bmp_row)) * scale + @as(u32, @intCast(sy));
-                            const row_base = screen_y * stride + px_x * 4;
-                            if (row_base + (screen_x + scale) * 4 > max_offset) continue;
+                        for (0..scale) |sx| {
+                            const px_off = first_row_base + (screen_x + @as(u32, @intCast(sx))) * 4;
+                            @as(*[4]u8, @ptrCast(buffer.ptr + px_off)).* = fg_packed;
+                        }
+                        // Bold: adjacent bitmap column
+                        if (cell.attrs.bold and bmp_col + 1 < render_w) {
+                            const bold_x = (@as(u32, @intCast(bmp_col)) + 1) * scale;
                             for (0..scale) |sx| {
-                                const px_off = row_base + (screen_x + @as(u32, @intCast(sx))) * 4;
+                                const px_off = first_row_base + (bold_x + @as(u32, @intCast(sx))) * 4;
                                 @as(*[4]u8, @ptrCast(buffer.ptr + px_off)).* = fg_packed;
                             }
                         }
-                        // Bold: adjacent bitmap column gets a scale x scale block
-                        if (cell.attrs.bold and bmp_col + 1 < render_w) {
-                            const bold_x = (@as(u32, @intCast(bmp_col)) + 1) * scale;
-                            for (0..scale) |sy| {
-                                const screen_y = px_y + @as(u32, @intCast(bmp_row)) * scale + @as(u32, @intCast(sy));
-                                const row_base = screen_y * stride + px_x * 4;
-                                if (row_base + (bold_x + scale) * 4 > max_offset) continue;
-                                for (0..scale) |sx| {
-                                    const px_off = row_base + (bold_x + @as(u32, @intCast(sx))) * 4;
-                                    @as(*[4]u8, @ptrCast(buffer.ptr + px_off)).* = fg_packed;
-                                }
-                            }
-                        }
                     }
+                }
+                // Duplicate first row to remaining scale-1 rows via memcpy
+                const row_bytes = scaled_w * 4;
+                const src = buffer[first_row_base .. first_row_base + row_bytes];
+                for (1..scale) |sy| {
+                    const dest_y = first_y + @as(u32, @intCast(sy));
+                    const dest_base = dest_y * stride + px_x * 4;
+                    if (dest_base + row_bytes > max_offset) continue;
+                    @memcpy(buffer[dest_base .. dest_base + row_bytes], src);
                 }
             }
         } else {
