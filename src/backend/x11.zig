@@ -674,6 +674,19 @@ pub const X11Backend = struct {
                 const evdev_keycode = key.*.detail -| 8;
                 const xcb_keycode: u32 = key.*.detail;
 
+                // Sync XKB modifier state from X server so Shift/CapsLock are
+                // reflected in xkb_state_key_get_utf8. Using update_mask (not
+                // update_key) avoids state desync when XIM consumes key releases.
+                if (self.xkb_state) |state| {
+                    _ = c.xkb_state_update_mask(
+                        state,
+                        key.*.state, // depressed (base) modifiers from X server
+                        0, // latched
+                        0, // locked
+                        0, 0, 0, // group: base, latched, locked
+                    );
+                }
+
                 // Ctrl+Shift+V → paste from clipboard
                 if (evdev_keycode == 47 and mods.ctrl and mods.shift and !mods.alt) {
                     self.requestPaste();
