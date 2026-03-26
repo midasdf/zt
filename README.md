@@ -67,6 +67,17 @@ Measured on Intel i5-12450H, 1 CPU core, Xvfb, `-Doptimize=ReleaseFast`. Pre-war
 | kitty | 303.8ms | 15.5 | 5.4x |
 | ghostty | 587.1ms | 8.0 | 10.4x |
 
+### Throughput (8MB TrueColor + escape sequences, 10 runs)
+
+| | Time | vs zt |
+|---|---|---|
+| **zt** | **98.0ms** | 1.0x |
+| st | 236.3ms | 2.4x |
+| xterm | 277.0ms | 2.8x |
+| alacritty | 277.0ms | 2.8x |
+| kitty | 368.0ms | 3.8x |
+| ghostty | 825.9ms | 8.4x |
+
 ### Peak RSS
 
 | | RSS |
