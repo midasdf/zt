@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 3.4ms startup. 1,343 MB/s throughput. 6.8MB RSS. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 2.7ms startup. 505 MB/s throughput. 4.5MB RSS. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -43,40 +43,40 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 ## Benchmarks
 
-Measured on Intel i5-12450H, 1 CPU core, Xvfb. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and historical results.
+Measured on Intel i5-12450H, 1 CPU core, Xvfb, ReleaseFast. Pre-warmed page cache, 50 startup runs (10 warmup), 20 throughput runs (5 warmup). See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and historical results.
 
-### Startup (30 runs)
+### Startup (50 runs)
 
 | | Time | vs zt |
 |---|---|---|
-| **zt** | **3.4ms** | 1.0x |
-| xterm | 17.8ms | 5.3x |
-| st | 47.5ms | 14.1x |
-| alacritty | 123.4ms | 36.5x |
-| kitty | 236.1ms | 69.9x |
-| ghostty | 447.3ms | 132x |
+| **zt** | **2.7ms** | 1.0x |
+| xterm | 15.9ms | 5.9x |
+| st | 44.4ms | 16.5x |
+| alacritty | 109.7ms | 40.7x |
+| kitty | 215.7ms | 80x |
+| ghostty | 507.1ms | 188x |
 
 ### Throughput (4.7MB dense ASCII)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **3.5ms** | **1,343** | 1.0x |
-| st | 191.1ms | 24.6 | 55x |
-| xterm | 201.8ms | 23.3 | 58x |
-| alacritty | 240.9ms | 19.5 | 69x |
-| kitty | 347.4ms | 13.5 | 99x |
-| ghostty | 682.0ms | 6.9 | 195x |
+| **zt** | **9.3ms** | **505** | 1.0x |
+| st | 185.7ms | 25.3 | 20x |
+| xterm | 196.4ms | 23.9 | 21x |
+| alacritty | 225.3ms | 20.9 | 24x |
+| kitty | 326.1ms | 14.4 | 35x |
+| ghostty | 639.8ms | 7.3 | 69x |
 
 ### Peak RSS
 
 | | RSS |
 |---|---|
-| **zt** | **6.8 MB** |
-| xterm | 13.1 MB |
-| st | 30.1 MB |
-| alacritty | 126.6 MB |
-| kitty | 140.7 MB |
-| ghostty | 222.5 MB |
+| **zt** | **4.5 MB** |
+| xterm | 13.0 MB |
+| st | 30.5 MB |
+| alacritty | 127.7 MB |
+| kitty | 141.0 MB |
+| ghostty | 223.0 MB |
 
 ## Build
 
