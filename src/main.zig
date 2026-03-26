@@ -528,6 +528,8 @@ pub fn main() !void {
             }
         }
         term.clearDirty();
+
+
         backend.present();
         backend.flush();
     }

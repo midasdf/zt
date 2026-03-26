@@ -127,7 +127,7 @@ pub const X11Backend = struct {
             c.XCB_EVENT_MASK_KEY_RELEASE |
             c.XCB_EVENT_MASK_STRUCTURE_NOTIFY |
             c.XCB_EVENT_MASK_EXPOSURE;
-        const values = [_]u32{event_mask};
+        const values = [_]u32{ 0, event_mask }; // back_pixel=black, event_mask
         _ = c.xcb_create_window(
             connection,
             c.XCB_COPY_FROM_PARENT, // depth
@@ -140,7 +140,7 @@ pub const X11Backend = struct {
             0, // border_width
             c.XCB_WINDOW_CLASS_INPUT_OUTPUT,
             screen.*.root_visual,
-            c.XCB_CW_EVENT_MASK,
+            c.XCB_CW_BACK_PIXEL | c.XCB_CW_EVENT_MASK,
             &values,
         );
 
@@ -589,7 +589,6 @@ pub const X11Backend = struct {
         const back: u1 = front ^ 1;
         if (self.buffers[back].len == 0) {
             self.initSecondBuffer() catch {
-                // Failed to create second buffer — stay single-buffered
                 self.dirty_y_min = std.math.maxInt(u32);
                 self.dirty_y_max = 0;
                 return;

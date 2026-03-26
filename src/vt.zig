@@ -58,6 +58,7 @@ pub const Parser = struct {
     intermediates: [2]u8 = [_]u8{0} ** 2,
     intermediate_count: u8 = 0,
     private_marker: u8 = 0,
+    in_subparam: bool = false,
     // UTF-8 accumulator
     utf8_buf: [4]u8 = undefined,
     utf8_len: u3 = 0,
@@ -246,14 +247,21 @@ pub const Parser = struct {
 
     fn handleCsiParam(self: *Parser, byte: u8) Action {
         if (byte >= '0' and byte <= '9') {
-            // Accumulate digit
+            // Accumulate digit (skip if in colon sub-parameter)
+            if (self.in_subparam) return .none;
             const idx = self.param_count;
             if (idx < 16) {
                 self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
             }
             return .none;
+        } else if (byte == ':') {
+            // Colon sub-parameter separator (e.g., \e[4:3m)
+            // Keep the main parameter, skip sub-parameter digits
+            self.in_subparam = true;
+            return .none;
         } else if (byte == ';') {
-            // Next param
+            // Next param — ends any sub-parameter
+            self.in_subparam = false;
             if (self.param_count < 15) {
                 self.param_count += 1;
             }
@@ -265,11 +273,12 @@ pub const Parser = struct {
             return .none;
         } else if (byte >= 0x40 and byte <= 0x7E) {
             // Final byte — finalize param_count
+            self.in_subparam = false;
             self.param_count += 1;
             self.state = .ground;
             return Action{ .csi_dispatch = self.buildCsiAction(byte) };
-        } else if (byte == 0x3A or (byte >= 0x3C and byte <= 0x3F)) {
-            // Malformed
+        } else if (byte >= 0x3C and byte <= 0x3F) {
+            // Malformed (but NOT 0x3A which is ':')
             self.state = .csi_ignore;
             return .none;
         } else {
@@ -358,6 +367,7 @@ pub const Parser = struct {
         self.intermediates = [_]u8{0} ** 2;
         self.intermediate_count = 0;
         self.private_marker = 0;
+        self.in_subparam = false;
     }
 
     fn buildCsiAction(self: *const Parser, final_byte: u8) CsiAction {
@@ -628,7 +638,10 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
             term.cursor_y = @min(@as(u32, @intCast(row)), term.rows -| 1);
         },
-        'm' => handleSgr(csi, term), // SGR
+        'm' => {
+            // SGR only without private marker; \e[>4;2m is "Modify Other Keys", not SGR
+            if (csi.private_marker == 0) handleSgr(csi, term);
+        },
         'c' => { // DA1 — device attributes
             if (csi.private_marker == 0) {
                 if (writer_fd) |fd| {
@@ -722,6 +735,19 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
                 term.current_bg = 0;
                 term.current_bg_rgb = null;
             },
+            58 => {
+                // Extended underline color (58;2;r;g;b or 58;5;n)
+                // Must consume sub-params so they aren't misread as SGR codes
+                if (i + 1 < pc) {
+                    const sub = p[i + 1];
+                    if (sub == 5 and i + 2 < pc) {
+                        i = i + 2;
+                    } else if (sub == 2 and i + 4 < pc) {
+                        i = i + 4;
+                    }
+                }
+            },
+            59 => {},
             90...97 => term.current_fg = @intCast(param - 90 + 8),
             100...107 => term.current_bg = @intCast(param - 100 + 8),
             else => {},
