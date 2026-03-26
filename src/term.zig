@@ -8,7 +8,7 @@ pub const Cell = struct {
     bg: u8 = 0,
     attrs: Attrs = .{},
 
-    pub const Attrs = packed struct(u8) {
+    pub const Attrs = packed struct(u16) {
         bold: bool = false,
         italic: bool = false,
         underline: bool = false,
@@ -16,11 +16,29 @@ pub const Cell = struct {
         dim: bool = false,
         wide: bool = false,
         wide_dummy: bool = false,
-        _pad: u1 = 0,
+        blink: bool = false,
+        invisible: bool = false,
+        strikethrough: bool = false,
+        _pad: u6 = 0,
     };
 };
 
 const default_cell: Cell = .{};
+
+pub const CharsetType = enum { us_ascii, dec_graphics };
+
+/// Translate a codepoint through the DEC Special Graphics charset.
+pub fn translateCharset(cp: u21, cs: CharsetType) u21 {
+    if (cs != .dec_graphics) return cp;
+    if (cp < 0x60 or cp > 0x7E) return cp;
+    const table = [_]u21{
+        0x25C6, 0x2592, 0x2409, 0x240C, 0x240D, 0x240A, 0x00B0, 0x00B1, // 0x60-0x67: ◆▒␉␌␍␊°±
+        0x2424, 0x240B, 0x2518, 0x2510, 0x250C, 0x2514, 0x253C, 0x23BA, // 0x68-0x6F: ␤␋┘┐┌└┼⎺
+        0x23BB, 0x2500, 0x23BC, 0x23BD, 0x251C, 0x2524, 0x2534, 0x252C, // 0x70-0x77: ⎻─⎼⎽├┤┴┬
+        0x2502, 0x2264, 0x2265, 0x03C0, 0x2260, 0x00A3, 0x00B7, // 0x78-0x7E: │≤≥π≠£·
+    };
+    return table[cp - 0x60];
+}
 
 pub const Term = struct {
     const Self = @This();
@@ -77,6 +95,39 @@ pub const Term = struct {
     sync_update: bool = false,
     has_truecolor_cells: bool = false,
 
+    // Deferred wrap (VT100 CURSOR_WRAPNEXT)
+    wrap_next: bool = false,
+
+    // Tab stops (settable, per-column)
+    tabs: []bool = &.{},
+
+    // Insert/Replace mode (IRM, CSI 4h/4l)
+    insert_mode: bool = false,
+
+    // Linefeed/Newline mode (LNM, CSI 20h/20l)
+    linefeed_mode: bool = false,
+
+    // Character set support (VT100)
+    charset: u2 = 0, // Active charset index (0=G0, 1=G1, 2=G2, 3=G3)
+    charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
+
+    // Keypad mode
+    deckpam: bool = false,
+
+    // Origin mode (DECOM, DECSET ?6)
+    origin_mode: bool = false,
+
+    // Cursor style (DECSCUSR)
+    cursor_style: u8 = 0,
+
+    // Saved cursor state (DECSC/DECRC — saves attrs + charset like st)
+    saved_attrs: Cell.Attrs = .{},
+    saved_fg: u8 = 7,
+    saved_bg: u8 = 0,
+    saved_charset: u2 = 0,
+    saved_wrap_next: bool = false,
+    saved_origin_mode: bool = false,
+
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
         const cells = try allocator.alloc(Cell, total);
@@ -92,6 +143,12 @@ pub const Term = struct {
         const bg_rgb = try allocator.alloc(?[3]u8, total);
         @memset(bg_rgb, null);
 
+        // Initialize tab stops every 8 columns
+        const tabs = try allocator.alloc(bool, cols);
+        for (0..cols) |c| {
+            tabs[c] = (c % 8 == 0) and c > 0;
+        }
+
         return Self{
             .allocator = allocator,
             .cols = cols,
@@ -102,6 +159,7 @@ pub const Term = struct {
             .scroll_bottom = rows -| 1,
             .fg_rgb = fg_rgb,
             .bg_rgb = bg_rgb,
+            .tabs = tabs,
         };
     }
 
@@ -109,6 +167,7 @@ pub const Term = struct {
         self.allocator.free(self.cells);
         self.allocator.free(self.row_map);
         self.dirty.deinit();
+        if (self.tabs.len > 0) self.allocator.free(self.tabs);
         if (self.alt_cells) |alt| self.allocator.free(alt);
         if (self.alt_row_map) |arm| self.allocator.free(arm);
         if (self.alt_dirty != null) {
@@ -307,6 +366,12 @@ pub const Term = struct {
         self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
 
+        // Resize tab stops
+        if (self.tabs.len > 0) self.allocator.free(self.tabs);
+        self.tabs = try self.allocator.alloc(bool, new_cols);
+        for (0..new_cols) |c| {
+            self.tabs[c] = (c % 8 == 0) and c > 0;
+        }
 
         // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
@@ -415,6 +480,7 @@ pub const Term = struct {
     pub fn moveCursorTo(self: *Self, x: u32, y: u32) void {
         self.cursor_x = @min(x, self.cols -| 1);
         self.cursor_y = @min(y, self.rows -| 1);
+        self.wrap_next = false;
     }
 
     pub fn moveCursorRel(self: *Self, dx: i32, dy: i32) void {
@@ -422,6 +488,7 @@ pub const Term = struct {
         const new_y = @as(i64, self.cursor_y) + @as(i64, dy);
         self.cursor_x = @intCast(@as(u32, @intCast(std.math.clamp(new_x, 0, @as(i64, self.cols) - 1))));
         self.cursor_y = @intCast(@as(u32, @intCast(std.math.clamp(new_y, 0, @as(i64, self.rows) - 1))));
+        self.wrap_next = false;
     }
 
     /// Fix wide character boundaries at the edges of an erase/delete range.
@@ -539,6 +606,34 @@ pub const Term = struct {
 
     pub fn carriageReturn(self: *Self) void {
         self.cursor_x = 0;
+        self.wrap_next = false;
+    }
+
+    /// Move cursor to next/previous tab stop. n > 0 = forward, n < 0 = backward.
+    pub fn tputtab(self: *Self, n: i32) void {
+        self.wrap_next = false;
+        const cols = self.cols;
+        var x = self.cursor_x;
+        if (n > 0) {
+            var count: u32 = @intCast(n);
+            while (x < cols and count > 0) {
+                count -= 1;
+                x += 1;
+                while (x < cols and !(x < self.tabs.len and self.tabs[@intCast(x)])) {
+                    x += 1;
+                }
+            }
+        } else if (n < 0) {
+            var count: u32 = @intCast(-n);
+            while (x > 0 and count > 0) {
+                count -= 1;
+                x -= 1;
+                while (x > 0 and !(x < self.tabs.len and self.tabs[@intCast(x)])) {
+                    x -= 1;
+                }
+            }
+        }
+        self.cursor_x = @min(x, cols -| 1);
     }
 
     pub fn setScrollRegion(self: *Self, top: u32, bottom: u32) void {

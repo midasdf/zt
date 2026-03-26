@@ -405,22 +405,23 @@ pub const Parser = struct {
 pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void {
     var i: usize = 0;
     while (i < data.len) {
-        // Fast path: ground state + printable ASCII run
+        // Fast path: ground state + printable ASCII run (US-ASCII charset only, no insert mode)
         // Writes directly to cells[] array, bypassing setCell/handlePrint overhead.
         // Safe because ASCII is never wide and doesn't need TrueColor cleanup.
-        if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E) {
+        if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E and
+            term.charsets[term.charset] == .us_ascii and !term.insert_mode)
+        {
             const cols = term.cols;
             while (true) {
                 // Handle printable ASCII run on current line
                 if (i >= data.len or (@as(u32, data[i]) -% 0x20) > 0x5E) break;
-                // Line wrap
-                if (term.cursor_x >= cols) {
+                // Deferred wrap from previous char
+                if (term.wrap_next) {
                     if (term.decawm) {
                         term.cursor_x = 0;
                         term.insertNewline();
-                    } else {
-                        term.cursor_x = cols - 1;
                     }
+                    term.wrap_next = false;
                 }
                 // Bulk write: compute run length that fits on current line
                 const remaining = cols - term.cursor_x;
@@ -484,14 +485,18 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 term.last_printed_char = @as(u21, data[i + count - 1]);
                 term.cursor_x += count;
                 i += count;
+                // Deferred wrap: if cursor went past right margin, set wrap_next
+                if (term.cursor_x >= cols) {
+                    term.cursor_x = cols - 1;
+                    term.wrap_next = true;
+                }
                 // Inline control character handling — stay in fast path loop
-                // Avoids 58K round-trips through parser.feed() for LF/CR
                 if (i < data.len) {
                     switch (data[i]) {
-                        0x0A, 0x0B, 0x0C => { term.insertNewline(); i += 1; continue; },
+                        0x0A, 0x0B, 0x0C => { term.wrap_next = false; term.insertNewline(); i += 1; continue; },
                         0x0D => { term.carriageReturn(); i += 1; continue; },
-                        0x08 => { if (term.cursor_x > 0) term.cursor_x -= 1; i += 1; continue; },
-                        0x09 => { term.cursor_x = @min(((term.cursor_x / 8) + 1) * 8, cols -| 1); i += 1; continue; },
+                        0x08 => { term.wrap_next = false; if (term.cursor_x > 0) term.cursor_x -= 1; i += 1; continue; },
+                        0x09 => { term.tputtab(1); i += 1; continue; },
                         else => {},
                     }
                 }
@@ -499,10 +504,12 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
             }
             continue;
         }
-        // Medium path: ground state + UTF-8 multi-byte characters
+        // Medium path: ground state + UTF-8 multi-byte characters (US-ASCII charset, no insert mode)
         // Decode directly, bypassing per-byte parser state machine overhead.
         // Non-wide chars written directly to cells[] with batch dirty marking.
-        if (parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE) {
+        if (parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE and
+            !term.insert_mode)
+        {
             const start_i = i;
             var dirty_run_start: usize = @as(usize, term.cursor_y) * @as(usize, term.cols) + term.cursor_x;
             var dirty_run_end: usize = dirty_run_start;
@@ -540,16 +547,16 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 }
                 // Non-wide: direct cell write (like ASCII fast path)
                 const cols = term.cols;
-                if (term.cursor_x >= cols) {
+                // Deferred wrap
+                if (term.wrap_next) {
                     // Flush pending dirty before line change
                     if (dirty_run_start < dirty_run_end)
                         term.markDirtyRange(.{ .start = dirty_run_start, .end = dirty_run_end });
                     if (term.decawm) {
                         term.cursor_x = 0;
                         term.insertNewline();
-                    } else {
-                        term.cursor_x = cols - 1;
                     }
+                    term.wrap_next = false;
                     dirty_run_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                     dirty_run_end = dirty_run_start;
                 }
@@ -571,7 +578,12 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 const logical_idx = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 dirty_run_end = logical_idx + 1;
                 term.last_printed_char = cp;
-                term.cursor_x += 1;
+                if (term.cursor_x + 1 < cols) {
+                    term.cursor_x += 1;
+                } else {
+                    term.cursor_x = cols - 1;
+                    term.wrap_next = true;
+                }
                 i += seq_len;
             }
             // Flush accumulated dirty range
@@ -595,7 +607,7 @@ pub fn executeActionWithFd(action: Action, term: *Term, writer_fd: ?std.posix.fd
         .print => |cp| handlePrint(cp, term),
         .execute => |c| handleControl(c, term),
         .csi_dispatch => |csi| handleCsi(csi, term, writer_fd),
-        .esc_dispatch => |esc| handleEsc(esc, term),
+        .esc_dispatch => |esc| handleEsc(esc, term, writer_fd),
         .osc_dispatch => {},
         .dcs_dispatch => |payload| handleDcsDispatch(payload, writer_fd),
         .none => {},
@@ -691,23 +703,33 @@ fn isWide(cp: u21) bool {
 }
 
 fn handlePrint(cp: u21, term: *Term) void {
-    const wide = isWide(cp);
+    // Apply charset translation (VT100 DEC Graphics)
+    const actual_cp = term_mod.translateCharset(cp, term.charsets[term.charset]);
+    const wide = isWide(actual_cp);
 
-    if (term.cursor_x >= term.cols) {
+    // Deferred wrap: if previous char set wrap_next, wrap now
+    if (term.wrap_next) {
         if (term.decawm) {
             term.cursor_x = 0;
             term.insertNewline();
-        } else {
-            term.cursor_x = term.cols - 1;
         }
+        term.wrap_next = false;
     }
 
-    // Wide char needs 2 columns — wrap if at last column
+    // Wide char needs 2 columns — wrap if only 1 column left
     if (wide and term.cursor_x + 1 >= term.cols) {
         if (term.decawm) {
             term.setCell(term.cursor_x, term.cursor_y, Cell{});
             term.cursor_x = 0;
             term.insertNewline();
+        }
+    }
+
+    // Insert mode: shift existing chars right before printing
+    if (term.insert_mode) {
+        const width: u32 = if (wide) 2 else 1;
+        if (term.cursor_x + width < term.cols) {
+            term.insertChars(width);
         }
     }
 
@@ -725,7 +747,7 @@ fn handlePrint(cp: u21, term: *Term) void {
     if (wide) attrs.wide = true;
 
     const cell = Cell{
-        .char = cp,
+        .char = actual_cp,
         .fg = term.current_fg,
         .bg = term.current_bg,
         .attrs = attrs,
@@ -740,29 +762,47 @@ fn handlePrint(cp: u21, term: *Term) void {
         term.setBgRgb(term.cursor_x, term.cursor_y, rgb) catch {};
     }
 
-    term.last_printed_char = cp;
-    term.cursor_x += 1;
+    term.last_printed_char = actual_cp;
 
-    // Wide char: set dummy cell for right half
-    if (wide and term.cursor_x < term.cols) {
-        var dummy = Cell{ .bg = term.current_bg };
-        dummy.attrs.wide_dummy = true;
-        term.setCell(term.cursor_x, term.cursor_y, dummy);
-        term.cursor_x += 1;
+    // Advance cursor or set deferred wrap
+    const width: u32 = if (wide) 2 else 1;
+    if (term.cursor_x + width < term.cols) {
+        term.cursor_x += width;
+        // Wide char: set dummy cell for right half
+        if (wide) {
+            var dummy = Cell{ .bg = term.current_bg };
+            dummy.attrs.wide_dummy = true;
+            term.setCell(term.cursor_x - 1, term.cursor_y, dummy);
+        }
+    } else {
+        // At right margin — set deferred wrap, don't advance
+        if (wide and term.cursor_x + 1 < term.cols) {
+            // Wide char placed, set dummy at cursor_x + 1
+            var dummy = Cell{ .bg = term.current_bg };
+            dummy.attrs.wide_dummy = true;
+            term.setCell(term.cursor_x + 1, term.cursor_y, dummy);
+        }
+        term.cursor_x = term.cols - 1;
+        term.wrap_next = true;
     }
 }
 
 fn handleControl(c: u8, term: *Term) void {
     switch (c) {
-        0x0A, 0x0B, 0x0C => term.insertNewline(), // LF, VT, FF
+        0x0A, 0x0B, 0x0C => { // LF, VT, FF
+            term.wrap_next = false;
+            if (term.linefeed_mode) term.cursor_x = 0;
+            term.insertNewline();
+        },
         0x0D => term.carriageReturn(), // CR
         0x08 => { // BS
+            term.wrap_next = false;
             if (term.cursor_x > 0) term.cursor_x -= 1;
         },
-        0x09 => { // HT — advance to next tab stop (every 8 columns)
-            term.cursor_x = @min(((term.cursor_x / 8) + 1) * 8, term.cols -| 1);
-        },
+        0x09 => term.tputtab(1), // HT — advance to next tab stop
         0x07 => {}, // BEL — ignore
+        0x0E => term.charset = 1, // SO (LS1 — Locking shift 1, activate G1)
+        0x0F => term.charset = 0, // SI (LS0 — Locking shift 0, activate G0)
         else => {},
     }
 }
@@ -774,23 +814,23 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
     switch (csi.final_byte) {
         'A' => { // CUU — cursor up (respects scroll region)
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
-            // Stop at scroll_top if cursor is within scroll region, else stop at row 0
+            term.wrap_next = false;
             const min_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
                 term.scroll_top
             else
                 0;
             term.cursor_y = if (term.cursor_y >= n) @max(term.cursor_y - n, min_y) else min_y;
         },
-        'B' => { // CUD — cursor down (respects scroll region)
+        'B', 'e' => { // CUD/VPR — cursor down (respects scroll region)
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
-            // Stop at scroll_bottom if cursor is within scroll region, else stop at last row
+            term.wrap_next = false;
             const max_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
                 term.scroll_bottom
             else
                 term.rows -| 1;
             term.cursor_y = @min(term.cursor_y + n, max_y);
         },
-        'C' => { // CUF — cursor forward
+        'C', 'a' => { // CUF/HPR — cursor forward
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             term.moveCursorRel(@as(i32, @intCast(n)), 0);
         },
@@ -808,9 +848,10 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             term.moveCursorRel(0, -@as(i32, @intCast(n)));
             term.cursor_x = 0;
         },
-        'G' => { // CHA — cursor horizontal absolute (1-indexed)
+        'G', '`' => { // CHA/HPA — cursor horizontal absolute (1-indexed)
             const col = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
             term.cursor_x = @min(@as(u32, @intCast(col)), term.cols -| 1);
+            term.wrap_next = false;
         },
         'H', 'f' => { // CUP — cursor position (1-indexed params)
             const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
@@ -848,6 +889,7 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
         'd' => { // VPA — vertical position absolute (1-indexed)
             const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
             term.cursor_y = @min(@as(u32, @intCast(row)), term.rows -| 1);
+            term.wrap_next = false;
         },
         'm' => {
             // SGR only without private marker; \e[>4;2m is "Modify Other Keys", not SGR
@@ -862,11 +904,17 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             }
         },
         'n' => { // DSR — device status report
-            if (csi.private_marker == 0 and pc > 0 and p[0] == 6) {
+            if (csi.private_marker == 0 and pc > 0) {
                 if (writer_fd) |fd| {
-                    var buf: [32]u8 = undefined;
-                    const response = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ term.cursor_y + 1, term.cursor_x + 1 }) catch return;
-                    _ = std.posix.write(fd, response) catch {};
+                    if (p[0] == 5) {
+                        // Status Report — respond "OK"
+                        _ = std.posix.write(fd, "\x1b[0n") catch {};
+                    } else if (p[0] == 6) {
+                        // Cursor Position Report
+                        var buf: [32]u8 = undefined;
+                        const response = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ term.cursor_y + 1, term.cursor_x + 1 }) catch return;
+                        _ = std.posix.write(fd, response) catch {};
+                    }
                 }
             }
         },
@@ -893,9 +941,9 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             const top = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
             const bot = if (pc > 1 and p[1] > 0) p[1] - 1 else @as(u16, @intCast(term.rows -| 1));
             term.setScrollRegion(@intCast(top), @intCast(bot));
-            // VT spec: DECSTBM resets cursor to home position
             term.cursor_x = 0;
             term.cursor_y = 0;
+            term.wrap_next = false;
         },
         's' => { // Save cursor (only without private marker; \e[?s is XTPUSHCOLORS)
             if (csi.private_marker == 0) {
@@ -909,11 +957,42 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                 term.cursor_y = term.saved_cursor_y;
             }
         },
-        'h' => { // DECSET
-            if (csi.private_marker == '?') handleDecSet(csi, term, true);
+        'g' => { // TBC — tab clear
+            if (pc == 0 or p[0] == 0) {
+                // Clear current tab stop
+                if (term.cursor_x < term.tabs.len) term.tabs[@intCast(term.cursor_x)] = false;
+            } else if (p[0] == 3) {
+                // Clear all tab stops
+                @memset(term.tabs, false);
+            }
         },
-        'l' => { // DECRST
-            if (csi.private_marker == '?') handleDecSet(csi, term, false);
+        'I' => { // CHT — cursor forward tabulation
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.tputtab(@intCast(n));
+        },
+        'Z' => { // CBT — cursor backward tabulation
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            term.tputtab(-@as(i32, @intCast(n)));
+        },
+        'h' => { // SM/DECSET — set mode
+            if (csi.private_marker == '?') {
+                handleDecSet(csi, term, true);
+            } else {
+                handleNonPrivateMode(csi, term, true);
+            }
+        },
+        'l' => { // RM/DECRST — reset mode
+            if (csi.private_marker == '?') {
+                handleDecSet(csi, term, false);
+            } else {
+                handleNonPrivateMode(csi, term, false);
+            }
+        },
+        'q' => {
+            // DECSCUSR — Set Cursor Style (CSI Ps SP q)
+            if (csi.intermediate_count > 0 and csi.intermediates[0] == ' ') {
+                term.cursor_style = if (pc > 0) @intCast(p[0]) else 0;
+            }
         },
         else => {
             std.log.warn("unhandled CSI: private={c} params={d}..{d} final={c}", .{
@@ -945,14 +1024,20 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             2 => term.current_attrs.dim = true,
             3 => term.current_attrs.italic = true,
             4 => term.current_attrs.underline = true,
+            5, 6 => term.current_attrs.blink = true, // slow/rapid blink
             7 => term.current_attrs.reverse = true,
+            8 => term.current_attrs.invisible = true,
+            9 => term.current_attrs.strikethrough = true,
             22 => {
                 term.current_attrs.bold = false;
                 term.current_attrs.dim = false;
             },
             23 => term.current_attrs.italic = false,
             24 => term.current_attrs.underline = false,
+            25 => term.current_attrs.blink = false,
             27 => term.current_attrs.reverse = false,
+            28 => term.current_attrs.invisible = false,
+            29 => term.current_attrs.strikethrough = false,
             30...37 => term.current_fg = @intCast(param - 30),
             38 => {
                 // Extended foreground
@@ -1038,6 +1123,12 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
     while (i < pc) : (i += 1) {
         switch (p[i]) {
             1 => term.decckm = set,
+            6 => { // DECOM — origin mode
+                term.origin_mode = set;
+                term.cursor_x = 0;
+                term.cursor_y = if (set) term.scroll_top else 0;
+                term.wrap_next = false;
+            },
             7 => term.decawm = set,
             25 => term.cursor_visible = set,
             47, 1047 => {
@@ -1045,18 +1136,29 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     std.log.err("switchScreen failed: {}", .{err});
                 };
             },
+            1048 => { // Save/restore cursor independently
+                if (set) {
+                    term.saved_cursor_x = term.cursor_x;
+                    term.saved_cursor_y = term.cursor_y;
+                } else {
+                    term.cursor_x = term.saved_cursor_x;
+                    term.cursor_y = term.saved_cursor_y;
+                    term.wrap_next = false;
+                }
+            },
             1049 => {
                 if (set) {
                     term.saved_cursor_x = term.cursor_x;
                     term.saved_cursor_y = term.cursor_y;
                     term.saved_scroll_top = term.scroll_top;
                     term.saved_scroll_bottom = term.scroll_bottom;
+                    term.saved_wrap_next = term.wrap_next;
                     term.switchScreen(true) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
-                    // Reset scroll region for alt screen (full screen)
                     term.scroll_top = 0;
                     term.scroll_bottom = term.rows -| 1;
+                    term.wrap_next = false;
                     term.eraseDisplay(2);
                 } else {
                     term.switchScreen(false) catch |err| {
@@ -1066,10 +1168,13 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.cursor_y = term.saved_cursor_y;
                     term.scroll_top = term.saved_scroll_top;
                     term.scroll_bottom = term.saved_scroll_bottom;
+                    term.wrap_next = term.saved_wrap_next;
                 }
             },
             2004 => term.bracketed_paste = set,
             2026 => term.sync_update = set,
+            // Silently ignored modes (common, no-op for us)
+            0, 2, 3, 4, 5, 8, 12, 18, 19, 42 => {},
             else => {
                 std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });
             },
@@ -1077,28 +1182,79 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
     }
 }
 
-fn handleEsc(esc: EscAction, term: *Term) void {
+fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
+    // Character set designation (ESC with intermediate byte)
+    if (esc.intermediate != 0) {
+        switch (esc.intermediate) {
+            '(' => term.charsets[0] = charsetFromByte(esc.final_byte), // G0
+            ')' => term.charsets[1] = charsetFromByte(esc.final_byte), // G1
+            '*' => term.charsets[2] = charsetFromByte(esc.final_byte), // G2
+            '+' => term.charsets[3] = charsetFromByte(esc.final_byte), // G3
+            '#' => {
+                if (esc.final_byte == '8') {
+                    // DECALN — fill screen with 'E'
+                    for (0..term.rows) |y| {
+                        for (0..term.cols) |x| {
+                            term.setCell(@intCast(x), @intCast(y), .{ .char = 'E', .fg = 7 });
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+        return;
+    }
+
     switch (esc.final_byte) {
-        '7' => { // DECSC — save cursor
+        '7' => { // DECSC — save cursor (with attributes, like st)
             term.saved_cursor_x = term.cursor_x;
             term.saved_cursor_y = term.cursor_y;
+            term.saved_attrs = term.current_attrs;
+            term.saved_fg = term.current_fg;
+            term.saved_bg = term.current_bg;
+            term.saved_charset = term.charset;
+            term.saved_wrap_next = term.wrap_next;
+            term.saved_origin_mode = term.origin_mode;
         },
-        '8' => { // DECRC — restore cursor
+        '8' => { // DECRC — restore cursor (with attributes)
             term.cursor_x = term.saved_cursor_x;
             term.cursor_y = term.saved_cursor_y;
+            term.current_attrs = term.saved_attrs;
+            term.current_fg = term.saved_fg;
+            term.current_bg = term.saved_bg;
+            term.charset = term.saved_charset;
+            term.wrap_next = term.saved_wrap_next;
+            term.origin_mode = term.saved_origin_mode;
         },
-        'D' => { // IND — index (cursor down, scroll if at bottom of scroll region)
+        'D' => { // IND — index (cursor down, scroll if at bottom)
+            term.wrap_next = false;
             if (term.cursor_y == term.scroll_bottom) {
                 term.scrollUp(1);
             } else if (term.cursor_y < term.rows - 1) {
                 term.cursor_y += 1;
             }
         },
+        'E' => { // NEL — next line (always go to first col)
+            term.wrap_next = false;
+            term.cursor_x = 0;
+            term.insertNewline();
+        },
+        'H' => { // HTS — horizontal tab stop (set tab at current column)
+            if (term.cursor_x < term.tabs.len) {
+                term.tabs[@intCast(term.cursor_x)] = true;
+            }
+        },
         'M' => { // RI — reverse index
+            term.wrap_next = false;
             if (term.cursor_y == term.scroll_top) {
                 term.scrollDown(1);
             } else if (term.cursor_y > 0) {
                 term.cursor_y -= 1;
+            }
+        },
+        'Z' => { // DECID — identify terminal
+            if (writer_fd) |fd| {
+                _ = std.posix.write(fd, "\x1b[?62;22c") catch {};
             }
         },
         'c' => { // RIS — full reset
@@ -1117,14 +1273,48 @@ fn handleEsc(esc: EscAction, term: *Term) void {
             term.decawm = true;
             term.cursor_visible = true;
             term.bracketed_paste = false;
+            term.wrap_next = false;
+            term.insert_mode = false;
+            term.linefeed_mode = false;
+            term.charset = 0;
+            term.charsets = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii };
+            term.deckpam = false;
+            term.origin_mode = false;
+            term.cursor_style = 0;
+            // Reset tab stops to default (every 8 columns)
+            for (0..term.tabs.len) |c| {
+                term.tabs[c] = (c % 8 == 0) and c > 0;
+            }
             term.eraseDisplay(2);
         },
+        '=' => term.deckpam = true, // DECPAM — application keypad
+        '>' => term.deckpam = false, // DECPNM — normal keypad
         else => {
             std.log.warn("unhandled ESC: intermediate={c} final={c}", .{
                 if (esc.intermediate != 0) esc.intermediate else @as(u8, '-'),
                 esc.final_byte,
             });
         },
+    }
+}
+
+fn charsetFromByte(b: u8) term_mod.CharsetType {
+    return switch (b) {
+        '0' => .dec_graphics,
+        else => .us_ascii, // 'B' (US ASCII) and all others default to ASCII
+    };
+}
+
+fn handleNonPrivateMode(csi: CsiAction, term: *Term, set: bool) void {
+    const p = csi.params;
+    const pc = csi.param_count;
+    var idx: u8 = 0;
+    while (idx < pc) : (idx += 1) {
+        switch (p[idx]) {
+            4 => term.insert_mode = set, // IRM — Insert/Replace Mode
+            20 => term.linefeed_mode = set, // LNM — Linefeed/Newline Mode
+            else => {},
+        }
     }
 }
 
