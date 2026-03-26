@@ -33,6 +33,7 @@ pub const Term = struct {
     row_map: []u32, // row_map[logical_row] = physical_row
     dirty: std.DynamicBitSet, // indexed by logical position (y * cols + x)
     dirty_flag: bool = false, // O(1) hasDirty check
+    all_dirty: bool = false, // true when entire screen is known dirty (skip per-cell checks)
 
     // Alternate screen buffer
     alt_cells: ?[]Cell = null,
@@ -49,6 +50,8 @@ pub const Term = struct {
     // Scroll region
     scroll_top: u32 = 0,
     scroll_bottom: u32 = 0,
+    /// Accumulated scroll delta since last render (positive = up, negative = down)
+    scroll_delta: i32 = 0,
 
     // Current drawing state
     current_fg: u8 = 7,
@@ -150,6 +153,11 @@ pub const Term = struct {
         return self.dirty_flag;
     }
 
+    /// Returns true if all cells are known to be dirty (avoids per-cell checks)
+    pub fn isAllDirty(self: *const Self) bool {
+        return self.all_dirty;
+    }
+
     pub fn isRowDirty(self: *const Self, y: u32) bool {
         if (y >= self.rows) return false;
         const start = @as(usize, y) * @as(usize, self.cols);
@@ -190,10 +198,12 @@ pub const Term = struct {
         const total = @as(usize, self.cols) * @as(usize, self.rows);
         self.dirty.setRangeValue(.{ .start = 0, .end = total }, false);
         self.dirty_flag = false;
+        self.all_dirty = false;
     }
 
     /// Mark a range of logical cells dirty and set the O(1) flag
     pub inline fn markDirtyRange(self: *Self, range: std.bit_set.Range) void {
+        if (self.all_dirty) return; // Already fully dirty, skip redundant bitset ops
         self.dirty.setRangeValue(range, true);
         self.dirty_flag = true;
     }
@@ -206,31 +216,32 @@ pub const Term = struct {
         const region_height = bot - top + 1;
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
-        // Save physical row indices of rows being recycled
-        var saved: [256]u32 = undefined;
+        // Clear recycled rows (top `shift` rows become new bottom rows)
         for (0..shift) |s| {
             const phys = self.row_map[top + s];
-            saved[s] = phys;
-            // Clear physical row cells
             @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            // Clear RGB entries for recycled row
             self.clearRgbRow(phys);
         }
 
-        // Shift row_map entries up
-        const remaining = region_height - shift;
-        if (remaining > 0) {
-            std.mem.copyForwards(u32, self.row_map[top .. top + remaining], self.row_map[top + shift .. top + shift + remaining]);
-        }
+        // Rotate row_map: moves top rows to bottom in one pass
+        std.mem.rotate(u32, self.row_map[top .. bot + 1], shift);
 
-        // Put recycled rows at bottom
-        for (0..shift) |s| {
-            self.row_map[bot + 1 - shift + s] = saved[s];
+        // Track pixel scroll delta for memmove optimization
+        if (top == 0 and bot + 1 == self.rows) {
+            self.scroll_delta +|= @intCast(shift);
         }
 
         // Mark entire scroll region dirty — row_map pointers rotated but
         // the pixel buffer still has old content at old positions
-        self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+        if (top == 0 and bot + 1 == self.rows) {
+            // Full-screen scroll: set all_dirty flag to skip future markDirtyRange calls
+            if (!self.all_dirty) {
+                self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
+                self.all_dirty = true;
+            }
+        } else {
+            self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+        }
     }
 
     pub fn scrollDown(self: *Self, n: u32) void {
@@ -241,24 +252,19 @@ pub const Term = struct {
         const region_height = bot - top + 1;
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
-        // Save physical row indices of rows being recycled (from bottom)
-        var saved: [256]u32 = undefined;
+        // Clear recycled rows (bottom `shift` rows become new top rows)
         for (0..shift) |s| {
             const phys = self.row_map[bot - s];
-            saved[s] = phys;
             @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
             self.clearRgbRow(phys);
         }
 
-        // Shift row_map entries down
-        const remaining = region_height - shift;
-        if (remaining > 0) {
-            std.mem.copyBackwards(u32, self.row_map[top + shift .. top + shift + remaining], self.row_map[top .. top + remaining]);
-        }
+        // Rotate row_map: moves bottom rows to top in one pass
+        std.mem.rotate(u32, self.row_map[top .. bot + 1], region_height - shift);
 
-        // Put recycled rows at top
-        for (0..shift) |s| {
-            self.row_map[top + s] = saved[shift - 1 - s];
+        // Track pixel scroll delta
+        if (top == 0 and bot + 1 == self.rows) {
+            self.scroll_delta -|= @intCast(shift);
         }
 
         // Mark entire scroll region dirty

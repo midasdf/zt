@@ -485,37 +485,74 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         }
         // Medium path: ground state + UTF-8 multi-byte characters
         // Decode directly, bypassing per-byte parser state machine overhead.
+        // Non-wide chars written directly to cells[] with batch dirty marking.
         if (parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE) {
             const start_i = i;
             while (i < data.len and data[i] >= 0xC0 and data[i] < 0xFE) {
                 const first = data[i];
+                var cp: u21 = undefined;
+                var seq_len: usize = undefined;
                 if (first < 0xE0) {
-                    // 2-byte: 110xxxxx 10xxxxxx
                     if (i + 1 >= data.len) break;
                     const b1 = data[i + 1];
                     if (b1 & 0xC0 != 0x80) break;
-                    handlePrint((@as(u21, first & 0x1F) << 6) | @as(u21, b1 & 0x3F), term);
-                    i += 2;
+                    cp = (@as(u21, first & 0x1F) << 6) | @as(u21, b1 & 0x3F);
+                    seq_len = 2;
                 } else if (first < 0xF0) {
-                    // 3-byte: 1110xxxx 10xxxxxx 10xxxxxx
                     if (i + 2 >= data.len) break;
                     const b1 = data[i + 1];
                     const b2 = data[i + 2];
                     if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80) break;
-                    handlePrint((@as(u21, first & 0x0F) << 12) | (@as(u21, b1 & 0x3F) << 6) | @as(u21, b2 & 0x3F), term);
-                    i += 3;
+                    cp = (@as(u21, first & 0x0F) << 12) | (@as(u21, b1 & 0x3F) << 6) | @as(u21, b2 & 0x3F);
+                    seq_len = 3;
                 } else {
-                    // 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
                     if (i + 3 >= data.len) break;
                     const b1 = data[i + 1];
                     const b2 = data[i + 2];
                     const b3 = data[i + 3];
                     if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80 or b3 & 0xC0 != 0x80) break;
-                    handlePrint((@as(u21, first & 0x07) << 18) | (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) | @as(u21, b3 & 0x3F), term);
-                    i += 4;
+                    cp = (@as(u21, first & 0x07) << 18) | (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) | @as(u21, b3 & 0x3F);
+                    seq_len = 4;
                 }
+                // Wide chars need handlePrint for dummy cell logic
+                if (isWide(cp)) {
+                    handlePrint(cp, term);
+                    i += seq_len;
+                    continue;
+                }
+                // Non-wide: direct cell write (like ASCII fast path)
+                if (term.cursor_x >= term.cols) {
+                    if (term.decawm) {
+                        term.cursor_x = 0;
+                        term.insertNewline();
+                    } else {
+                        term.cursor_x = term.cols - 1;
+                    }
+                }
+                const cols = term.cols;
+                const phys_row = term.row_map[term.cursor_y];
+                const phys_idx = @as(usize, phys_row) * @as(usize, cols) + term.cursor_x;
+                // Fix wide char boundary if overwriting
+                if (term.cells[phys_idx].attrs.wide_dummy and term.cursor_x > 0) {
+                    term.cells[phys_idx - 1] = Cell{};
+                }
+                term.cells[phys_idx] = .{
+                    .char = cp,
+                    .fg = term.current_fg,
+                    .bg = term.current_bg,
+                    .attrs = term.current_attrs,
+                };
+                if (term.fg_rgb_map.count() > 0) _ = term.fg_rgb_map.remove(phys_idx);
+                if (term.bg_rgb_map.count() > 0) _ = term.bg_rgb_map.remove(phys_idx);
+                if (term.current_fg_rgb) |rgb| term.fg_rgb_map.put(phys_idx, rgb) catch {};
+                if (term.current_bg_rgb) |rgb| term.bg_rgb_map.put(phys_idx, rgb) catch {};
+                const logical_idx = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
+                term.markDirtyRange(.{ .start = logical_idx, .end = logical_idx + 1 });
+                term.last_printed_char = cp;
+                term.cursor_x += 1;
+                i += seq_len;
             }
-            if (i > start_i) continue; // made progress, restart outer loop
+            if (i > start_i) continue;
         }
         // Slow path: control/escape sequences, incomplete UTF-8
         const action = parser.feed(data[i]);

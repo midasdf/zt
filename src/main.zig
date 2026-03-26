@@ -330,14 +330,25 @@ pub fn main() !void {
     var write_buf: [4096]u8 = undefined;
     var write_pending: usize = 0;
     var last_render_ns: i128 = 0;
+    var bytes_since_render: usize = 0;
 
     while (running) {
+        // Adaptive frame rate: during heavy output, reduce render frequency
+        // Normal: frame_min_ns (default 8ms = 120fps)
+        // Bulk:   frame_min_ns * 8 (default 64ms = ~15fps) when >64KB since last render
+        const effective_frame_ns: i128 = if (config.frame_min_ns == 0)
+            0
+        else if (bytes_since_render > 65536)
+            @as(i128, config.frame_min_ns) * 8
+        else
+            @as(i128, config.frame_min_ns);
+
         // Dynamic epoll timeout: short wait when render pending, block otherwise
-        const epoll_timeout: i32 = if (config.frame_min_ns > 0 and term.hasDirty()) blk: {
+        const epoll_timeout: i32 = if (effective_frame_ns > 0 and term.hasDirty()) blk: {
             const now = std.time.nanoTimestamp();
             const elapsed = now - last_render_ns;
-            if (elapsed >= config.frame_min_ns) break :blk 0;
-            const remaining_ms = @divFloor(@as(i128, config.frame_min_ns) - elapsed, 1_000_000);
+            if (elapsed >= effective_frame_ns) break :blk 0;
+            const remaining_ms = @divFloor(effective_frame_ns - elapsed, 1_000_000);
             break :blk @intCast(@max(remaining_ms, 1));
         } else -1;
 
@@ -371,6 +382,7 @@ pub fn main() !void {
                                 running = false;
                                 break;
                             }
+                            bytes_since_render += bytes_read;
                             vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                         }
                     }
@@ -486,6 +498,17 @@ pub fn main() !void {
             }
         }
 
+        // Extra PTY drain: data may have arrived during event processing.
+        // Avoids unnecessary epoll_wait roundtrip when data is flowing rapidly.
+        if (running) {
+            while (true) {
+                const extra = pty.read(&pty_buf) catch break;
+                if (extra == 0) { running = false; break; }
+                bytes_since_render += extra;
+                vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
+            }
+        }
+
         // Mark old cursor position dirty if cursor moved
         if (prev_cursor_x != term.cursor_x or prev_cursor_y != term.cursor_y) {
             term.markDirty(prev_cursor_x, prev_cursor_y);
@@ -498,19 +521,38 @@ pub fn main() !void {
         if (!term.hasDirty()) continue;
 
         // Frame rate limiting: skip render if too soon since last frame
-        if (config.frame_min_ns > 0) {
+        if (effective_frame_ns > 0) {
             const now = std.time.nanoTimestamp();
-            if (now - last_render_ns < config.frame_min_ns) continue;
+            if (now - last_render_ns < effective_frame_ns) continue;
         }
 
         const buf = backend.getBuffer();
         const stride = backend.getStride();
+
+        // Pixel buffer scroll optimization: memmove pixels instead of re-rendering
+        // Only effective for partial scrolls (delta < rows)
+        const scroll_delta = term.scroll_delta;
+        term.scroll_delta = 0;
+        if (scroll_delta > 0 and scroll_delta < term.rows) {
+            const pixel_shift = @as(u32, @intCast(scroll_delta)) * config.cell_height;
+            const total_h = term.rows * config.cell_height;
+            if (pixel_shift < total_h) {
+                const src_start = pixel_shift * stride;
+                const dst_end = (total_h - pixel_shift) * stride;
+                std.mem.copyForwards(u8, buf[0..dst_end], buf[src_start .. src_start + dst_end]);
+                // Only bottom rows need full re-render; clear their dirty to force it
+                // (they're already dirty from scrollUp)
+                backend.markDirtyRows(0, total_h - 1);
+            }
+        }
+
+        const skip_dirty_check = term.isAllDirty();
         var y: u32 = 0;
         while (y < term.rows) : (y += 1) {
-            if (!term.isRowDirty(y)) continue; // skip clean rows
+            if (!skip_dirty_check and !term.isRowDirty(y)) continue;
             var x: u32 = 0;
             while (x < term.cols) : (x += 1) {
-                if (term.isDirty(x, y)) {
+                if (skip_dirty_check or term.isDirty(x, y)) {
                     const cell = term.getCell(x, y);
 
                     // Skip wide_dummy cells — rendered by the wide cell to the left
@@ -543,6 +585,7 @@ pub fn main() !void {
         }
         term.clearDirty();
         last_render_ns = std.time.nanoTimestamp();
+        bytes_since_render = 0;
 
         backend.present();
         backend.flush();
