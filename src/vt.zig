@@ -446,6 +446,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 term.markDirtyRange(.{ .start = logical_start, .end = logical_start + count });
+                term.last_printed_char = @as(u21, data[i + count - 1]);
                 term.cursor_x += count;
                 i += count;
             }
@@ -540,6 +541,7 @@ fn handlePrint(cp: u21, term: *Term) void {
         term.setBgRgb(term.cursor_x, term.cursor_y, rgb) catch {};
     }
 
+    term.last_printed_char = cp;
     term.cursor_x += 1;
 
     // Wide char: set dummy cell for right half
@@ -571,13 +573,23 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
     const pc = csi.param_count;
 
     switch (csi.final_byte) {
-        'A' => { // CUU — cursor up
+        'A' => { // CUU — cursor up (respects scroll region)
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
-            term.moveCursorRel(0, -@as(i32, @intCast(n)));
+            // Stop at scroll_top if cursor is within scroll region, else stop at row 0
+            const min_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
+                term.scroll_top
+            else
+                0;
+            term.cursor_y = if (term.cursor_y >= n) @max(term.cursor_y - n, min_y) else min_y;
         },
-        'B' => { // CUD — cursor down
+        'B' => { // CUD — cursor down (respects scroll region)
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
-            term.moveCursorRel(0, @as(i32, @intCast(n)));
+            // Stop at scroll_bottom if cursor is within scroll region, else stop at last row
+            const max_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
+                term.scroll_bottom
+            else
+                term.rows -| 1;
+            term.cursor_y = @min(term.cursor_y + n, max_y);
         },
         'C' => { // CUF — cursor forward
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
@@ -667,18 +679,36 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             term.scrollDown(@intCast(n));
         },
+        'b' => { // REP — repeat preceding graphic character
+            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const ch = term.last_printed_char;
+            if (ch > 0) {
+                const count = @min(n, term.cols * term.rows);
+                var rep: u16 = 0;
+                while (rep < count) : (rep += 1) {
+                    handlePrint(ch, term);
+                }
+            }
+        },
         'r' => { // DECSTBM — set scroll region (1-indexed)
             const top = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
             const bot = if (pc > 1 and p[1] > 0) p[1] - 1 else @as(u16, @intCast(term.rows -| 1));
             term.setScrollRegion(@intCast(top), @intCast(bot));
+            // VT spec: DECSTBM resets cursor to home position
+            term.cursor_x = 0;
+            term.cursor_y = 0;
         },
-        's' => { // Save cursor
-            term.saved_cursor_x = term.cursor_x;
-            term.saved_cursor_y = term.cursor_y;
+        's' => { // Save cursor (only without private marker; \e[?s is XTPUSHCOLORS)
+            if (csi.private_marker == 0) {
+                term.saved_cursor_x = term.cursor_x;
+                term.saved_cursor_y = term.cursor_y;
+            }
         },
-        'u' => { // Restore cursor
-            term.cursor_x = term.saved_cursor_x;
-            term.cursor_y = term.saved_cursor_y;
+        'u' => { // Restore cursor (only without private marker; \e[?u/\e[>Nu are Kitty keyboard protocol)
+            if (csi.private_marker == 0) {
+                term.cursor_x = term.saved_cursor_x;
+                term.cursor_y = term.saved_cursor_y;
+            }
         },
         'h' => { // DECSET
             if (csi.private_marker == '?') handleDecSet(csi, term, true);
@@ -686,7 +716,14 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
         'l' => { // DECRST
             if (csi.private_marker == '?') handleDecSet(csi, term, false);
         },
-        else => {},
+        else => {
+            std.log.warn("unhandled CSI: private={c} params={d}..{d} final={c}", .{
+                if (csi.private_marker != 0) csi.private_marker else @as(u8, '-'),
+                if (pc > 0) p[0] else 0,
+                if (pc > 1) p[1] else 0,
+                csi.final_byte,
+            });
+        },
     }
 }
 
@@ -826,7 +863,9 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                 }
             },
             2004 => term.bracketed_paste = set,
-            else => {},
+            else => {
+                std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });
+            },
         }
     }
 }
@@ -873,7 +912,12 @@ fn handleEsc(esc: EscAction, term: *Term) void {
             term.bracketed_paste = false;
             term.eraseDisplay(2);
         },
-        else => {},
+        else => {
+            std.log.warn("unhandled ESC: intermediate={c} final={c}", .{
+                if (esc.intermediate != 0) esc.intermediate else @as(u8, '-'),
+                esc.final_byte,
+            });
+        },
     }
 }
 

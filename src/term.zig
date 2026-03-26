@@ -61,6 +61,9 @@ pub const Term = struct {
     fg_rgb_map: std.AutoHashMap(usize, [3]u8),
     bg_rgb_map: std.AutoHashMap(usize, [3]u8),
 
+    // Last printed graphic character (for REP / CSI b)
+    last_printed_char: u21 = 0,
+
     // DEC mode flags
     decckm: bool = false,
     decawm: bool = true,
