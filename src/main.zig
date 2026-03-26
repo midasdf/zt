@@ -323,7 +323,7 @@ pub fn main() !void {
     var parser = vt.Parser{};
     var running = true;
     var mod_state: input.Modifiers = .{};
-    var pty_buf: [262144]u8 = undefined; // 256KB PTY buffer
+    var pty_buf: [config.pty_buf_size]u8 = undefined;
     var cursor_visible_blink = true;
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
@@ -333,6 +333,7 @@ pub fn main() !void {
     var bytes_since_render: usize = 0;
 
     while (running) {
+        const loop_now = std.time.nanoTimestamp();
         // Adaptive frame rate: smoothly reduce render frequency during heavy output
         // Tier 0: <64KB  → frame_min_ns (default 8ms = 120fps)
         // Tier 1: 64KB+  → frame_min_ns * 2 (default 16ms = 60fps)
@@ -351,8 +352,7 @@ pub fn main() !void {
 
         // Dynamic epoll timeout: short wait when render pending, block otherwise
         const epoll_timeout: i32 = if (effective_frame_ns > 0 and term.hasDirty()) blk: {
-            const now = std.time.nanoTimestamp();
-            const elapsed = now - last_render_ns;
+            const elapsed = loop_now - last_render_ns;
             if (elapsed >= effective_frame_ns) break :blk 0;
             const remaining_ms = @divFloor(effective_frame_ns - elapsed, 1_000_000);
             break :blk @intCast(@max(remaining_ms, 1));
@@ -509,7 +509,7 @@ pub fn main() !void {
         // Capped at 1MB to prevent render starvation from infinite producers (yes, cat /dev/urandom).
         if (running) {
             var extra_total: usize = 0;
-            while (extra_total < 1_048_576) {
+            while (extra_total < config.pty_buf_size * 4) {
                 const extra = pty.read(&pty_buf) catch break;
                 if (extra == 0) { running = false; break; }
                 bytes_since_render += extra;
@@ -531,8 +531,7 @@ pub fn main() !void {
 
         // Frame rate limiting: skip render if too soon since last frame
         if (effective_frame_ns > 0) {
-            const now = std.time.nanoTimestamp();
-            if (now - last_render_ns < effective_frame_ns) continue;
+            if (loop_now - last_render_ns < effective_frame_ns) continue;
         }
 
         const buf = backend.getBuffer();
@@ -576,7 +575,7 @@ pub fn main() !void {
             }
         }
         term.clearDirty();
-        last_render_ns = std.time.nanoTimestamp();
+        last_render_ns = loop_now;
         bytes_since_render = 0;
 
         backend.present();
