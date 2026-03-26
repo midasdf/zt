@@ -452,8 +452,9 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 // If first cell is a wide_dummy, clear the wide cell to its left
                 if (term.cells[phys_start].attrs.wide_dummy and term.cursor_x > 0) {
                     const wide_idx = phys_base + term.cursor_x - 1;
-                    term.cells[wide_idx] = Cell{};
-                    // Mark the cleared wide cell dirty
+                    term.cells[wide_idx] = term.blankCell();
+                    term.fg_rgb[wide_idx] = null;
+                    term.bg_rgb[wide_idx] = term.current_bg_rgb;
                     const logical_wide = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x - 1;
                     term.markDirtyRange(.{ .start = logical_wide, .end = logical_wide + 1 });
                 }
@@ -461,7 +462,10 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 if (count > 0 and term.cells[phys_start + count - 1].attrs.wide) {
                     const dummy_x = term.cursor_x + count;
                     if (dummy_x < cols) {
-                        term.cells[phys_base + dummy_x] = Cell{};
+                        const dummy_phys = phys_base + dummy_x;
+                        term.cells[dummy_phys] = term.blankCell();
+                        term.fg_rgb[dummy_phys] = null;
+                        term.bg_rgb[dummy_phys] = term.current_bg_rgb;
                         const logical_dummy = @as(usize, term.cursor_y) * @as(usize, cols) + dummy_x;
                         term.markDirtyRange(.{ .start = logical_dummy, .end = logical_dummy + 1 });
                     }
@@ -750,26 +754,47 @@ fn respondDecrqss(fd: std.posix.fd_t, query: []const u8, term: *const Term) void
 }
 
 fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser, writer_fd: ?std.posix.fd_t) void {
+    // VT52 ESC Y sub-state: collecting row and column bytes
+    // Reuse utf8_buf[0] as sub-state: 0=normal, 'Y'=awaiting row, 'R'=awaiting col
+    if (parser.utf8_buf[0] == 'Y') {
+        // Awaiting row byte (row = byte - 0x1F, 1-based)
+        parser.utf8_buf[1] = byte;
+        parser.utf8_buf[0] = 'R'; // now awaiting col
+        return;
+    }
+    if (parser.utf8_buf[0] == 'R') {
+        // Awaiting col byte
+        const row = if (parser.utf8_buf[1] >= 0x20) parser.utf8_buf[1] - 0x20 else 0;
+        const col = if (byte >= 0x20) byte - 0x20 else 0;
+        term.cursor_x = @min(@as(u32, col), term.cols -| 1);
+        term.cursor_y = @min(@as(u32, row), term.rows -| 1);
+        term.wrap_next = false;
+        parser.utf8_buf[0] = 0;
+        return;
+    }
+
     if (parser.state == .escape) {
         parser.state = .ground;
         switch (byte) {
-            'A' => { if (term.cursor_y > 0) term.cursor_y -= 1; },
-            'B' => { if (term.cursor_y < term.rows - 1) term.cursor_y += 1; },
-            'C' => { if (term.cursor_x < term.cols - 1) term.cursor_x += 1; },
-            'D' => { if (term.cursor_x > 0) term.cursor_x -= 1; },
+            'A' => { term.wrap_next = false; if (term.cursor_y > 0) term.cursor_y -= 1; },
+            'B' => { term.wrap_next = false; if (term.cursor_y < term.rows - 1) term.cursor_y += 1; },
+            'C' => { term.wrap_next = false; if (term.cursor_x < term.cols - 1) term.cursor_x += 1; },
+            'D' => { term.wrap_next = false; if (term.cursor_x > 0) term.cursor_x -= 1; },
             'F' => term.charsets[0] = .dec_graphics,
             'G' => term.charsets[0] = .us_ascii,
-            'H' => { term.cursor_x = 0; term.cursor_y = 0; },
+            'H' => { term.cursor_x = 0; term.cursor_y = 0; term.wrap_next = false; },
             'I' => { // Reverse LF
+                term.wrap_next = false;
                 if (term.cursor_y == term.scroll_top) term.scrollDown(1)
                 else if (term.cursor_y > 0) term.cursor_y -= 1;
             },
             'J' => term.eraseDisplay(0),
             'K' => term.eraseLine(0),
+            'Y' => { parser.utf8_buf[0] = 'Y'; return; }, // Begin cursor addressing
             'Z' => { // Identify
                 if (writer_fd) |fd| _ = std.posix.write(fd, "\x1b/Z") catch {};
             },
-            '<' => term.vt52_mode = false, // Exit VT52 → VT100
+            '<' => { term.vt52_mode = false; parser.utf8_buf[0] = 0; }, // Exit VT52 → VT100
             '=' => term.deckpam = true,
             '>' => term.deckpam = false,
             else => {},
@@ -833,7 +858,7 @@ fn handlePrint(cp: u21, term: *Term) void {
     // Wide char needs 2 columns — wrap if only 1 column left
     if (wide and term.cursor_x + 1 >= term.cols) {
         if (term.decawm) {
-            term.setCell(term.cursor_x, term.cursor_y, Cell{});
+            term.setCell(term.cursor_x, term.cursor_y, term.blankCell());
             term.cursor_x = 0;
             term.insertNewline();
         }
@@ -1128,7 +1153,7 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
         'p' => {
             // DECSTR — Soft Terminal Reset (CSI ! p)
             if (csi.intermediate_count > 0 and csi.intermediates[0] == '!') {
-                // Reset terminal state (like RIS but keep screen content)
+                // DECSTR — Soft Terminal Reset (keep screen content)
                 term.cursor_x = 0;
                 term.cursor_y = 0;
                 term.wrap_next = false;
@@ -1138,6 +1163,12 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                 term.decawm = true;
                 term.decckm = false;
                 term.cursor_visible = true;
+                term.deckpam = false;
+                term.bracketed_paste = false;
+                term.cursor_style = 0;
+                term.focus_events = false;
+                term.decbkm = false;
+                term.sync_update = false;
                 term.current_fg = 7;
                 term.current_bg = 0;
                 term.current_attrs = .{};
@@ -1147,6 +1178,8 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                 term.charsets = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii };
                 term.scroll_top = 0;
                 term.scroll_bottom = term.rows -| 1;
+                term.last_printed_char = 0;
+                term.saved_dec_mode_count = 0;
                 for (0..term.tabs.len) |c_idx| {
                     term.tabs[c_idx] = (c_idx % 8 == 0) and c_idx > 0;
                 }
@@ -1181,7 +1214,7 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             } else if (csi.private_marker == '>' and pc > 0 and p[0] == 0) {
                 // XTVERSION — respond with terminal identification
                 if (writer_fd) |fd| {
-                    _ = std.posix.write(fd, "\x1bP>|zt(0.2.3)\x1b\\") catch {};
+                    _ = std.posix.write(fd, "\x1bP>|zt(0.2.4)\x1b\\") catch {};
                 }
             }
         },
@@ -1419,22 +1452,26 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
     }
 
     switch (esc.final_byte) {
-        '7' => { // DECSC — save cursor (with attributes, like st)
+        '7' => { // DECSC — save cursor (with attributes + TrueColor)
             term.saved_cursor_x = term.cursor_x;
             term.saved_cursor_y = term.cursor_y;
             term.saved_attrs = term.current_attrs;
             term.saved_fg = term.current_fg;
             term.saved_bg = term.current_bg;
+            term.saved_fg_rgb = term.current_fg_rgb;
+            term.saved_bg_rgb = term.current_bg_rgb;
             term.saved_charset = term.charset;
             term.saved_wrap_next = term.wrap_next;
             term.saved_origin_mode = term.origin_mode;
         },
-        '8' => { // DECRC — restore cursor (with attributes)
+        '8' => { // DECRC — restore cursor (with attributes + TrueColor)
             term.cursor_x = term.saved_cursor_x;
             term.cursor_y = term.saved_cursor_y;
             term.current_attrs = term.saved_attrs;
             term.current_fg = term.saved_fg;
             term.current_bg = term.saved_bg;
+            term.current_fg_rgb = term.saved_fg_rgb;
+            term.current_bg_rgb = term.saved_bg_rgb;
             term.charset = term.saved_charset;
             term.wrap_next = term.saved_wrap_next;
             term.origin_mode = term.saved_origin_mode;
@@ -1494,7 +1531,20 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             term.deckpam = false;
             term.origin_mode = false;
             term.cursor_style = 0;
-            // Reset tab stops to default (every 8 columns)
+            term.focus_events = false;
+            term.decbkm = false;
+            term.vt52_mode = false;
+            term.sync_update = false;
+            term.last_printed_char = 0;
+            term.saved_dec_mode_count = 0;
+            term.saved_attrs = .{};
+            term.saved_fg = 7;
+            term.saved_bg = 0;
+            term.saved_charset = 0;
+            term.saved_wrap_next = false;
+            term.saved_origin_mode = false;
+            term.saved_fg_rgb = null;
+            term.saved_bg_rgb = null;
             for (0..term.tabs.len) |c| {
                 term.tabs[c] = (c % 8 == 0) and c > 0;
             }

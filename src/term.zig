@@ -145,6 +145,8 @@ pub const Term = struct {
     saved_charset: u2 = 0,
     saved_wrap_next: bool = false,
     saved_origin_mode: bool = false,
+    saved_fg_rgb: ?[3]u8 = null,
+    saved_bg_rgb: ?[3]u8 = null,
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
@@ -510,7 +512,7 @@ pub const Term = struct {
     /// Return a blank cell with current background color (BCE — Background Color Erase).
     /// All erase/scroll/clear operations must use this instead of Cell{}.
     pub inline fn blankCell(self: *const Self) Cell {
-        return .{ .char = ' ', .fg = self.current_fg, .bg = self.current_bg };
+        return .{ .char = ' ', .fg = 7, .bg = self.current_bg };
     }
 
     /// Fill physical range with blank cells using BCE, including TrueColor bg.
@@ -528,12 +530,13 @@ pub const Term = struct {
     /// Fix wide character boundaries at the edges of an erase/delete range.
     fn fixWideBoundaries(self: *Self, logical_start: usize, logical_end: usize) void {
         const cols: usize = self.cols;
+        const blank = self.blankCell();
         // Check start: if it's a wide_dummy, clear the wide cell to its left
         if (logical_start > 0 and logical_start < @as(usize, self.rows) * cols) {
             const sy = @as(u32, @intCast(logical_start / cols));
             const sx = @as(u32, @intCast(logical_start % cols));
             if (self.getCell(sx, sy).attrs.wide_dummy and sx > 0) {
-                self.setCell(sx - 1, sy, Cell{});
+                self.setCell(sx - 1, sy, blank);
             }
         }
         // Check end: if it points at a wide_dummy, clear it
@@ -541,7 +544,7 @@ pub const Term = struct {
             const ey = @as(u32, @intCast(logical_end / cols));
             const ex = @as(u32, @intCast(logical_end % cols));
             if (self.getCell(ex, ey).attrs.wide_dummy) {
-                self.setCell(ex, ey, Cell{});
+                self.setCell(ex, ey, blank);
             }
         }
         // Check end-1: if last cell in range is wide, clear the dummy after it
@@ -550,7 +553,7 @@ pub const Term = struct {
             const lx = @as(u32, @intCast((logical_end - 1) % cols));
             if (self.getCell(lx, ly).attrs.wide) {
                 const dx = lx + 1;
-                if (dx < self.cols) self.setCell(dx, ly, Cell{});
+                if (dx < self.cols) self.setCell(dx, ly, blank);
             }
         }
     }
@@ -679,13 +682,13 @@ pub const Term = struct {
 
     pub fn insertLines(self: *Self, n: u32) void {
         if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
-        const count: usize = @min(n, self.scroll_bottom - self.cursor_y + 1);
+        const count: usize = @min(@min(n, self.scroll_bottom - self.cursor_y + 1), 512);
         if (count == 0) return;
         const cols: usize = self.cols;
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        var saved: [256]u32 = undefined;
+        var saved: [512]u32 = undefined;
         for (0..count) |s| {
             const phys = self.row_map[bot - s];
             saved[s] = phys;
@@ -708,13 +711,13 @@ pub const Term = struct {
 
     pub fn deleteLines(self: *Self, n: u32) void {
         if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
-        const count: usize = @min(n, self.scroll_bottom - self.cursor_y + 1);
+        const count: usize = @min(@min(n, self.scroll_bottom - self.cursor_y + 1), 512);
         if (count == 0) return;
         const cols: usize = self.cols;
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        var saved: [256]u32 = undefined;
+        var saved: [512]u32 = undefined;
         for (0..count) |s| {
             const phys = self.row_map[cy + s];
             saved[s] = phys;
