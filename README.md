@@ -40,7 +40,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 | Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 5,488 lines across 11 files |  |
+| Source | 6,113 lines across 11 files |  |
 
 ## Benchmarks
 
@@ -226,9 +226,9 @@ epoll event loop (single-threaded, dynamic timeout)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,238 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
+| `src/vt.zig` | 1,621 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
 | `src/backend/x11.zig` | 950 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
-| `src/term.zig` | 822 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, TrueColor sparse maps |
+| `src/term.zig` | 989 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor sparse maps |
 | `src/main.zig` | 559 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
 | `src/render.zig` | 389 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
@@ -245,13 +245,14 @@ epoll event loop (single-threaded, dynamic timeout)
 | Sequence | Name | Description |
 |----------|------|-------------|
 | `CSI n A` | CUU | Cursor up |
-| `CSI n B` | CUD | Cursor down |
-| `CSI n C` | CUF | Cursor forward |
+| `CSI n B/e` | CUD/VPR | Cursor down |
+| `CSI n C/a` | CUF/HPR | Cursor forward |
 | `CSI n D` | CUB | Cursor back |
 | `CSI n E` | CNL | Cursor next line |
 | `CSI n F` | CPL | Cursor preceding line |
-| `CSI n G` | CHA | Cursor horizontal absolute |
+| `CSI n G/`` | CHA/HPA | Cursor horizontal absolute |
 | `CSI n;m H/f` | CUP | Cursor position |
+| `CSI n I` | CHT | Cursor forward tabulation |
 | `CSI n J` | ED | Erase display (0: below, 1: above, 2/3: all) |
 | `CSI n K` | EL | Erase line (0: right, 1: left, 2: all) |
 | `CSI n L` | IL | Insert lines |
@@ -259,16 +260,27 @@ epoll event loop (single-threaded, dynamic timeout)
 | `CSI n P` | DCH | Delete characters |
 | `CSI n X` | ECH | Erase characters |
 | `CSI n @` | ICH | Insert characters |
+| `CSI n Z` | CBT | Cursor backward tabulation |
 | `CSI n b` | REP | Repeat preceding graphic character |
 | `CSI n S` | SU | Scroll up |
 | `CSI n T` | SD | Scroll down |
 | `CSI n d` | VPA | Vertical position absolute |
+| `CSI n g` | TBC | Tab clear (0: current, 3: all) |
 | `CSI t;b r` | DECSTBM | Set scroll region (resets cursor to home) |
-| `CSI s` | | Save cursor position (no private marker) |
-| `CSI u` | | Restore cursor position (no private marker) |
+| `CSI s` | | Save cursor position |
+| `CSI u` | | Restore cursor position |
+| `CSI 5 n` | DSR | Device status report (OK) |
 | `CSI 6 n` | DSR | Device status report (cursor position) |
 | `CSI c` | DA1 | Device attributes (reports VT220) |
+| `CSI > c` | DA2 | Secondary device attributes |
+| `CSI ! p` | DECSTR | Soft terminal reset |
+| `CSI Ps SP q` | DECSCUSR | Set cursor style |
+| `CSI Ps t` | XTWINOPS | Window operations (silently accepted) |
+| `CSI 4 h/l` | IRM | Insert/replace mode |
+| `CSI 20 h/l` | LNM | Linefeed/newline mode |
 | `CSI ... m` | SGR | Select graphic rendition (see below) |
+
+All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown private-marker sequences are silently ignored.
 
 ### SGR (Select Graphic Rendition)
 
@@ -279,11 +291,17 @@ epoll event loop (single-threaded, dynamic timeout)
 | 2 | Dim |
 | 3 | Italic |
 | 4 | Underline |
+| 5, 6 | Blink |
 | 7 | Reverse video |
+| 8 | Invisible |
+| 9 | Strikethrough |
 | 22 | Normal intensity |
 | 23 | Not italic |
 | 24 | Not underline |
+| 25 | Not blink |
 | 27 | Not reverse |
+| 28 | Not invisible |
+| 29 | Not strikethrough |
 | 30-37 | Foreground color (standard) |
 | 38;5;n | Foreground 256-color |
 | 38;2;r;g;b | Foreground 24-bit TrueColor |
@@ -300,28 +318,41 @@ epoll event loop (single-threaded, dynamic timeout)
 | Mode | Name | Description |
 |------|------|-------------|
 | `?1` | DECCKM | Application cursor keys |
+| `?6` | DECOM | Origin mode |
 | `?7` | DECAWM | Auto-wrap mode |
 | `?25` | DECTCEM | Cursor visible |
 | `?47` | | Alternate screen buffer |
 | `?1047` | | Alternate screen buffer |
+| `?1048` | | Save/restore cursor |
 | `?1049` | | Alternate screen + save/restore cursor |
-| `?2004` | | Bracketed paste mode (flag only) |
+| `?2004` | | Bracketed paste mode |
+| `?2026` | | Synchronized update |
+| `?1000-1006` | | Mouse tracking modes (silently accepted) |
+| `?1004` | | Focus events (silently accepted) |
 
 ### Escape sequences
 
 | Sequence | Name | Description |
 |----------|------|-------------|
-| `ESC 7` | DECSC | Save cursor |
-| `ESC 8` | DECRC | Restore cursor |
+| `ESC 7` | DECSC | Save cursor + attributes + charset |
+| `ESC 8` | DECRC | Restore cursor + attributes + charset |
 | `ESC D` | IND | Index (line feed, scrolls at bottom) |
+| `ESC E` | NEL | Next line |
+| `ESC H` | HTS | Horizontal tab stop |
 | `ESC M` | RI | Reverse index |
+| `ESC Z` | DECID | Identify terminal |
 | `ESC c` | RIS | Full reset |
+| `ESC =` | DECKPAM | Application keypad mode |
+| `ESC >` | DECKPNM | Normal keypad mode |
+| `ESC ( 0` | | G0 charset = DEC Special Graphics (line drawing) |
+| `ESC ( B` | | G0 charset = US ASCII |
+| `ESC # 8` | DECALN | Screen alignment test |
 
 ## Tested applications
 
 The following applications have been verified working under Xvfb integration tests:
 
-vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L)
+vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L), Claude Code (Anthropic CLI)
 
 ## Limitations
 
