@@ -40,7 +40,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 | Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 6,296 lines across 11 files |  |
+| Source | 6,462 lines across 11 files |  |
 
 ## Benchmarks
 
@@ -228,9 +228,9 @@ epoll event loop (single-threaded, dynamic timeout)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,773 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
+| `src/vt.zig` | 1,859 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
 | `src/backend/x11.zig` | 950 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
-| `src/term.zig` | 1,000 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor sparse maps |
+| `src/term.zig` | 1,080 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor sparse maps |
 | `src/main.zig` | 559 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
 | `src/render.zig` | 389 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
@@ -334,12 +334,27 @@ All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown priva
 | `?1047` | | Alternate screen buffer |
 | `?1048` | | Save/restore cursor |
 | `?1049` | | Alternate screen + save/restore cursor |
-| `?2004` | | Bracketed paste mode |
+| `?2` | DECANM | VT52/VT100 mode switch |
 | `?67` | DECBKM | Backarrow key mode (BS vs DEL) |
 | `?2004` | | Bracketed paste mode |
 | `?2026` | | Synchronized update |
 | `?1000-1006` | | Mouse tracking modes (silently accepted) |
 | `?1004` | | Focus events (sends CSI I/O) |
+
+### VT52 mode
+
+Entered via `CSI ? 2 l` (DECANM reset). Exit via `ESC <`.
+
+| Sequence | Description |
+|----------|-------------|
+| `ESC A-D` | Cursor movement (up/down/right/left) |
+| `ESC H` | Home |
+| `ESC I` | Reverse line feed |
+| `ESC J` | Erase to end of screen |
+| `ESC K` | Erase to end of line |
+| `ESC F/G` | Enter/exit graphics mode |
+| `ESC Z` | Identify (responds `ESC / Z`) |
+| `ESC <` | Exit VT52, enter VT100 |
 
 ### Escape sequences
 
