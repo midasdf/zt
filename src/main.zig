@@ -323,16 +323,26 @@ pub fn main() !void {
     var parser = vt.Parser{};
     var running = true;
     var mod_state: input.Modifiers = .{};
-    var pty_buf: [65536]u8 = undefined;
+    var pty_buf: [262144]u8 = undefined; // 256KB PTY buffer
     var cursor_visible_blink = true;
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
     var write_buf: [4096]u8 = undefined;
     var write_pending: usize = 0;
+    var last_render_ns: i128 = 0;
 
     while (running) {
+        // Dynamic epoll timeout: short wait when render pending, block otherwise
+        const epoll_timeout: i32 = if (config.frame_min_ns > 0 and term.hasDirty()) blk: {
+            const now = std.time.nanoTimestamp();
+            const elapsed = now - last_render_ns;
+            if (elapsed >= config.frame_min_ns) break :blk 0;
+            const remaining_ms = @divFloor(@as(i128, config.frame_min_ns) - elapsed, 1_000_000);
+            break :blk @intCast(@max(remaining_ms, 1));
+        } else -1;
+
         var events: [16]linux.epoll_event = undefined;
-        const n_raw = linux.epoll_wait(epoll_fd, &events, events.len, -1);
+        const n_raw = linux.epoll_wait(epoll_fd, &events, events.len, epoll_timeout);
         const n_isize: isize = @bitCast(n_raw);
         if (n_isize < 0) continue; // EINTR
         const n: usize = @intCast(n_raw);
@@ -485,8 +495,12 @@ pub fn main() !void {
         prev_cursor_y = term.cursor_y;
 
         // Render dirty cells — skip entirely if nothing changed
-        if (prev_cursor_x == term.cursor_x and prev_cursor_y == term.cursor_y and !term.hasDirty()) {
-            continue;
+        if (!term.hasDirty()) continue;
+
+        // Frame rate limiting: skip render if too soon since last frame
+        if (config.frame_min_ns > 0) {
+            const now = std.time.nanoTimestamp();
+            if (now - last_render_ns < config.frame_min_ns) continue;
         }
 
         const buf = backend.getBuffer();
@@ -528,7 +542,7 @@ pub fn main() !void {
             }
         }
         term.clearDirty();
-
+        last_render_ns = std.time.nanoTimestamp();
 
         backend.present();
         backend.flush();

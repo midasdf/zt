@@ -30,4 +30,9 @@ pub const Keymap = enum {
 
 pub const keymap: Keymap = if (build_options.use_jp_keymap) .jp else .us;
 
+pub const max_fps: u32 = build_options.max_fps;
+
+/// Minimum nanoseconds between frames. 0 = unlimited.
+pub const frame_min_ns: u64 = if (max_fps == 0) 0 else 1_000_000_000 / max_fps;
+
 pub const shell = "/bin/fish";

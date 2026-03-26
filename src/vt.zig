@@ -411,7 +411,20 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 const phys_row = term.row_map[term.cursor_y];
                 const phys_base = @as(usize, phys_row) * @as(usize, cols);
                 var count: u32 = 0;
-                while (count < remaining and i + count < data.len and data[i + count] >= 0x20 and data[i + count] <= 0x7E) {
+                const max_scan = @min(remaining, @as(u32, @intCast(data.len - i)));
+                // SIMD path: check 16 bytes at a time for printable ASCII range
+                const VEC_LEN = 16;
+                const Vec = @Vector(VEC_LEN, u8);
+                const lo: Vec = @splat(0x20);
+                const hi: Vec = @splat(0x7E);
+                while (count + VEC_LEN <= max_scan) {
+                    const chunk: Vec = data[i + count ..][0..VEC_LEN].*;
+                    if (@reduce(.And, chunk >= lo) and @reduce(.And, chunk <= hi)) {
+                        count += VEC_LEN;
+                    } else break;
+                }
+                // Scalar tail
+                while (count < max_scan and data[i + count] >= 0x20 and data[i + count] <= 0x7E) {
                     count += 1;
                 }
                 if (count == 0) break;
@@ -452,7 +465,41 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
             }
             continue;
         }
-        // Slow path: control/escape sequences, UTF-8
+        // Medium path: ground state + UTF-8 multi-byte characters
+        // Decode directly, bypassing per-byte parser state machine overhead.
+        if (parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE) {
+            const start_i = i;
+            while (i < data.len and data[i] >= 0xC0 and data[i] < 0xFE) {
+                const first = data[i];
+                if (first < 0xE0) {
+                    // 2-byte: 110xxxxx 10xxxxxx
+                    if (i + 1 >= data.len) break;
+                    const b1 = data[i + 1];
+                    if (b1 & 0xC0 != 0x80) break;
+                    handlePrint((@as(u21, first & 0x1F) << 6) | @as(u21, b1 & 0x3F), term);
+                    i += 2;
+                } else if (first < 0xF0) {
+                    // 3-byte: 1110xxxx 10xxxxxx 10xxxxxx
+                    if (i + 2 >= data.len) break;
+                    const b1 = data[i + 1];
+                    const b2 = data[i + 2];
+                    if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80) break;
+                    handlePrint((@as(u21, first & 0x0F) << 12) | (@as(u21, b1 & 0x3F) << 6) | @as(u21, b2 & 0x3F), term);
+                    i += 3;
+                } else {
+                    // 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+                    if (i + 3 >= data.len) break;
+                    const b1 = data[i + 1];
+                    const b2 = data[i + 2];
+                    const b3 = data[i + 3];
+                    if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80 or b3 & 0xC0 != 0x80) break;
+                    handlePrint((@as(u21, first & 0x07) << 18) | (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) | @as(u21, b3 & 0x3F), term);
+                    i += 4;
+                }
+            }
+            if (i > start_i) continue; // made progress, restart outer loop
+        }
+        // Slow path: control/escape sequences, incomplete UTF-8
         const action = parser.feed(data[i]);
         executeActionWithFd(action, term, writer_fd);
         i += 1;
