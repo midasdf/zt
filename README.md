@@ -40,7 +40,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 | Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 6,113 lines across 11 files |  |
+| Source | 6,296 lines across 11 files |  |
 
 ## Benchmarks
 
@@ -228,9 +228,9 @@ epoll event loop (single-threaded, dynamic timeout)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,621 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
+| `src/vt.zig` | 1,773 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
 | `src/backend/x11.zig` | 950 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
-| `src/term.zig` | 989 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor sparse maps |
+| `src/term.zig` | 1,000 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor sparse maps |
 | `src/main.zig` | 559 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
 | `src/render.zig` | 389 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
@@ -275,9 +275,15 @@ epoll event loop (single-threaded, dynamic timeout)
 | `CSI 6 n` | DSR | Device status report (cursor position) |
 | `CSI c` | DA1 | Device attributes (reports VT220) |
 | `CSI > c` | DA2 | Secondary device attributes |
+| `CSI > 0 q` | XTVERSION | Terminal identification (responds with zt version) |
 | `CSI ! p` | DECSTR | Soft terminal reset |
 | `CSI Ps SP q` | DECSCUSR | Set cursor style |
+| `CSI Ps $ p` | DECRQM | Mode query (responds with mode status) |
+| `CSI ! p` | DECSTR | Soft terminal reset |
+| `CSI " p` | DECSCL | Conformance level (silently accepted) |
+| `CSI " q` | DECSCA | Set character protection attribute |
 | `CSI Ps t` | XTWINOPS | Window operations (silently accepted) |
+| `CSI i` | MC | Media copy (silently accepted) |
 | `CSI 4 h/l` | IRM | Insert/replace mode |
 | `CSI 20 h/l` | LNM | Linefeed/newline mode |
 | `CSI ... m` | SGR | Select graphic rendition (see below) |
@@ -297,6 +303,7 @@ All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown priva
 | 7 | Reverse video |
 | 8 | Invisible |
 | 9 | Strikethrough |
+| 21 | Doubly-underlined |
 | 22 | Normal intensity |
 | 23 | Not italic |
 | 24 | Not underline |
@@ -328,9 +335,11 @@ All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown priva
 | `?1048` | | Save/restore cursor |
 | `?1049` | | Alternate screen + save/restore cursor |
 | `?2004` | | Bracketed paste mode |
+| `?67` | DECBKM | Backarrow key mode (BS vs DEL) |
+| `?2004` | | Bracketed paste mode |
 | `?2026` | | Synchronized update |
 | `?1000-1006` | | Mouse tracking modes (silently accepted) |
-| `?1004` | | Focus events (silently accepted) |
+| `?1004` | | Focus events (sends CSI I/O) |
 
 ### Escape sequences
 
@@ -343,12 +352,35 @@ All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown priva
 | `ESC H` | HTS | Horizontal tab stop |
 | `ESC M` | RI | Reverse index |
 | `ESC Z` | DECID | Identify terminal |
+| `ESC F` | | Cursor to lower-left corner |
 | `ESC c` | RIS | Full reset |
+| `ESC n` | LS2 | Locking Shift 2 (activate G2) |
+| `ESC o` | LS3 | Locking Shift 3 (activate G3) |
 | `ESC =` | DECKPAM | Application keypad mode |
 | `ESC >` | DECKPNM | Normal keypad mode |
 | `ESC ( 0` | | G0 charset = DEC Special Graphics (line drawing) |
 | `ESC ( B` | | G0 charset = US ASCII |
+| `ESC % G` | | Select UTF-8 charset (silently accepted) |
 | `ESC # 8` | DECALN | Screen alignment test |
+
+### OSC sequences
+
+| Sequence | Description |
+|----------|-------------|
+| `OSC 0 ; Pt` | Set window title + icon name |
+| `OSC 2 ; Pt` | Set window title |
+| `OSC 10 ; ?` | Query foreground color |
+| `OSC 11 ; ?` | Query background color |
+| `OSC 12 ; ?` | Query cursor color |
+| `OSC 52` | Clipboard (silently accepted) |
+| `OSC 104` | Reset colors (silently accepted) |
+
+### DCS sequences
+
+| Sequence | Description |
+|----------|-------------|
+| `DCS + q` | XTGETTCAP — query terminal capabilities |
+| `DCS $ q` | DECRQSS — query status string (SGR, DECSTBM, DECSCUSR) |
 
 ## Tested applications
 
