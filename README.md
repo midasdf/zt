@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 2.7ms startup. 1,741 MB/s throughput. 4.5MB RSS. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 3.7ms startup. 1,237 MB/s throughput. 4.6MB RSS. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -39,44 +39,41 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 | Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 5,465 lines across 11 files |  |
+| Source | 5,488 lines across 11 files |  |
 
 ## Benchmarks
 
-Measured on Intel i5-12450H, 1 CPU core, Xvfb. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and historical results.
+Measured on Intel i5-12450H, 1 CPU core, Xvfb + Docker (Arch Linux). See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and historical results.
 
 ### Startup (30 runs)
 
 | | Time | vs zt |
 |---|---|---|
-| **zt** | **2.8ms** | 1.0x |
-| xterm | 17.8ms | 6.3x |
-| st | 49.2ms | 17.3x |
-| alacritty | 100.8ms | 36x |
-| kitty | 204.2ms | 73x |
-| ghostty | 382.6ms | 137x |
+| **zt** | **3.7ms** | 1.0x |
+| xterm | 19.5ms | 5.3x |
+| st | 24.5ms | 6.7x |
+| alacritty | 75.5ms | 20.7x |
+| kitty | 221.6ms | 60.7x |
 
 ### Throughput (4.7MB dense ASCII)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **2.7ms** | **1,741** | 1.0x |
-| st | 180.9ms | 26.0 | 67x |
-| xterm | 201.0ms | 23.4 | 74x |
-| alacritty | 210.9ms | 22.3 | 78x |
-| kitty | 296.6ms | 15.8 | 110x |
-| ghostty | 596.3ms | 7.9 | 221x |
+| **zt** | **3.8ms** | **1,237** | 1.0x |
+| st | 184.4ms | 25.5 | 48x |
+| xterm | 218.1ms | 21.6 | 57x |
+| alacritty | 243.2ms | 19.3 | 64x |
+| kitty | 392.5ms | 12.0 | 103x |
 
 ### Peak RSS
 
 | | RSS |
 |---|---|
-| **zt** | **4.5 MB** |
-| xterm | 13.0 MB |
-| st | 30.3 MB |
-| alacritty | 128.2 MB |
-| kitty | 149.1 MB |
-| ghostty | 228.2 MB |
+| **zt** | **4.6 MB** |
+| xterm | 11.0 MB |
+| st | 12.1 MB |
+| alacritty | 143.4 MB |
+| kitty | 155.5 MB |
 
 ## Build
 
@@ -196,9 +193,9 @@ epoll event loop (single-threaded, dynamic timeout)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,220 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
+| `src/vt.zig` | 1,238 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
 | `src/backend/x11.zig` | 950 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
-| `src/term.zig` | 817 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, TrueColor sparse maps |
+| `src/term.zig` | 822 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, TrueColor sparse maps |
 | `src/main.zig` | 559 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
 | `src/render.zig` | 389 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
