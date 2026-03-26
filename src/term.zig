@@ -223,13 +223,10 @@ pub const Term = struct {
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
         // Clear recycled rows (top `shift` rows become new bottom rows)
-        // During rapid full-screen scroll (all_dirty), skip RGB clear —
-        // the cell write path will overwrite RGB entries anyway
-        const skip_rgb = self.all_dirty;
         for (0..shift) |s| {
             const phys = self.row_map[top + s];
             @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            if (!skip_rgb) self.clearRgbRow(phys);
+            self.clearRgbRow(phys);
         }
 
         // Rotate row_map: moves top rows to bottom in one pass
