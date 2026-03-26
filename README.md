@@ -321,7 +321,7 @@ epoll event loop (single-threaded, dynamic timeout)
 
 The following applications have been verified working under Xvfb integration tests:
 
-vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L), Claude Code
+vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L)
 
 ## Limitations
 
