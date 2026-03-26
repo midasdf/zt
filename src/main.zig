@@ -537,6 +537,37 @@ pub fn main() !void {
         const buf = backend.getBuffer();
         const stride = backend.getStride();
 
+        // Apply accumulated scroll shift via pixel buffer memmove
+        if (term.scroll_row_shift != 0) {
+            const row_shift = term.scroll_row_shift;
+            term.scroll_row_shift = 0;
+
+            const ch = config.cell_height;
+            const region_px_top = @as(usize, term.scroll_shift_top) * ch;
+            const region_px_bot = (@as(usize, term.scroll_shift_bot) + 1) * ch;
+            const region_byte_top = region_px_top * stride;
+            const region_byte_bot = region_px_bot * stride;
+            const region_bytes = region_byte_bot - region_byte_top;
+
+            if (row_shift > 0) {
+                const pixel_shift = @as(usize, @intCast(row_shift)) * ch;
+                const byte_shift = pixel_shift * stride;
+                if (byte_shift < region_bytes) {
+                    backend.syncBuffer(@intCast(region_px_top), @intCast(region_px_bot));
+                    std.mem.copyForwards(u8, buf[region_byte_top .. region_byte_bot - byte_shift], buf[region_byte_top + byte_shift .. region_byte_bot]);
+                    backend.markDirtyRows(@intCast(region_px_top), @intCast(region_px_bot -| 1));
+                }
+            } else {
+                const pixel_shift = @as(usize, @intCast(-row_shift)) * ch;
+                const byte_shift = pixel_shift * stride;
+                if (byte_shift < region_bytes) {
+                    backend.syncBuffer(@intCast(region_px_top), @intCast(region_px_bot));
+                    std.mem.copyBackwards(u8, buf[region_byte_top + byte_shift .. region_byte_bot], buf[region_byte_top .. region_byte_bot - byte_shift]);
+                    backend.markDirtyRows(@intCast(region_px_top), @intCast(region_px_bot -| 1));
+                }
+            }
+        }
+
         const all_dirty = term.isAllDirty();
 
         // Global background fill when all cells dirty — one memset

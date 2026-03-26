@@ -50,6 +50,9 @@ pub const Term = struct {
     // Scroll region
     scroll_top: u32 = 0,
     scroll_bottom: u32 = 0,
+    scroll_row_shift: i32 = 0,
+    scroll_shift_top: u32 = 0,
+    scroll_shift_bot: u32 = 0,
 
     // Current drawing state
     current_fg: u8 = 7,
@@ -233,16 +236,32 @@ pub const Term = struct {
         // Rotate row_map: moves top rows to bottom in one pass
         std.mem.rotate(u32, self.row_map[top .. bot + 1], shift);
 
-        // Mark entire scroll region dirty — row_map pointers rotated but
-        // the pixel buffer still has old content at old positions
-        if (top == 0 and bot + 1 == self.rows) {
-            // Full-screen scroll: set all_dirty flag to skip future markDirtyRange calls
-            if (!self.all_dirty) {
-                self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
-                self.all_dirty = true;
+        // Accumulate scroll shift for pixel buffer memmove.
+        if (self.scroll_shift_top != @as(u32, @intCast(top)) or self.scroll_shift_bot != @as(u32, @intCast(bot))) {
+            // Scroll region changed — reset accumulator to avoid incorrect memmove
+            self.scroll_row_shift = 0;
+        }
+        self.scroll_row_shift += @as(i32, @intCast(shift));
+        self.scroll_shift_top = @intCast(top);
+        self.scroll_shift_bot = @intCast(bot);
+
+        // Check saturation: if accumulated shift >= region height, use all_dirty
+        const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
+        if (abs_shift >= region_height) {
+            if (top == 0 and bot + 1 == self.rows) {
+                if (!self.all_dirty) {
+                    self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
+                    self.all_dirty = true;
+                }
+            } else {
+                self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
             }
         } else {
-            self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+            // Non-saturated: only mark recycled rows dirty
+            for (0..shift) |s| {
+                const row = bot + 1 - shift + s;
+                self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+            }
         }
     }
 
@@ -264,8 +283,23 @@ pub const Term = struct {
         // Rotate row_map: moves bottom rows to top in one pass
         std.mem.rotate(u32, self.row_map[top .. bot + 1], region_height - shift);
 
-        // Mark entire scroll region dirty
-        self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+        // Accumulate scroll shift (negative = scroll down)
+        if (self.scroll_shift_top != @as(u32, @intCast(top)) or self.scroll_shift_bot != @as(u32, @intCast(bot))) {
+            self.scroll_row_shift = 0;
+        }
+        self.scroll_row_shift -= @as(i32, @intCast(shift));
+        self.scroll_shift_top = @intCast(top);
+        self.scroll_shift_bot = @intCast(bot);
+
+        const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
+        if (abs_shift >= region_height) {
+            self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+        } else {
+            for (0..shift) |s| {
+                const row = top + s;
+                self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+            }
+        }
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
@@ -299,6 +333,7 @@ pub const Term = struct {
         self.rows = new_rows;
         self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
+        self.scroll_row_shift = 0;
 
         // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
@@ -331,6 +366,7 @@ pub const Term = struct {
 
     pub fn switchScreen(self: *Self, alt: bool) !void {
         if (alt == self.is_alt_screen) return;
+        self.scroll_row_shift = 0;
 
         const total = @as(usize, self.cols) * @as(usize, self.rows);
 
@@ -455,6 +491,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = 0, .end = total });
                 self.clearAllRgb();
                 self.has_truecolor_cells = false;
+                self.scroll_row_shift = 0;
             },
             else => {},
         }

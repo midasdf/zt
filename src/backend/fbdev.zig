@@ -245,6 +245,8 @@ pub const FbdevBackend = struct {
         self.dirty_y_max = 0;
     }
 
+    pub fn syncBuffer(_: *Self, _: u32, _: u32) void {}
+
     /// No-op for fbdev — present() writes directly to framebuffer.
     pub fn flush(_: *Self) void {}
 
