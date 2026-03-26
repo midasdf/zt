@@ -538,6 +538,18 @@ pub fn main() !void {
         const stride = backend.getStride();
 
         const all_dirty = term.isAllDirty();
+
+        // Global background fill when all cells dirty — one memset
+        // replaces 30,720 individual per-cell memsets (80×24×16 rows)
+        if (all_dirty) {
+            const default_bg = render.palette[config.default_bg];
+            const bg_packed = [4]u8{ default_bg.b, default_bg.g, default_bg.r, 0xFF };
+            const total_pixels = @as(usize, backend.getWidth()) * @as(usize, backend.getHeight());
+            const pixel_buf: [*][4]u8 = @ptrCast(buf.ptr);
+            @memset(pixel_buf[0..total_pixels], bg_packed);
+            backend.markDirtyRows(0, backend.getHeight() - 1);
+        }
+
         var y: u32 = 0;
         while (y < term.rows) : (y += 1) {
             if (!all_dirty and !term.isRowDirty(y)) continue;
@@ -573,10 +585,23 @@ pub fn main() !void {
                     bg_rgb = tmp_rgb;
                 }
 
-                if (cell.attrs.wide) {
-                    render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
+                // Skip per-cell bg fill when global fill was applied, UNLESS:
+                // - cell has non-default bg color (palette index != default)
+                // - cell has TrueColor bg override
+                // - cell has reverse attribute (swaps fg/bg, so bg won't match default)
+                const skip_bg = all_dirty and (render_cell.bg == config.default_bg) and (bg_rgb == null) and !render_cell.attrs.reverse;
+                if (skip_bg) {
+                    if (cell.attrs.wide) {
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, true);
+                    } else {
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, true);
+                    }
                 } else {
-                    render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
+                    if (cell.attrs.wide) {
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, false);
+                    } else {
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, false);
+                    }
                 }
 
                 backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);

@@ -100,6 +100,7 @@ pub fn renderCell(
     comptime pixel_format: PixelFormat,
     comptime wide: bool,
     comptime scale: u32,
+    comptime skip_bg: bool,
 ) void {
     const render_w: u32 = if (wide) font_w * 2 else font_w;
     const scaled_w: u32 = render_w * scale;
@@ -136,7 +137,7 @@ pub fn renderCell(
     const px_y = cell_y * font_h * scale;
 
     // 6. Fill background rect (scaled dimensions)
-    if (pixel_format == .bgra32) {
+    if (!skip_bg and pixel_format == .bgra32) {
         const bg_packed = [4]u8{ bg_color.b, bg_color.g, bg_color.r, 0xFF };
         for (0..scaled_h) |row| {
             const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
@@ -144,7 +145,7 @@ pub fn renderCell(
             const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
             @memset(pixels[0..scaled_w], bg_packed);
         }
-    } else {
+    } else if (!skip_bg) {
         for (0..scaled_h) |row| {
             const row_offset = (px_y + @as(u32, @intCast(row))) * stride + px_x * bpp;
             for (0..scaled_w) |col| {
@@ -278,7 +279,7 @@ pub fn renderCursor(
     const tmp = inverted.fg;
     inverted.fg = inverted.bg;
     inverted.bg = tmp;
-    renderCell(buffer, stride, cell_x, cell_y, inverted, bg_rgb_override, fg_rgb_override, glyph, font_w, font_h, pixel_format, wide, scale);
+    renderCell(buffer, stride, cell_x, cell_y, inverted, bg_rgb_override, fg_rgb_override, glyph, font_w, font_h, pixel_format, wide, scale, false);
 }
 
 // --- Tests ---
@@ -316,7 +317,7 @@ test "Render: renderCell writes pixels to buffer" {
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
     const glyph = GlyphView{ .codepoint = 'A', .width = 8, .height = 16, .bitmap = &bitmap };
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, 1);
+    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, 1, false);
 
     // Row 2 (0x18 = bits 3,4) should have white pixels at columns 3 and 4
     const row2_start = 2 * stride;
@@ -344,7 +345,7 @@ test "Render: renderCell scale=2 writes 2x2 pixel blocks" {
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
     const glyph = GlyphView{ .codepoint = 'A', .width = 8, .height = 16, .bitmap = &bitmap };
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, scale);
+    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, scale, false);
 
     // Bitmap pixel (3, 2) at scale=2 → screen pixels (6, 4), (7, 4), (6, 5), (7, 5)
     // Check top-left of 2x2 block: screen row 4, col 6
@@ -380,7 +381,7 @@ test "Render: space with null glyph produces background only" {
     const stride = w * bpp;
     var buffer: [stride * h]u8 = [_]u8{0} ** (stride * h);
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = ' ', .fg = 7, .bg = 0 }, null, null, null, w, h, .bgra32, false, 1);
+    renderCell(&buffer, stride, 0, 0, .{ .char = ' ', .fg = 7, .bg = 0 }, null, null, null, w, h, .bgra32, false, 1, false);
 
     try testing.expectEqual(@as(u8, 0), buffer[2]);
 
