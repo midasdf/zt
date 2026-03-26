@@ -1285,8 +1285,7 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             2026 => term.sync_update = set,
             // Mouse tracking modes (accepted but not processed — no mouse support yet)
             9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016 => {},
-            // Focus events (accepted, not implemented)
-            1004 => {},
+            1004 => term.focus_events = set, // Focus events (CSI I / CSI O)
             // Alt scroll mode
             1007 => {},
             // Meta key mode

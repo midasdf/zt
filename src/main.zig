@@ -461,6 +461,22 @@ pub fn main() !void {
                                     term.markDirtyRange(.{ .start = 0, .end = total });
                                     term.all_dirty = true;
                                 },
+                                .focus_in => {
+                                    if (term.focus_events) {
+                                        if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, epoll_fd)) {
+                                            running = false;
+                                            break;
+                                        }
+                                    }
+                                },
+                                .focus_out => {
+                                    if (term.focus_events) {
+                                        if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, epoll_fd)) {
+                                            running = false;
+                                            break;
+                                        }
+                                    }
+                                },
                                 .close => {
                                     running = false;
                                 },

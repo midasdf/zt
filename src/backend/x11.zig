@@ -18,6 +18,8 @@ pub const Event = union(enum) {
     resize: ResizeEvent,
     expose: void,
     close: void,
+    focus_in: void,
+    focus_out: void,
 };
 
 pub const PasteEvent = struct {
@@ -913,6 +915,8 @@ pub const X11Backend = struct {
                 continue; // Non-delete client message — skip
             },
             c.XCB_DESTROY_NOTIFY => return .close,
+            c.XCB_FOCUS_IN => return .focus_in,
+            c.XCB_FOCUS_OUT => return .focus_out,
             else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
         }
         } // while (true)
