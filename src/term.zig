@@ -600,6 +600,9 @@ pub const Term = struct {
         const row_base = phys * cols;
         const logical_row_start = @as(usize, self.cursor_y) * cols;
 
+        // Fix wide character boundaries at insertion point
+        self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
+
         // Shift characters right (physical)
         const copy_len = remaining - count;
         if (copy_len > 0) {
@@ -623,6 +626,8 @@ pub const Term = struct {
         const row_base = phys * cols;
         const logical_row_start = @as(usize, self.cursor_y) * cols;
 
+        // Fix wide character boundaries at erase range
+        self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
         @memset(self.cells[row_base + cx .. row_base + cx + count], Cell{});
 
         self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cx + count });

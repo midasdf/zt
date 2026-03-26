@@ -430,6 +430,24 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 if (count == 0) break;
                 // Write cells directly to physical row
                 const phys_start = phys_base + term.cursor_x;
+                // Fix wide character boundaries before overwriting
+                // If first cell is a wide_dummy, clear the wide cell to its left
+                if (term.cells[phys_start].attrs.wide_dummy and term.cursor_x > 0) {
+                    const wide_idx = phys_base + term.cursor_x - 1;
+                    term.cells[wide_idx] = Cell{};
+                    // Mark the cleared wide cell dirty
+                    const logical_wide = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x - 1;
+                    term.markDirtyRange(.{ .start = logical_wide, .end = logical_wide + 1 });
+                }
+                // If last cell in range is wide, clear its dummy to the right
+                if (count > 0 and term.cells[phys_start + count - 1].attrs.wide) {
+                    const dummy_x = term.cursor_x + count;
+                    if (dummy_x < cols) {
+                        term.cells[phys_base + dummy_x] = Cell{};
+                        const logical_dummy = @as(usize, term.cursor_y) * @as(usize, cols) + dummy_x;
+                        term.markDirtyRange(.{ .start = logical_dummy, .end = logical_dummy + 1 });
+                    }
+                }
                 for (0..count) |j| {
                     term.cells[phys_start + j] = .{
                         .char = @as(u21, data[i + j]),
