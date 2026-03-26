@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 3.9ms startup. 84 MB/s throughput. 5.9MB RSS. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 73 MB/s throughput. 5.6ms startup. 2MB memory. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -23,10 +23,11 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 - **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim), DEC modes, alternate screen
 - **CJK wide character support** — correct double-width rendering with wide-char boundary repair on erase/delete
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
-- **Frame rate limiter** — configurable max FPS (`-Dmax_fps=N`, default 120). Skips rendering during heavy output, parsing continues at full speed. Dynamic epoll timeout for zero-waste idle
+- **Adaptive frame limiter** — 4-tier adaptive FPS (120→60→15→5) based on output volume. During extreme output, drops to 5fps for maximum parse throughput. Dynamic epoll timeout for zero-waste idle
 - **Bulk ASCII fast path** — VT parser writes directly to cell array with SIMD range checking (@Vector 16-byte) and range-based dirty marking
 - **UTF-8 bulk path** — ground-state multi-byte characters decoded directly, bypassing per-byte parser state machine
-- **PTY drain loop** — reads all available data (256KB buffer) before rendering, reducing frame count during bulk output
+- **Scroll pixel memmove** — on scroll, shift pixel buffer via memmove and re-render only recycled rows. Saturated scrolls fall back to full re-render with global background fill
+- **PTY drain loop** — reads all available data (configurable buffer, `-Dpty_buf_kb`, default 1MB) before rendering, reducing frame count during bulk output
 - **Write buffering** — PTY writes buffered on backpressure with EPOLLOUT retry
 - **ConfigureNotify coalescing** — drag-resize processes only the final size, skipping intermediate reallocation
 - **No libc** (fbdev) — pure `std.posix` syscalls, single static binary
@@ -43,55 +44,65 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 ## Benchmarks
 
-Measured on Intel i5-12450H, 1 CPU core, Xvfb, `-Doptimize=ReleaseFast`. Pre-warmed page cache, 50 startup runs (10 warmup), 20 throughput runs (5 warmup). See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and historical results.
+Measured on Intel i5-12450H, 1 CPU core, real display (:0, hardware GPU), `-Doptimize=ReleaseFast`. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and methodology.
 
-### Startup (50 runs)
+### Startup (hyperfine, 30 runs)
 
 | | Time | vs zt |
 |---|---|---|
-| **zt** | **3.9ms** | 1.0x |
-| xterm | 15.4ms | 3.9x |
-| st | 41.6ms | 10.5x |
-| foot | 48.2ms | 12.2x |
-| alacritty | 105.2ms | 26.9x |
-| kitty | 207.4ms | 52.6x |
-| ghostty | 395.5ms | 100x |
+| **zt** | **5.6ms** | 1.0x |
+| xterm | 26ms | 4.6x |
+| st | 52ms | 9.3x |
+| alacritty | 136ms | 24x |
+| ghostty | 492ms | 87x |
 
-### Throughput (4.7MB dense ASCII, 20 runs)
+### Throughput: dense ASCII (4.7MB, 5 runs)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **56.2ms** | **84** | 1.0x |
-| foot | 124.7ms | 37.7 | 2.2x |
-| st | 169.1ms | 27.8 | 3.0x |
-| xterm | 179.5ms | 26.2 | 3.2x |
-| alacritty | 217.3ms | 21.6 | 3.9x |
-| kitty | 310.2ms | 15.2 | 5.5x |
-| ghostty | 593.8ms | 7.9 | 10.6x |
+| **zt** | **64ms** | **73** | 1.0x |
+| foot | 134ms | 35 | 2.1x |
+| st | 174ms | 27 | 2.7x |
+| xterm | 196ms | 24 | 3.1x |
+| alacritty | 252ms | 19 | 3.9x |
+| kitty | 354ms | 13 | 5.5x |
+| ghostty | 704ms | 7 | 11x |
 
-### Throughput (8MB TrueColor + escape sequences, 10 runs)
+### Throughput: TrueColor (292KB, 5 runs)
 
-| | Time | vs zt |
-|---|---|---|
-| **zt** | **99.2ms** | 1.0x |
-| foot | 172.4ms | 1.7x |
-| st | 250.4ms | 2.5x |
-| alacritty | 287.0ms | 2.9x |
-| xterm | 295.0ms | 3.0x |
-| kitty | 378.0ms | 3.8x |
-| ghostty | 837.5ms | 8.4x |
+| | Time | MB/s | vs zt |
+|---|---|---|---|
+| **zt** | **2ms** | **95** | 1.0x |
+| xterm | 32ms | 6 | 16x |
+| st | 52ms | 4 | 26x |
+| foot | 60ms | 3 | 30x |
+| alacritty | 140ms | 1 | 70x |
+| kitty | 250ms | <1 | 125x |
+| ghostty | 496ms | <1 | 248x |
 
-### Peak RSS
+### Throughput: Unicode/CJK (300KB, 5 runs)
 
-| | RSS |
-|---|---|
-| **zt** | **5.9 MB** |
-| xterm | 13.0 MB |
-| foot | 25.7 MB |
-| st | 30.3 MB |
-| alacritty | 125.8 MB |
-| kitty | 140.9 MB |
-| ghostty | 222.6 MB |
+| | Time | MB/s | vs zt |
+|---|---|---|---|
+| **zt** | **4ms** | **49** | 1.0x |
+| xterm | 30ms | 7 | 7.5x |
+| st | 58ms | 3 | 15x |
+| foot | 62ms | 3 | 16x |
+| alacritty | 144ms | 1 | 36x |
+| kitty | 250ms | <1 | 63x |
+| ghostty | 490ms | <1 | 123x |
+
+### Idle memory (PSS)
+
+| | RSS | PSS | vs zt |
+|---|---|---|---|
+| **zt** | **4.9 MB** | **2.2 MB** | 1.0x |
+| xterm | 11 MB | 4.5 MB | 2.1x |
+| foot | 24 MB | 11 MB | 5.0x |
+| st | 29 MB | 15 MB | 6.8x |
+| alacritty | 110 MB | 35 MB | 16x |
+| kitty | 139 MB | 53 MB | 24x |
+| ghostty | 221 MB | 96 MB | 44x |
 
 ## Build
 
@@ -133,6 +144,9 @@ zig build -Dbackend=x11 -Dmax_fps=60 -Doptimize=ReleaseFast
 # X11 with unlimited frame rate (no cap)
 zig build -Dbackend=x11 -Dmax_fps=0 -Doptimize=ReleaseFast
 
+# X11 with smaller PTY buffer (conserve memory on RPi)
+zig build -Dbackend=x11 -Dpty_buf_kb=256 -Doptimize=ReleaseSmall
+
 # fbdev with JIS keyboard layout (default: us)
 zig build -Dkeymap=jp -Doptimize=ReleaseSmall
 
@@ -161,6 +175,7 @@ pub const font_height: u32 = 16;     // bitmap glyph height
 pub const scale: u32 = 1;            // pixel scale factor: 1, 2, or 4 (set via -Dscale)
 pub const max_fps: u32 = 120;        // max frame rate: 0 = unlimited (set via -Dmax_fps)
 pub const frame_min_ns: u64 = ...;   // computed: 1_000_000_000 / max_fps (0 if unlimited)
+pub const pty_buf_size: u32 = ...;   // PTY read buffer in bytes (set via -Dpty_buf_kb, default 1024)
 pub const cell_width = font_width * scale;   // screen cell width
 pub const cell_height = font_height * scale; // screen cell height
 pub const shell = "/bin/fish";        // login shell
@@ -181,7 +196,7 @@ See [zt-fonts](https://github.com/midasdf/zt-fonts) for BDF sources, build scrip
 
 ```
 epoll event loop (single-threaded, dynamic timeout)
-├── PTY reader (256KB buffer, drain loop)
+├── PTY reader (1MB buffer, drain loop)
 │   └── VT parser (byte-by-byte state machine)
 │       ├── ASCII fast path: SIMD 16-byte range check + bulk write to cells[]
 │       ├── UTF-8 fast path: direct decode, bypassing parser state machine
