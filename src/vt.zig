@@ -592,6 +592,12 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 term.markDirtyRange(.{ .start = dirty_run_start, .end = dirty_run_end });
             if (i > start_i) continue;
         }
+        // VT52 mode: simplified parser
+        if (term.vt52_mode) {
+            handleVt52Byte(data[i], term, parser, writer_fd);
+            i += 1;
+            continue;
+        }
         // Slow path: control/escape sequences, incomplete UTF-8
         const action = parser.feed(data[i]);
         executeActionWithFd(action, term, writer_fd);
@@ -740,6 +746,44 @@ fn respondDecrqss(fd: std.posix.fd_t, query: []const u8, term: *const Term) void
     } else {
         // Unknown — respond invalid
         _ = std.posix.write(fd, "\x1bP0$r\x1b\\") catch {};
+    }
+}
+
+fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser, writer_fd: ?std.posix.fd_t) void {
+    if (parser.state == .escape) {
+        parser.state = .ground;
+        switch (byte) {
+            'A' => { if (term.cursor_y > 0) term.cursor_y -= 1; },
+            'B' => { if (term.cursor_y < term.rows - 1) term.cursor_y += 1; },
+            'C' => { if (term.cursor_x < term.cols - 1) term.cursor_x += 1; },
+            'D' => { if (term.cursor_x > 0) term.cursor_x -= 1; },
+            'F' => term.charsets[0] = .dec_graphics,
+            'G' => term.charsets[0] = .us_ascii,
+            'H' => { term.cursor_x = 0; term.cursor_y = 0; },
+            'I' => { // Reverse LF
+                if (term.cursor_y == term.scroll_top) term.scrollDown(1)
+                else if (term.cursor_y > 0) term.cursor_y -= 1;
+            },
+            'J' => term.eraseDisplay(0),
+            'K' => term.eraseLine(0),
+            'Z' => { // Identify
+                if (writer_fd) |fd| _ = std.posix.write(fd, "\x1b/Z") catch {};
+            },
+            '<' => term.vt52_mode = false, // Exit VT52 → VT100
+            '=' => term.deckpam = true,
+            '>' => term.deckpam = false,
+            else => {},
+        }
+        return;
+    }
+    if (byte == 0x1B) {
+        parser.state = .escape;
+        return;
+    }
+    if (byte <= 0x1F) {
+        handleControl(byte, term);
+    } else if (byte <= 0x7E) {
+        handlePrint(@as(u21, byte), term);
     }
 }
 
@@ -1339,7 +1383,8 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             // Left/right margin mode
             69 => {},
             // Silently ignored DEC modes
-            0, 2, 3, 4, 5, 8, 12, 18, 19, 42, 45, 66 => {},
+            2 => { if (!set) term.vt52_mode = true; }, // DECANM reset → VT52 mode
+            0, 3, 4, 5, 8, 12, 18, 19, 38, 42, 45, 66 => {},
             else => {
                 std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });
             },

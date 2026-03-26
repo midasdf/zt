@@ -97,6 +97,7 @@ pub const Term = struct {
     bracketed_paste: bool = false,
     sync_update: bool = false,
     has_truecolor_cells: bool = false,
+    vt52_mode: bool = false,
 
     // Deferred wrap (VT100 CURSOR_WRAPNEXT)
     wrap_next: bool = false,
