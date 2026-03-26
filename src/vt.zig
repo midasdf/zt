@@ -609,17 +609,66 @@ pub fn executeActionWithFd(action: Action, term: *Term, writer_fd: ?std.posix.fd
         .execute => |c| handleControl(c, term),
         .csi_dispatch => |csi| handleCsi(csi, term, writer_fd),
         .esc_dispatch => |esc| handleEsc(esc, term, writer_fd),
-        .osc_dispatch => {},
-        .dcs_dispatch => |payload| handleDcsDispatch(payload, writer_fd),
+        .osc_dispatch => |payload| handleOsc(payload, term, writer_fd),
+        .dcs_dispatch => |payload| handleDcsDispatch(payload, writer_fd, term),
         .none => {},
     }
 }
 
-fn handleDcsDispatch(payload: []const u8, writer_fd: ?std.posix.fd_t) void {
+fn handleOsc(payload: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void {
+    // Parse "Ps;Pt" — find first ';' to separate command from parameter
+    const sep = std.mem.indexOfScalar(u8, payload, ';');
+    const cmd_str = if (sep) |s| payload[0..s] else payload;
+    const param = if (sep) |s| payload[s + 1 ..] else &[_]u8{};
+
+    // Parse command number
+    var cmd: u16 = 0;
+    for (cmd_str) |ch| {
+        if (ch >= '0' and ch <= '9') {
+            cmd = cmd *| 10 +| (ch - '0');
+        } else break;
+    }
+
+    switch (cmd) {
+        0, 2 => { // Set window title (+ icon name for 0)
+            const len = @min(param.len, 255);
+            @memcpy(term.title[0..len], param[0..len]);
+            term.title_len = @intCast(len);
+        },
+        1 => {}, // Set icon name only — silently accept
+        4 => {}, // Set color palette — silently accept
+        7 => {}, // Set working directory — silently accept
+        8 => {}, // Hyperlinks — silently accept
+        10, 11, 12 => {
+            // Dynamic color query: param == "?" means query
+            if (std.mem.eql(u8, param, "?")) {
+                if (writer_fd) |fd| {
+                    const response = switch (cmd) {
+                        10 => "\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
+                        11 => "\x1b]11;rgb:0000/0000/0000\x1b\\",
+                        12 => "\x1b]12;rgb:ffff/ffff/ffff\x1b\\",
+                        else => unreachable,
+                    };
+                    _ = std.posix.write(fd, response) catch {};
+                }
+            }
+        },
+        52 => {}, // Clipboard — silently accept
+        104, 110, 111, 112 => {}, // Reset colors — silently accept
+        else => {},
+    }
+}
+
+fn handleDcsDispatch(payload: []const u8, writer_fd: ?std.posix.fd_t, term: *const Term) void {
     const fd = writer_fd orelse return;
 
+    // DECRQSS: DCS $ q Pt ST — Request Status String
+    if (payload.len >= 2 and payload[0] == '$' and payload[1] == 'q') {
+        respondDecrqss(fd, payload[2..], term);
+        return;
+    }
+
     // XTGETTCAP: DCS + q <hex-name>[;<hex-name>...] ST
-    // Find "+q" anywhere in the payload (may have leading params like "11;?")
     const qpos = std.mem.indexOf(u8, payload, "+q") orelse return;
     const hex_names = payload[qpos + 2 ..];
 
@@ -671,6 +720,26 @@ fn respondXtgettcap(fd: std.posix.fd_t, hex_name: []const u8) void {
         @memcpy(resp_buf[pos..][0..suffix.len], suffix);
         pos += suffix.len;
         _ = std.posix.write(fd, resp_buf[0..pos]) catch {};
+    }
+}
+
+fn respondDecrqss(fd: std.posix.fd_t, query: []const u8, term: *const Term) void {
+    if (std.mem.eql(u8, query, "m")) {
+        // SGR state — report reset (simplified)
+        _ = std.posix.write(fd, "\x1bP1$r0m\x1b\\") catch {};
+    } else if (std.mem.eql(u8, query, "r")) {
+        // DECSTBM state
+        var buf: [32]u8 = undefined;
+        const resp = std.fmt.bufPrint(&buf, "\x1bP1$r{d};{d}r\x1b\\", .{ term.scroll_top + 1, term.scroll_bottom + 1 }) catch return;
+        _ = std.posix.write(fd, resp) catch {};
+    } else if (std.mem.eql(u8, query, " q")) {
+        // DECSCUSR state
+        var buf: [32]u8 = undefined;
+        const resp = std.fmt.bufPrint(&buf, "\x1bP1$r{d} q\x1b\\", .{term.cursor_style}) catch return;
+        _ = std.posix.write(fd, resp) catch {};
+    } else {
+        // Unknown — respond invalid
+        _ = std.posix.write(fd, "\x1bP0$r\x1b\\") catch {};
     }
 }
 
@@ -1618,4 +1687,26 @@ test "Executor: TrueColor bulk ASCII preserves RGB" {
         try testing.expect(rgb != null);
         try testing.expectEqual([3]u8{ 255, 128, 0 }, rgb.?);
     }
+}
+
+test "OSC: title set via OSC 0" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+    for ("\x1b]0;Hello\x07") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqualSlices(u8, "Hello", term.title[0..term.title_len]);
+}
+
+test "OSC: title set via OSC 2 with ST terminator" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+    for ("\x1b]2;World\x1b\\") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqualSlices(u8, "World", term.title[0..term.title_len]);
 }

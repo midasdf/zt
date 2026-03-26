@@ -120,6 +120,16 @@ pub const Term = struct {
     // Cursor style (DECSCUSR)
     cursor_style: u8 = 0,
 
+    // Window/icon title (OSC 0/1/2)
+    title: [256]u8 = undefined,
+    title_len: u8 = 0,
+
+    // Focus event tracking (DECSET ?1004)
+    focus_events: bool = false,
+
+    // Backarrow key mode (DECSET ?67): true=BS(0x08), false=DEL(0x7F)
+    decbkm: bool = false,
+
     // Saved cursor state (DECSC/DECRC — saves attrs + charset like st)
     saved_attrs: Cell.Attrs = .{},
     saved_fg: u8 = 7,
