@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 3.5ms startup. 1,382 MB/s throughput. 4.3MB RSS. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 2.7ms startup. 1,741 MB/s throughput. 4.5MB RSS. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -23,12 +23,14 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 - **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim), DEC modes, alternate screen
 - **CJK wide character support** — correct double-width rendering with wide-char boundary repair on erase/delete
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
-- **Bulk ASCII fast path** — VT parser writes directly to cell array with range-based dirty marking, bypassing per-char overhead
-- **PTY drain loop** — reads all available data before rendering, reducing frame count during bulk output
+- **Frame rate limiter** — configurable max FPS (`-Dmax_fps=N`, default 120). Skips rendering during heavy output, parsing continues at full speed. Dynamic epoll timeout for zero-waste idle
+- **Bulk ASCII fast path** — VT parser writes directly to cell array with SIMD range checking (@Vector 16-byte) and range-based dirty marking
+- **UTF-8 bulk path** — ground-state multi-byte characters decoded directly, bypassing per-byte parser state machine
+- **PTY drain loop** — reads all available data (256KB buffer) before rendering, reducing frame count during bulk output
 - **Write buffering** — PTY writes buffered on backpressure with EPOLLOUT retry
 - **ConfigureNotify coalescing** — drag-resize processes only the final size, skipping intermediate reallocation
 - **No libc** (fbdev) — pure `std.posix` syscalls, single static binary
-- **70 unit tests** across 7 modules
+- **73 unit tests** across 7 modules
 
 ## Numbers
 
@@ -37,7 +39,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 | Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
 | Build time | < 1s | < 1s |
-| Source | 5,250 lines across 11 files |  |
+| Source | 5,465 lines across 11 files |  |
 
 ## Benchmarks
 
@@ -47,31 +49,31 @@ Measured on Intel i5-12450H, 1 CPU core, Xvfb. See [zt-bench](https://github.com
 
 | | Time | vs zt |
 |---|---|---|
-| **zt** | **3.5ms** | 1.0x |
-| xterm | 14.5ms | 4.1x |
-| st | 33.2ms | 9.5x |
-| alacritty | 100.8ms | 28.8x |
-| kitty | 204.2ms | 58.3x |
-| ghostty | 382.6ms | 109x |
+| **zt** | **2.8ms** | 1.0x |
+| xterm | 17.8ms | 6.3x |
+| st | 49.2ms | 17.3x |
+| alacritty | 100.8ms | 36x |
+| kitty | 204.2ms | 73x |
+| ghostty | 382.6ms | 137x |
 
 ### Throughput (4.7MB dense ASCII)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **3.4ms** | **1,382** | 1.0x |
-| st | 149.4ms | 31.5 | 44x |
-| xterm | 160.1ms | 29.4 | 47x |
-| alacritty | 210.9ms | 22.3 | 62x |
-| kitty | 296.6ms | 15.8 | 87x |
-| ghostty | 596.3ms | 7.9 | 176x |
+| **zt** | **2.7ms** | **1,741** | 1.0x |
+| st | 180.9ms | 26.0 | 67x |
+| xterm | 201.0ms | 23.4 | 74x |
+| alacritty | 210.9ms | 22.3 | 78x |
+| kitty | 296.6ms | 15.8 | 110x |
+| ghostty | 596.3ms | 7.9 | 221x |
 
 ### Peak RSS
 
 | | RSS |
 |---|---|
-| **zt** | **4.3 MB** |
-| xterm | 13.2 MB |
-| st | 25.1 MB |
+| **zt** | **4.5 MB** |
+| xterm | 13.0 MB |
+| st | 30.3 MB |
 | alacritty | 128.2 MB |
 | kitty | 149.1 MB |
 | ghostty | 228.2 MB |
@@ -110,6 +112,12 @@ zig build -Dbackend=x11 -Dscale=2 -Doptimize=ReleaseFast
 # X11 with 4x pixel scaling for 4K displays
 zig build -Dbackend=x11 -Dscale=4 -Doptimize=ReleaseFast
 
+# X11 with 60fps cap (battery saving)
+zig build -Dbackend=x11 -Dmax_fps=60 -Doptimize=ReleaseFast
+
+# X11 with unlimited frame rate (no cap)
+zig build -Dbackend=x11 -Dmax_fps=0 -Doptimize=ReleaseFast
+
 # fbdev with JIS keyboard layout (default: us)
 zig build -Dkeymap=jp -Doptimize=ReleaseSmall
 
@@ -136,6 +144,8 @@ pub const default_bg: u8 = 0;        // black
 pub const font_width: u32 = 8;       // bitmap glyph width (half-width)
 pub const font_height: u32 = 16;     // bitmap glyph height
 pub const scale: u32 = 1;            // pixel scale factor: 1, 2, or 4 (set via -Dscale)
+pub const max_fps: u32 = 120;        // max frame rate: 0 = unlimited (set via -Dmax_fps)
+pub const frame_min_ns: u64 = ...;   // computed: 1_000_000_000 / max_fps (0 if unlimited)
 pub const cell_width = font_width * scale;   // screen cell width
 pub const cell_height = font_height * scale; // screen cell height
 pub const shell = "/bin/fish";        // login shell
@@ -155,10 +165,11 @@ See [zt-fonts](https://github.com/midasdf/zt-fonts) for BDF sources, build scrip
 ## Architecture
 
 ```
-epoll event loop (single-threaded)
-├── PTY reader (64KB buffer, drain loop)
+epoll event loop (single-threaded, dynamic timeout)
+├── PTY reader (256KB buffer, drain loop)
 │   └── VT parser (byte-by-byte state machine)
-│       ├── ASCII fast path: bulk write to cells[] + range dirty
+│       ├── ASCII fast path: SIMD 16-byte range check + bulk write to cells[]
+│       ├── UTF-8 fast path: direct decode, bypassing parser state machine
 │       └── Action executor → Cell grid mutations via row_map
 ├── Input handler
 │   ├── evdev (fbdev) — raw keyboard events, compile-time keymap (US/JP)
@@ -167,8 +178,9 @@ epoll event loop (single-threaded)
 │   ├── row_map[logical] → physical: O(1) scroll via pointer rotation
 │   ├── Dirty bitmap (logical order) with O(1) hasDirty flag
 │   └── TrueColor sparse maps (physical keys, no shift on scroll)
-├── Renderer
+├── Renderer (frame-rate limited, -Dmax_fps=120 default)
 │   ├── hasDirty() O(1) flag check → skip if nothing changed
+│   ├── Frame limiter: skip render if < frame_min_ns since last frame
 │   ├── isRowDirty() → skip clean rows
 │   └── Per-cell: glyph lookup → scaled pixel composition (memcpy row duplication)
 ├── Backend
@@ -184,17 +196,17 @@ epoll event loop (single-threaded)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,077 | VT parser state machine + action executor (CSI, SGR, DEC modes, OSC), bulk ASCII fast path |
-| `src/backend/x11.zig` | 951 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
-| `src/term.zig` | 819 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, TrueColor sparse maps |
-| `src/main.zig` | 541 | Event loop, signal/timer setup, PTY drain, write buffering, render orchestration |
+| `src/vt.zig` | 1,220 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
+| `src/backend/x11.zig` | 950 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
+| `src/term.zig` | 817 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, TrueColor sparse maps |
+| `src/main.zig` | 559 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
-| `src/render.zig` | 374 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
+| `src/render.zig` | 389 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
 | `src/backend/fbdev.zig` | 319 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
-| `src/font.zig` | 318 | BDF parser (comptime), binary blob loader, ASCII glyph cache |
+| `src/font.zig` | 353 | Binary blob loader, comptime ASCII cache, 256-slot runtime glyph cache |
 | `src/pty.zig` | 221 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
-| `config.zig` | 33 | Compile-time configuration (backend, keymap, font, colors, scale) |
-| `build.zig` | 70 | Build system with backend, keymap, and scale selection |
+| `config.zig` | 38 | Compile-time configuration (backend, keymap, font, colors, scale, max_fps) |
+| `build.zig` | 72 | Build system with backend, keymap, scale, and max_fps selection |
 
 ## Supported escape sequences
 
@@ -209,7 +221,7 @@ epoll event loop (single-threaded)
 | `CSI n E` | CNL | Cursor next line |
 | `CSI n F` | CPL | Cursor preceding line |
 | `CSI n G` | CHA | Cursor horizontal absolute |
-| `CSI n;m H` | CUP | Cursor position |
+| `CSI n;m H/f` | CUP | Cursor position |
 | `CSI n J` | ED | Erase display (0: below, 1: above, 2/3: all) |
 | `CSI n K` | EL | Erase line (0: right, 1: left, 2: all) |
 | `CSI n L` | IL | Insert lines |
@@ -217,13 +229,15 @@ epoll event loop (single-threaded)
 | `CSI n P` | DCH | Delete characters |
 | `CSI n X` | ECH | Erase characters |
 | `CSI n @` | ICH | Insert characters |
+| `CSI n b` | REP | Repeat preceding graphic character |
 | `CSI n S` | SU | Scroll up |
 | `CSI n T` | SD | Scroll down |
 | `CSI n d` | VPA | Vertical position absolute |
-| `CSI t;b r` | DECSTBM | Set scroll region |
-| `CSI s` | | Save cursor position |
-| `CSI u` | | Restore cursor position |
+| `CSI t;b r` | DECSTBM | Set scroll region (resets cursor to home) |
+| `CSI s` | | Save cursor position (no private marker) |
+| `CSI u` | | Restore cursor position (no private marker) |
 | `CSI 6 n` | DSR | Device status report (cursor position) |
+| `CSI c` | DA1 | Device attributes (reports VT220) |
 | `CSI ... m` | SGR | Select graphic rendition (see below) |
 
 ### SGR (Select Graphic Rendition)
@@ -277,7 +291,7 @@ epoll event loop (single-threaded)
 
 The following applications have been verified working under Xvfb integration tests:
 
-vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L)
+vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L), Claude Code
 
 ## Limitations
 
