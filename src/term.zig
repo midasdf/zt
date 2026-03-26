@@ -198,8 +198,11 @@ pub const Term = struct {
     }
 
     pub fn clearDirty(self: *Self) void {
+        // Direct memset on bitmask array — faster than setRangeValue's word-by-word loop
         const total = @as(usize, self.cols) * @as(usize, self.rows);
-        self.dirty.setRangeValue(.{ .start = 0, .end = total }, false);
+        const bit_size = @bitSizeOf(usize);
+        const word_count = (total + bit_size - 1) / bit_size;
+        @memset(self.dirty.unmanaged.masks[0..word_count], 0);
         self.dirty_flag = false;
         self.all_dirty = false;
     }
@@ -220,10 +223,13 @@ pub const Term = struct {
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
         // Clear recycled rows (top `shift` rows become new bottom rows)
+        // During rapid full-screen scroll (all_dirty), skip RGB clear —
+        // the cell write path will overwrite RGB entries anyway
+        const skip_rgb = self.all_dirty;
         for (0..shift) |s| {
             const phys = self.row_map[top + s];
             @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            self.clearRgbRow(phys);
+            if (!skip_rgb) self.clearRgbRow(phys);
         }
 
         // Rotate row_map: moves top rows to bottom in one pass

@@ -396,7 +396,9 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         // Safe because ASCII is never wide and doesn't need TrueColor cleanup.
         if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E) {
             const cols = term.cols;
-            while (i < data.len and data[i] >= 0x20 and data[i] <= 0x7E) {
+            while (true) {
+                // Handle printable ASCII run on current line
+                if (i >= data.len or (@as(u32, data[i]) -% 0x20) > 0x5E) break;
                 // Line wrap
                 if (term.cursor_x >= cols) {
                     if (term.decawm) {
@@ -423,8 +425,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                         count += VEC_LEN;
                     } else break;
                 }
-                // Scalar tail
-                while (count < max_scan and data[i + count] >= 0x20 and data[i + count] <= 0x7E) {
+                // Scalar tail (branchless range check: (byte - 0x20) <= 0x5E)
+                while (count < max_scan and (@as(u32, data[i + count]) -% 0x20) <= 0x5E) {
                     count += 1;
                 }
                 if (count == 0) break;
@@ -467,6 +469,18 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 term.last_printed_char = @as(u21, data[i + count - 1]);
                 term.cursor_x += count;
                 i += count;
+                // Inline control character handling — stay in fast path loop
+                // Avoids 58K round-trips through parser.feed() for LF/CR
+                if (i < data.len) {
+                    switch (data[i]) {
+                        0x0A, 0x0B, 0x0C => { term.insertNewline(); i += 1; continue; },
+                        0x0D => { term.carriageReturn(); i += 1; continue; },
+                        0x08 => { if (term.cursor_x > 0) term.cursor_x -= 1; i += 1; continue; },
+                        0x09 => { term.cursor_x = @min(((term.cursor_x / 8) + 1) * 8, cols -| 1); i += 1; continue; },
+                        else => {},
+                    }
+                }
+                break;
             }
             continue;
         }
