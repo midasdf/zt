@@ -337,11 +337,14 @@ pub fn main() !void {
         // Tier 0: <64KB  → frame_min_ns (default 8ms = 120fps)
         // Tier 1: 64KB+  → frame_min_ns * 2 (default 16ms = 60fps)
         // Tier 2: 256KB+ → frame_min_ns * 8 (default 64ms = ~15fps)
+        // Tier 3: 1MB+   → frame_min_ns * 24 (default 192ms = ~5fps)
         const effective_frame_ns: i128 = if (config.frame_min_ns == 0)
             0
-        else if (bytes_since_render > 262144)
+        else if (bytes_since_render > 1_048_576)
+            @as(i128, config.frame_min_ns) * 24
+        else if (bytes_since_render > 262_144)
             @as(i128, config.frame_min_ns) * 8
-        else if (bytes_since_render > 65536)
+        else if (bytes_since_render > 65_536)
             @as(i128, config.frame_min_ns) * 2
         else
             @as(i128, config.frame_min_ns);
