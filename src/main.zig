@@ -537,41 +537,49 @@ pub fn main() !void {
         const buf = backend.getBuffer();
         const stride = backend.getStride();
 
-        const skip_dirty_check = term.isAllDirty();
+        const all_dirty = term.isAllDirty();
         var y: u32 = 0;
         while (y < term.rows) : (y += 1) {
-            if (!skip_dirty_check and !term.isRowDirty(y)) continue;
+            if (!all_dirty and !term.isRowDirty(y)) continue;
+
+            // Resolve physical row once per row — eliminates per-cell
+            // bounds checks, row_map lookups, and multiplications
+            const phys_row = term.row_map[y];
+            const row_base = @as(usize, phys_row) * @as(usize, term.cols);
+            const row_cells = term.cells[row_base..][0..term.cols];
+            const row_fg = term.fg_rgb[row_base..][0..term.cols];
+            const row_bg = term.bg_rgb[row_base..][0..term.cols];
+            const dirty_row_base = @as(usize, y) * @as(usize, term.cols);
+
             var x: u32 = 0;
             while (x < term.cols) : (x += 1) {
-                if (skip_dirty_check or term.isDirty(x, y)) {
-                    const cell = term.getCell(x, y);
+                if (!all_dirty and !term.dirty.isSet(dirty_row_base + x)) continue;
 
-                    // Skip wide_dummy cells — rendered by the wide cell to the left
-                    if (cell.attrs.wide_dummy) continue;
+                const cell = &row_cells[x];
+                if (cell.attrs.wide_dummy) continue;
 
-                    var fg_rgb = term.getFgRgb(x, y);
-                    var bg_rgb = term.getBgRgb(x, y);
-                    const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
-                    const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
+                var fg_rgb = row_fg[x];
+                var bg_rgb = row_bg[x];
+                const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
+                const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
 
-                    var render_cell = cell.*;
-                    if (is_cursor) {
-                        const tmp_idx = render_cell.fg;
-                        render_cell.fg = render_cell.bg;
-                        render_cell.bg = tmp_idx;
-                        const tmp_rgb = fg_rgb;
-                        fg_rgb = bg_rgb;
-                        bg_rgb = tmp_rgb;
-                    }
-
-                    if (cell.attrs.wide) {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
-                    } else {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
-                    }
-
-                    backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
+                var render_cell = cell.*;
+                if (is_cursor) {
+                    const tmp_idx = render_cell.fg;
+                    render_cell.fg = render_cell.bg;
+                    render_cell.bg = tmp_idx;
+                    const tmp_rgb = fg_rgb;
+                    fg_rgb = bg_rgb;
+                    bg_rgb = tmp_rgb;
                 }
+
+                if (cell.attrs.wide) {
+                    render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale);
+                } else {
+                    render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale);
+                }
+
+                backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
             }
         }
         term.clearDirty();
