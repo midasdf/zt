@@ -1088,19 +1088,44 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                 for (0..term.tabs.len) |c_idx| {
                     term.tabs[c_idx] = (c_idx % 8 == 0) and c_idx > 0;
                 }
+            } else if (csi.intermediate_count > 0 and csi.intermediates[0] == '$') {
+                // DECRQM — Request Mode
+                if (writer_fd) |fd| {
+                    const mode = if (pc > 0) p[0] else 0;
+                    var buf: [32]u8 = undefined;
+                    if (csi.private_marker == '?') {
+                        const status = queryDecMode(term, mode);
+                        const resp = std.fmt.bufPrint(&buf, "\x1b[?{d};{d}$y", .{ mode, status }) catch return;
+                        _ = std.posix.write(fd, resp) catch {};
+                    } else if (csi.private_marker == 0) {
+                        const status = queryAnsiMode(term, mode);
+                        const resp = std.fmt.bufPrint(&buf, "\x1b[{d};{d}$y", .{ mode, status }) catch return;
+                        _ = std.posix.write(fd, resp) catch {};
+                    }
+                }
+            } else if (csi.intermediate_count > 0 and csi.intermediates[0] == '"') {
+                // DECSCL — Set Conformance Level (silently accept)
             }
-            // CSI > p, CSI ? p — silently ignore (XTPUSHCOLORS, DECRPM)
+            // CSI > p — silently ignore (XTPUSHCOLORS etc.)
         },
         'q' => {
             if (csi.intermediate_count > 0 and csi.intermediates[0] == ' ') {
                 // DECSCUSR — Set Cursor Style
                 term.cursor_style = if (pc > 0) @intCast(p[0]) else 0;
+            } else if (csi.intermediate_count > 0 and csi.intermediates[0] == '"') {
+                // DECSCA — Set Character Protection Attribute
+                const ps = if (pc > 0) p[0] else 0;
+                term.current_attrs.protected = (ps == 1);
+            } else if (csi.private_marker == '>' and pc > 0 and p[0] == 0) {
+                // XTVERSION — respond with terminal identification
+                if (writer_fd) |fd| {
+                    _ = std.posix.write(fd, "\x1bP>|zt(0.2.3)\x1b\\") catch {};
+                }
             }
-            // CSI > q (XTVERSION) — silently ignore for now
         },
+        'i' => {}, // MC — Media Copy (printer control, silently accept)
         't' => {
             // Window operations (XTWINOPS) — silently accept
-            // CSI 22;0;0 t (save title), CSI 23;0;0 t (restore title), etc.
         },
         else => {
             // Only warn for sequences without private markers (reduce noise)
@@ -1138,6 +1163,7 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             7 => term.current_attrs.reverse = true,
             8 => term.current_attrs.invisible = true,
             9 => term.current_attrs.strikethrough = true,
+            21 => term.current_attrs.underline = true, // Doubly-underlined (treated as underline)
             22 => {
                 term.current_attrs.bold = false;
                 term.current_attrs.dim = false;
@@ -1290,10 +1316,12 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             1007 => {},
             // Meta key mode
             1034 => {},
+            // Backarrow key mode
+            67 => term.decbkm = set,
             // Left/right margin mode
             69 => {},
             // Silently ignored DEC modes
-            0, 2, 3, 4, 5, 8, 12, 18, 19, 42 => {},
+            0, 2, 3, 4, 5, 8, 12, 18, 19, 42, 45, 66 => {},
             else => {
                 std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });
             },
@@ -1318,7 +1346,10 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                         }
                     }
                 }
+                // ESC # 3/4/5/6 (double-height/width) — silently ignore
             },
+            '%' => {}, // ESC % G (UTF-8) / ESC % @ (ISO 8859-1) — always UTF-8, accept
+            ' ' => {}, // ESC SP F/G (7/8-bit controls) — silently accept
             else => {},
         }
         return;
@@ -1406,6 +1437,13 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             }
             term.eraseDisplay(2);
         },
+        'F' => { // Cursor to lower left corner
+            term.cursor_x = 0;
+            term.cursor_y = term.rows -| 1;
+            term.wrap_next = false;
+        },
+        'n' => term.charset = 2, // LS2 — Locking Shift 2 (activate G2)
+        'o' => term.charset = 3, // LS3 — Locking Shift 3 (activate G3)
         '=' => term.deckpam = true, // DECPAM — application keypad
         '>' => term.deckpam = false, // DECPNM — normal keypad
         else => {
@@ -1435,6 +1473,30 @@ fn handleNonPrivateMode(csi: CsiAction, term: *Term, set: bool) void {
             else => {},
         }
     }
+}
+
+fn queryDecMode(term: *const Term, mode: u16) u8 {
+    // Returns: 1=set, 2=reset, 0=not recognized
+    return switch (mode) {
+        1 => if (term.decckm) @as(u8, 1) else 2,
+        6 => if (term.origin_mode) @as(u8, 1) else 2,
+        7 => if (term.decawm) @as(u8, 1) else 2,
+        25 => if (term.cursor_visible) @as(u8, 1) else 2,
+        47, 1047, 1049 => if (term.is_alt_screen) @as(u8, 1) else 2,
+        67 => if (term.decbkm) @as(u8, 1) else 2,
+        1004 => if (term.focus_events) @as(u8, 1) else 2,
+        2004 => if (term.bracketed_paste) @as(u8, 1) else 2,
+        2026 => if (term.sync_update) @as(u8, 1) else 2,
+        else => 0,
+    };
+}
+
+fn queryAnsiMode(term: *const Term, mode: u16) u8 {
+    return switch (mode) {
+        4 => if (term.insert_mode) @as(u8, 1) else 2,
+        20 => if (term.linefeed_mode) @as(u8, 1) else 2,
+        else => 0,
+    };
 }
 
 // =============================================================================

@@ -19,7 +19,8 @@ pub const Cell = struct {
         blink: bool = false,
         invisible: bool = false,
         strikethrough: bool = false,
-        _pad: u6 = 0,
+        protected: bool = false, // DECSCA character protection
+        _pad: u5 = 0,
     };
 };
 
