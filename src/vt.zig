@@ -224,7 +224,8 @@ pub const Parser = struct {
     }
 
     fn handleCsiEntry(self: *Parser, byte: u8) Action {
-        if (byte == '?' or byte == '>') {
+        if (byte >= 0x3C and byte <= 0x3F) {
+            // Private marker bytes: < = > ?
             self.private_marker = byte;
             self.state = .csi_param;
             return .none;
@@ -895,11 +896,14 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             // SGR only without private marker; \e[>4;2m is "Modify Other Keys", not SGR
             if (csi.private_marker == 0) handleSgr(csi, term);
         },
-        'c' => { // DA1 — device attributes
-            if (csi.private_marker == 0) {
-                if (writer_fd) |fd| {
-                    // Report as VT220 with basic capabilities
+        'c' => { // Device Attributes
+            if (writer_fd) |fd| {
+                if (csi.private_marker == 0) {
+                    // DA1 — report as VT220
                     _ = std.posix.write(fd, "\x1b[?62;22c") catch {};
+                } else if (csi.private_marker == '>') {
+                    // DA2 — secondary device attributes (xterm-compatible)
+                    _ = std.posix.write(fd, "\x1b[>0;0;0c") catch {};
                 }
             }
         },
@@ -977,30 +981,67 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
         'h' => { // SM/DECSET — set mode
             if (csi.private_marker == '?') {
                 handleDecSet(csi, term, true);
-            } else {
+            } else if (csi.private_marker == 0) {
                 handleNonPrivateMode(csi, term, true);
             }
+            // CSI > h, CSI < h — silently ignore (xterm/kitty private)
         },
         'l' => { // RM/DECRST — reset mode
             if (csi.private_marker == '?') {
                 handleDecSet(csi, term, false);
-            } else {
+            } else if (csi.private_marker == 0) {
                 handleNonPrivateMode(csi, term, false);
             }
+            // CSI > l, CSI < l — silently ignore
+        },
+        'p' => {
+            // DECSTR — Soft Terminal Reset (CSI ! p)
+            if (csi.intermediate_count > 0 and csi.intermediates[0] == '!') {
+                // Reset terminal state (like RIS but keep screen content)
+                term.cursor_x = 0;
+                term.cursor_y = 0;
+                term.wrap_next = false;
+                term.insert_mode = false;
+                term.linefeed_mode = false;
+                term.origin_mode = false;
+                term.decawm = true;
+                term.decckm = false;
+                term.cursor_visible = true;
+                term.current_fg = 7;
+                term.current_bg = 0;
+                term.current_attrs = .{};
+                term.current_fg_rgb = null;
+                term.current_bg_rgb = null;
+                term.charset = 0;
+                term.charsets = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii };
+                term.scroll_top = 0;
+                term.scroll_bottom = term.rows -| 1;
+                for (0..term.tabs.len) |c_idx| {
+                    term.tabs[c_idx] = (c_idx % 8 == 0) and c_idx > 0;
+                }
+            }
+            // CSI > p, CSI ? p — silently ignore (XTPUSHCOLORS, DECRPM)
         },
         'q' => {
-            // DECSCUSR — Set Cursor Style (CSI Ps SP q)
             if (csi.intermediate_count > 0 and csi.intermediates[0] == ' ') {
+                // DECSCUSR — Set Cursor Style
                 term.cursor_style = if (pc > 0) @intCast(p[0]) else 0;
             }
+            // CSI > q (XTVERSION) — silently ignore for now
+        },
+        't' => {
+            // Window operations (XTWINOPS) — silently accept
+            // CSI 22;0;0 t (save title), CSI 23;0;0 t (restore title), etc.
         },
         else => {
-            std.log.warn("unhandled CSI: private={c} params={d}..{d} final={c}", .{
-                if (csi.private_marker != 0) csi.private_marker else @as(u8, '-'),
-                if (pc > 0) p[0] else 0,
-                if (pc > 1) p[1] else 0,
-                csi.final_byte,
-            });
+            // Only warn for sequences without private markers (reduce noise)
+            if (csi.private_marker == 0 and csi.intermediate_count == 0) {
+                std.log.warn("unhandled CSI: params={d}..{d} final={c}", .{
+                    if (pc > 0) p[0] else 0,
+                    if (pc > 1) p[1] else 0,
+                    csi.final_byte,
+                });
+            }
         },
     }
 }
@@ -1173,7 +1214,17 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             },
             2004 => term.bracketed_paste = set,
             2026 => term.sync_update = set,
-            // Silently ignored modes (common, no-op for us)
+            // Mouse tracking modes (accepted but not processed — no mouse support yet)
+            9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016 => {},
+            // Focus events (accepted, not implemented)
+            1004 => {},
+            // Alt scroll mode
+            1007 => {},
+            // Meta key mode
+            1034 => {},
+            // Left/right margin mode
+            69 => {},
+            // Silently ignored DEC modes
             0, 2, 3, 4, 5, 8, 12, 18, 19, 42 => {},
             else => {
                 std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });
