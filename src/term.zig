@@ -245,22 +245,25 @@ pub const Term = struct {
         self.scroll_shift_top = @intCast(top);
         self.scroll_shift_bot = @intCast(bot);
 
-        // Check saturation: if accumulated shift >= region height, use all_dirty
-        const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
-        if (abs_shift >= region_height) {
-            if (top == 0 and bot + 1 == self.rows) {
-                if (!self.all_dirty) {
-                    self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
-                    self.all_dirty = true;
-                }
-            } else {
-                self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+        // Dirty marking strategy:
+        // - Full-screen scroll: always set all_dirty (guarantees correctness
+        //   even if memmove is skipped due to double-buffer sync issues)
+        // - Partial scroll region (DECSTBM): use memmove for non-saturated,
+        //   full-region dirty for saturated
+        if (top == 0 and bot + 1 == self.rows) {
+            if (!self.all_dirty) {
+                self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
+                self.all_dirty = true;
             }
         } else {
-            // Non-saturated: only mark recycled rows dirty
-            for (0..shift) |s| {
-                const row = bot + 1 - shift + s;
-                self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+            const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
+            if (abs_shift >= region_height) {
+                self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+            } else {
+                for (0..shift) |s| {
+                    const row = bot + 1 - shift + s;
+                    self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+                }
             }
         }
     }
@@ -291,13 +294,20 @@ pub const Term = struct {
         self.scroll_shift_top = @intCast(top);
         self.scroll_shift_bot = @intCast(bot);
 
-        const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
-        if (abs_shift >= region_height) {
-            self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+        if (top == 0 and bot + 1 == self.rows) {
+            if (!self.all_dirty) {
+                self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
+                self.all_dirty = true;
+            }
         } else {
-            for (0..shift) |s| {
-                const row = top + s;
-                self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+            const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
+            if (abs_shift >= region_height) {
+                self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+            } else {
+                for (0..shift) |s| {
+                    const row = top + s;
+                    self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
+                }
             }
         }
     }
