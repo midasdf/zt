@@ -52,8 +52,10 @@ Measured on Intel i5-12450H, 1 CPU core, real display (:0, hardware GPU), `-Dopt
 |---|---|---|
 | **zt** | **5.6ms** | 1.0x |
 | xterm | 26ms | 4.6x |
+| foot | 47ms | 8.4x |
 | st | 52ms | 9.3x |
 | alacritty | 136ms | 24x |
+| kitty | 202ms | 36x |
 | ghostty | 492ms | 87x |
 
 ### Throughput: dense ASCII (4.7MB, 5 runs)
