@@ -70,6 +70,7 @@ pub const Term = struct {
     decawm: bool = true,
     cursor_visible: bool = true,
     bracketed_paste: bool = false,
+    has_truecolor_cells: bool = false,
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
@@ -226,7 +227,7 @@ pub const Term = struct {
         for (0..shift) |s| {
             const phys = self.row_map[top + s];
             @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            self.clearRgbRow(phys);
+            if (self.has_truecolor_cells) self.clearRgbRow(phys);
         }
 
         // Rotate row_map: moves top rows to bottom in one pass
@@ -257,7 +258,7 @@ pub const Term = struct {
         for (0..shift) |s| {
             const phys = self.row_map[bot - s];
             @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            self.clearRgbRow(phys);
+            if (self.has_truecolor_cells) self.clearRgbRow(phys);
         }
 
         // Rotate row_map: moves bottom rows to top in one pass
@@ -453,6 +454,7 @@ pub const Term = struct {
                 for (0..self.rows) |i| self.row_map[i] = @intCast(i);
                 self.markDirtyRange(.{ .start = 0, .end = total });
                 self.clearAllRgb();
+                self.has_truecolor_cells = false;
             },
             else => {},
         }
@@ -675,6 +677,7 @@ pub const Term = struct {
     // TrueColor helpers (indexed by physical cell position)
     pub fn setFgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) !void {
         self.fg_rgb[self.cellIndex(x, y)] = rgb;
+        self.has_truecolor_cells = true;
     }
 
     pub fn getFgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {
@@ -683,6 +686,7 @@ pub const Term = struct {
 
     pub fn setBgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) !void {
         self.bg_rgb[self.cellIndex(x, y)] = rgb;
+        self.has_truecolor_cells = true;
     }
 
     pub fn getBgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {

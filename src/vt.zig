@@ -463,6 +463,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 const bg_val: ?[3]u8 = term.current_bg_rgb;
                 @memset(term.fg_rgb[phys_start .. phys_start + count], fg_val);
                 @memset(term.bg_rgb[phys_start .. phys_start + count], bg_val);
+                if (fg_val != null or bg_val != null) term.has_truecolor_cells = true;
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 term.markDirtyRange(.{ .start = logical_start, .end = logical_start + count });
@@ -552,6 +553,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 };
                 term.fg_rgb[phys_idx] = term.current_fg_rgb;
                 term.bg_rgb[phys_idx] = term.current_bg_rgb;
+                if (term.current_fg_rgb != null or term.current_bg_rgb != null) term.has_truecolor_cells = true;
                 const logical_idx = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 dirty_run_end = logical_idx + 1;
                 term.last_printed_char = cp;
