@@ -12,12 +12,14 @@ pub fn build(b: *std.Build) void {
 
     const scale_opt = b.option(u32, "scale", "Pixel scale factor: 1, 2, or 4 (default: 1)") orelse 1;
     const max_fps_opt = b.option(u32, "max_fps", "Maximum frame rate: 0 = unlimited (default: 120)") orelse 120;
+    const pty_buf_kb_opt = b.option(u32, "pty_buf_kb", "PTY read buffer size in KB (default: 1024)") orelse 1024;
 
     const options = b.addOptions();
     options.addOption(bool, "use_x11", is_x11);
     options.addOption(bool, "use_jp_keymap", use_jp_keymap);
     options.addOption(u32, "scale", scale_opt);
     options.addOption(u32, "max_fps", max_fps_opt);
+    options.addOption(u32, "pty_buf_kb", pty_buf_kb_opt);
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
