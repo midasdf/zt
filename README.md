@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 2.7ms startup. 1,679 MB/s throughput. 4.8MB RSS. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 3.9ms startup. 83 MB/s throughput. 5.9MB RSS. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -49,47 +49,34 @@ Measured on Intel i5-12450H, 1 CPU core, Xvfb, `-Doptimize=ReleaseFast`. Pre-war
 
 | | Time | vs zt |
 |---|---|---|
-| **zt** | **2.7ms** | 1.0x |
-| xterm | 18.2ms | 6.7x |
-| st | 47.2ms | 17.4x |
-| alacritty | 119.2ms | 44x |
-| kitty | 235.3ms | 87x |
-| ghostty | 457.3ms | 169x |
+| **zt** | **3.9ms** | 1.0x |
+| xterm | 15.0ms | 3.8x |
+| st | 41.3ms | 10.5x |
+| alacritty | 105.4ms | 27x |
+| kitty | 207.2ms | 53x |
+| ghostty | 395.0ms | 100x |
 
 ### Throughput (4.7MB dense ASCII, 20 runs)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **2.8ms** | **1,679** | 1.0x |
-| st | 185.7ms | 25.3 | 66x |
-| xterm | 213.8ms | 22.0 | 76x |
-| alacritty | 242.7ms | 19.4 | 87x |
-| kitty | 350.5ms | 13.4 | 125x |
-| ghostty | 675.8ms | 7.0 | 241x |
-
-### Throughput (1GB dense ASCII, 5 runs)
-
-| | Time | MB/s | vs zt |
-|---|---|---|---|
-| **zt** | **2.7ms** | — | 1.0x |
-| kitty | 20.0s | 51.4 | 7,364x |
-| alacritty | 21.5s | 47.8 | 7,937x |
-| st | 31.3s | 32.8 | 11,545x |
-| xterm | 41.0s | 25.0 | 15,133x |
-| ghostty | 43.2s | 23.8 | 15,942x |
-
-> **Note:** zt's frame rate limiter (default 120fps) allows it to skip all intermediate rendering and process the entire data stream as pure parsing. At 1GB, the gap widens to 4+ orders of magnitude because other terminals are bottlenecked by per-frame rendering while zt completes parsing before a single frame is due.
+| **zt** | **56.6ms** | **83** | 1.0x |
+| st | 165.0ms | 28.5 | 2.9x |
+| xterm | 176.5ms | 26.6 | 3.1x |
+| alacritty | 218.4ms | 21.5 | 3.9x |
+| kitty | 303.8ms | 15.5 | 5.4x |
+| ghostty | 587.1ms | 8.0 | 10.4x |
 
 ### Peak RSS
 
 | | RSS |
 |---|---|
-| **zt** | **4.8 MB** |
-| xterm | 13.0 MB |
-| st | 30.2 MB |
-| alacritty | 126.1 MB |
-| kitty | 141.0 MB |
-| ghostty | 222.4 MB |
+| **zt** | **5.9 MB** |
+| xterm | 13.3 MB |
+| st | 30.3 MB |
+| alacritty | 126.2 MB |
+| kitty | 142.1 MB |
+| ghostty | 223.1 MB |
 
 ## Build
 

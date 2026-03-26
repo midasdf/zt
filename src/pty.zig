@@ -142,17 +142,17 @@ pub const Pty = struct {
             if (dbus_env) |e| { env_arr[ei] = e; ei += 1; }
             const env: [*:null]const ?[*:0]const u8 = &env_arr;
 
-            // h. execve
+            // h. execvpe (PATH-searching exec)
             if (exec_argv) |eargv| {
-                // -e mode: build null-terminated argv for execve
+                // -e mode: build null-terminated argv for execvpe
                 var exec_ptrs: [64:null]?[*:0]const u8 = .{null} ** 64;
                 const count = @min(eargv.len, 63);
                 for (0..count) |idx| {
                     exec_ptrs[idx] = eargv[idx].ptr;
                 }
                 const exec_path: [*:0]const u8 = eargv[0].ptr;
-                _ = posix.execveZ(exec_path, &exec_ptrs, env) catch {
-                    _ = posix.write(2, "zt: execve failed\n") catch {};
+                _ = posix.execvpeZ(exec_path, &exec_ptrs, env) catch {
+                    _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
             } else {
                 // Default: login shell
