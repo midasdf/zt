@@ -289,11 +289,10 @@ pub const Term = struct {
         const region_height = bot - top + 1;
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
-        // Clear recycled rows (top `shift` rows become new bottom rows)
+        // Clear recycled rows with BCE
         for (0..shift) |s| {
             const phys = self.row_map[top + s];
-            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            if (self.has_truecolor_cells) self.clearRgbRow(phys);
+            self.bceMemset(phys * cols, (phys + 1) * cols);
         }
 
         // Rotate row_map: moves top rows to bottom in one pass
@@ -320,11 +319,10 @@ pub const Term = struct {
         const region_height = bot - top + 1;
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
 
-        // Clear recycled rows (bottom `shift` rows become new top rows)
+        // Clear recycled rows with BCE
         for (0..shift) |s| {
             const phys = self.row_map[bot - s];
-            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            if (self.has_truecolor_cells) self.clearRgbRow(phys);
+            self.bceMemset(phys * cols, (phys + 1) * cols);
         }
 
         // Rotate row_map: moves bottom rows to top in one pass
@@ -491,6 +489,24 @@ pub const Term = struct {
         self.wrap_next = false;
     }
 
+    /// Return a blank cell with current background color (BCE — Background Color Erase).
+    /// All erase/scroll/clear operations must use this instead of Cell{}.
+    pub inline fn blankCell(self: *const Self) Cell {
+        return .{ .char = ' ', .fg = self.current_fg, .bg = self.current_bg };
+    }
+
+    /// Fill physical range with blank cells using BCE, including TrueColor bg.
+    fn bceMemset(self: *Self, phys_start: usize, phys_end: usize) void {
+        @memset(self.cells[phys_start..phys_end], self.blankCell());
+        if (self.current_bg_rgb) |rgb| {
+            @memset(self.bg_rgb[phys_start..phys_end], rgb);
+            self.has_truecolor_cells = true;
+        } else {
+            @memset(self.bg_rgb[phys_start..phys_end], null);
+        }
+        @memset(self.fg_rgb[phys_start..phys_end], null);
+    }
+
     /// Fix wide character boundaries at the edges of an erase/delete range.
     fn fixWideBoundaries(self: *Self, logical_start: usize, logical_end: usize) void {
         const cols: usize = self.cols;
@@ -523,44 +539,45 @@ pub const Term = struct {
 
     pub fn eraseDisplay(self: *Self, mode: u8) void {
         const cols: usize = self.cols;
+        const blank = self.blankCell();
         switch (mode) {
             0 => {
                 const start_x = self.cursor_x;
                 const start_y = self.cursor_y;
                 self.fixWideBoundaries(start_y * cols + start_x, @as(usize, self.rows) * cols);
-                // Clear from cursor to end
                 for (start_y..self.rows) |y| {
                     const phys = self.row_map[y];
                     const from: usize = if (y == start_y) start_x else 0;
-                    @memset(self.cells[phys * cols + from .. (phys + 1) * cols], Cell{});
+                    self.bceMemset(phys * cols + from, (phys + 1) * cols);
                 }
                 const logical_start = start_y * cols + start_x;
                 const total = @as(usize, self.rows) * cols;
                 self.markDirtyRange(.{ .start = logical_start, .end = total });
-                self.clearRgbRange(start_y, self.rows, 0);
             },
             1 => {
                 const end_x = self.cursor_x;
                 const end_y = self.cursor_y;
                 self.fixWideBoundaries(0, end_y * cols + end_x + 1);
-                // Clear from start to cursor inclusive
                 for (0..end_y + 1) |y| {
                     const phys = self.row_map[y];
                     const to: usize = if (y == end_y) end_x + 1 else cols;
-                    @memset(self.cells[phys * cols .. phys * cols + to], Cell{});
+                    self.bceMemset(phys * cols, phys * cols + to);
                 }
                 self.markDirtyRange(.{ .start = 0, .end = end_y * cols + end_x + 1 });
-                self.clearRgbRange(0, end_y + 1, 0);
             },
             2, 3 => {
-                // Erase all — reset row_map to identity and memset entire array
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
-                @memset(self.cells[0..total], Cell{});
+                @memset(self.cells[0..total], blank);
                 for (0..self.rows) |i| self.row_map[i] = @intCast(i);
                 self.markDirtyRange(.{ .start = 0, .end = total });
-                self.clearAllRgb();
-                self.has_truecolor_cells = false;
-        
+                // BCE: fill TrueColor arrays with current bg
+                if (self.current_bg_rgb) |rgb| {
+                    @memset(self.bg_rgb[0..total], rgb);
+                    self.has_truecolor_cells = true;
+                } else {
+                    @memset(self.bg_rgb[0..total], null);
+                }
+                @memset(self.fg_rgb[0..total], null);
             },
             else => {},
         }
@@ -576,21 +593,18 @@ pub const Term = struct {
             0 => {
                 const cx: usize = self.cursor_x;
                 self.fixWideBoundaries(row_start + cx, row_start + cols);
-                @memset(self.cells[phys * cols + cx .. (phys + 1) * cols], Cell{});
+                self.bceMemset(phys * cols + cx, (phys + 1) * cols);
                 self.markDirtyRange(.{ .start = row_start + cx, .end = row_start + cols });
-                self.clearRgbPhysRange(phys * cols + cx, (phys + 1) * cols);
             },
             1 => {
                 const cx: usize = self.cursor_x;
                 self.fixWideBoundaries(row_start, row_start + cx + 1);
-                @memset(self.cells[phys * cols .. phys * cols + cx + 1], Cell{});
+                self.bceMemset(phys * cols, phys * cols + cx + 1);
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + cx + 1 });
-                self.clearRgbPhysRange(phys * cols, phys * cols + cx + 1);
             },
             2 => {
-                @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
+                self.bceMemset(phys * cols, (phys + 1) * cols);
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + cols });
-                self.clearRgbPhysRange(phys * cols, (phys + 1) * cols);
             },
             else => {},
         }
@@ -653,13 +667,11 @@ pub const Term = struct {
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        // Save physical rows being pushed off the bottom
         var saved: [256]u32 = undefined;
         for (0..count) |s| {
             const phys = self.row_map[bot - s];
             saved[s] = phys;
-            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            self.clearRgbRow(phys);
+            self.bceMemset(phys * cols, (phys + 1) * cols);
         }
 
         // Shift row_map down within [cy, bot]
@@ -684,13 +696,11 @@ pub const Term = struct {
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        // Save physical rows being deleted
         var saved: [256]u32 = undefined;
         for (0..count) |s| {
             const phys = self.row_map[cy + s];
             saved[s] = phys;
-            @memset(self.cells[phys * cols .. (phys + 1) * cols], Cell{});
-            self.clearRgbRow(phys);
+            self.bceMemset(phys * cols, (phys + 1) * cols);
         }
 
         // Shift row_map up within [cy, bot]
@@ -726,11 +736,10 @@ pub const Term = struct {
             std.mem.copyForwards(Cell, self.cells[row_base + cx .. row_base + cx + copy_len], self.cells[row_base + cx + count .. row_base + cx + count + copy_len]);
         }
 
-        // Clear rightmost characters
-        @memset(self.cells[row_base + cols - count .. row_base + cols], Cell{});
+        // Clear rightmost characters with BCE
+        self.bceMemset(row_base + cols - count, row_base + cols);
 
         self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cols });
-        self.clearRgbPhysRange(row_base + cx, row_base + cols);
     }
 
     pub fn insertChars(self: *Self, n: u32) void {
@@ -743,20 +752,17 @@ pub const Term = struct {
         const row_base = phys * cols;
         const logical_row_start = @as(usize, self.cursor_y) * cols;
 
-        // Fix wide character boundaries at insertion point
         self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
 
-        // Shift characters right (physical)
         const copy_len = remaining - count;
         if (copy_len > 0) {
             std.mem.copyBackwards(Cell, self.cells[row_base + cx + count .. row_base + cx + count + copy_len], self.cells[row_base + cx .. row_base + cx + copy_len]);
         }
 
-        // Clear inserted characters
-        @memset(self.cells[row_base + cx .. row_base + cx + count], Cell{});
+        // Clear inserted characters with BCE
+        self.bceMemset(row_base + cx, row_base + cx + count);
 
         self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cols });
-        self.clearRgbPhysRange(row_base + cx, row_base + cols);
     }
 
     pub fn eraseChars(self: *Self, n: u32) void {
@@ -769,12 +775,10 @@ pub const Term = struct {
         const row_base = phys * cols;
         const logical_row_start = @as(usize, self.cursor_y) * cols;
 
-        // Fix wide character boundaries at erase range
         self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
-        @memset(self.cells[row_base + cx .. row_base + cx + count], Cell{});
+        self.bceMemset(row_base + cx, row_base + cx + count);
 
         self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cx + count });
-        self.clearRgbPhysRange(row_base + cx, row_base + cx + count);
     }
 
     /// Clear RGB entries for a physical row (O(1) memset)
