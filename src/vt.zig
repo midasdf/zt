@@ -28,6 +28,7 @@ pub const Action = union(enum) {
     csi_dispatch: CsiAction,
     esc_dispatch: EscAction,
     osc_dispatch: []const u8,
+    dcs_dispatch: []const u8,
     none,
 };
 
@@ -180,6 +181,10 @@ pub const Parser = struct {
             self.osc_len = 0;
             self.esc_in_osc = false;
             self.state = .osc_string;
+            return .none;
+        } else if (byte == 'P') {
+            // DCS — Device Control String
+            self.state = .dcs_entry;
             return .none;
         } else if (byte >= 0x20 and byte <= 0x2F) {
             self.intermediates[0] = byte;
@@ -351,12 +356,21 @@ pub const Parser = struct {
     }
 
     fn handleDcs(self: *Parser, byte: u8) Action {
-        // Minimal DCS handling — just consume until ST
         if (byte == 0x9C) {
+            const payload = self.osc_buf[0..self.osc_len];
+            self.osc_len = 0;
             self.state = .ground;
+            return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
         } else if (byte == 0x1B) {
-            // Could be ESC \ (ST)
+            const payload = self.osc_buf[0..self.osc_len];
+            self.osc_len = 0;
             self.state = .escape;
+            return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
+        } else {
+            if (self.osc_len < 256) {
+                self.osc_buf[self.osc_len] = byte;
+                self.osc_len += 1;
+            }
         }
         return .none;
     }
@@ -583,7 +597,67 @@ pub fn executeActionWithFd(action: Action, term: *Term, writer_fd: ?std.posix.fd
         .csi_dispatch => |csi| handleCsi(csi, term, writer_fd),
         .esc_dispatch => |esc| handleEsc(esc, term),
         .osc_dispatch => {},
+        .dcs_dispatch => |payload| handleDcsDispatch(payload, writer_fd),
         .none => {},
+    }
+}
+
+fn handleDcsDispatch(payload: []const u8, writer_fd: ?std.posix.fd_t) void {
+    const fd = writer_fd orelse return;
+
+    // XTGETTCAP: DCS + q <hex-name>[;<hex-name>...] ST
+    // Find "+q" anywhere in the payload (may have leading params like "11;?")
+    const qpos = std.mem.indexOf(u8, payload, "+q") orelse return;
+    const hex_names = payload[qpos + 2 ..];
+
+    // Split by ';' and respond to each capability
+    var iter = std.mem.splitScalar(u8, hex_names, ';');
+    while (iter.next()) |hex_name| {
+        if (hex_name.len == 0) continue;
+        respondXtgettcap(fd, hex_name);
+    }
+}
+
+fn respondXtgettcap(fd: std.posix.fd_t, hex_name: []const u8) void {
+    // Known capabilities (hex-encoded name → hex-encoded value)
+    const caps = .{
+        // indn (scroll forward): \e[%p1%dS
+        .{ "696e646e", "1b5b257031256453" },
+        // rin (scroll backward): \e[%p1%dT
+        .{ "72696e", "1b5b257031256454" },
+        // colors: 256
+        .{ "636f6c6f7273", "323536" },
+        // TN (terminal name): zt
+        .{ "544e", "7a74" },
+        // query-os-name: linux
+        .{ "71756572792d6f732d6e616d65", "6c696e7578" },
+        // RGB: true (8/8/8)
+        .{ "524742", "382f382f38" },
+    };
+
+    var resp_buf: [256]u8 = undefined;
+
+    inline for (caps) |cap| {
+        if (std.mem.eql(u8, hex_name, cap[0])) {
+            // Valid response: DCS 1 + r <name>=<value> ST
+            const resp = "\x1bP1+r" ++ cap[0] ++ "=" ++ cap[1] ++ "\x1b\\";
+            _ = std.posix.write(fd, resp) catch {};
+            return;
+        }
+    }
+
+    // Unknown capability: DCS 0 + r <name> ST
+    const prefix = "\x1bP0+r";
+    const suffix = "\x1b\\";
+    if (prefix.len + hex_name.len + suffix.len <= resp_buf.len) {
+        var pos: usize = 0;
+        @memcpy(resp_buf[pos..][0..prefix.len], prefix);
+        pos += prefix.len;
+        @memcpy(resp_buf[pos..][0..hex_name.len], hex_name);
+        pos += hex_name.len;
+        @memcpy(resp_buf[pos..][0..suffix.len], suffix);
+        pos += suffix.len;
+        _ = std.posix.write(fd, resp_buf[0..pos]) catch {};
     }
 }
 
@@ -975,9 +1049,14 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                 if (set) {
                     term.saved_cursor_x = term.cursor_x;
                     term.saved_cursor_y = term.cursor_y;
+                    term.saved_scroll_top = term.scroll_top;
+                    term.saved_scroll_bottom = term.scroll_bottom;
                     term.switchScreen(true) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
+                    // Reset scroll region for alt screen (full screen)
+                    term.scroll_top = 0;
+                    term.scroll_bottom = term.rows -| 1;
                     term.eraseDisplay(2);
                 } else {
                     term.switchScreen(false) catch |err| {
@@ -985,9 +1064,12 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     };
                     term.cursor_x = term.saved_cursor_x;
                     term.cursor_y = term.saved_cursor_y;
+                    term.scroll_top = term.saved_scroll_top;
+                    term.scroll_bottom = term.saved_scroll_bottom;
                 }
             },
             2004 => term.bracketed_paste = set,
+            2026 => term.sync_update = set,
             else => {
                 std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });
             },

@@ -603,17 +603,6 @@ pub const X11Backend = struct {
         self.dirty_y_max = 0;
     }
 
-    /// Sync a pixel region from the other buffer to the current buffer.
-    /// Ensures memmove source pixels are current in double-buffered mode.
-    pub fn syncBuffer(self: *Self, y_start: u32, y_end: u32) void {
-        const other: u1 = self.buf_idx ^ 1;
-        if (self.buffers[other].len == 0) return;
-        const byte_start = y_start * self.stride;
-        const byte_end = @min(y_end, self.height) * self.stride;
-        if (byte_start >= byte_end) return;
-        @memcpy(self.buffers[self.buf_idx][byte_start..byte_end], self.buffers[other][byte_start..byte_end]);
-    }
-
     /// Flush XCB output buffer. Called once per event loop iteration
     /// after present() to batch put_image requests.
     pub fn flush(self: *Self) void {

@@ -39,6 +39,8 @@ pub const Term = struct {
     alt_cells: ?[]Cell = null,
     alt_row_map: ?[]u32 = null,
     alt_dirty: ?std.DynamicBitSet = null,
+    alt_fg_rgb: ?[]?[3]u8 = null,
+    alt_bg_rgb: ?[]?[3]u8 = null,
     is_alt_screen: bool = false,
 
     // Cursor
@@ -46,13 +48,12 @@ pub const Term = struct {
     cursor_y: u32 = 0,
     saved_cursor_x: u32 = 0,
     saved_cursor_y: u32 = 0,
+    saved_scroll_top: u32 = 0,
+    saved_scroll_bottom: u32 = 0,
 
     // Scroll region
     scroll_top: u32 = 0,
     scroll_bottom: u32 = 0,
-    scroll_row_shift: i32 = 0,
-    scroll_shift_top: u32 = 0,
-    scroll_shift_bot: u32 = 0,
 
     // Current drawing state
     current_fg: u8 = 7,
@@ -73,6 +74,7 @@ pub const Term = struct {
     decawm: bool = true,
     cursor_visible: bool = true,
     bracketed_paste: bool = false,
+    sync_update: bool = false,
     has_truecolor_cells: bool = false,
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
@@ -112,6 +114,8 @@ pub const Term = struct {
         if (self.alt_dirty != null) {
             self.alt_dirty.?.deinit();
         }
+        if (self.alt_fg_rgb) |a| self.allocator.free(a);
+        if (self.alt_bg_rgb) |a| self.allocator.free(a);
         self.allocator.free(self.fg_rgb);
         self.allocator.free(self.bg_rgb);
     }
@@ -236,35 +240,16 @@ pub const Term = struct {
         // Rotate row_map: moves top rows to bottom in one pass
         std.mem.rotate(u32, self.row_map[top .. bot + 1], shift);
 
-        // Accumulate scroll shift for pixel buffer memmove.
-        if (self.scroll_shift_top != @as(u32, @intCast(top)) or self.scroll_shift_bot != @as(u32, @intCast(bot))) {
-            // Scroll region changed — reset accumulator to avoid incorrect memmove
-            self.scroll_row_shift = 0;
-        }
-        self.scroll_row_shift += @as(i32, @intCast(shift));
-        self.scroll_shift_top = @intCast(top);
-        self.scroll_shift_bot = @intCast(bot);
-
-        // Dirty marking strategy:
-        // - Full-screen scroll: always set all_dirty (guarantees correctness
-        //   even if memmove is skipped due to double-buffer sync issues)
-        // - Partial scroll region (DECSTBM): use memmove for non-saturated,
-        //   full-region dirty for saturated
+        // Mark entire scroll region dirty — row_map pointers rotated but
+        // the pixel buffer still has old content at old positions
         if (top == 0 and bot + 1 == self.rows) {
+            // Full-screen scroll: set all_dirty flag to skip future markDirtyRange calls
             if (!self.all_dirty) {
                 self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
                 self.all_dirty = true;
             }
         } else {
-            const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
-            if (abs_shift >= region_height) {
-                self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
-            } else {
-                for (0..shift) |s| {
-                    const row = bot + 1 - shift + s;
-                    self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
-                }
-            }
+            self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
         }
     }
 
@@ -286,30 +271,8 @@ pub const Term = struct {
         // Rotate row_map: moves bottom rows to top in one pass
         std.mem.rotate(u32, self.row_map[top .. bot + 1], region_height - shift);
 
-        // Accumulate scroll shift (negative = scroll down)
-        if (self.scroll_shift_top != @as(u32, @intCast(top)) or self.scroll_shift_bot != @as(u32, @intCast(bot))) {
-            self.scroll_row_shift = 0;
-        }
-        self.scroll_row_shift -= @as(i32, @intCast(shift));
-        self.scroll_shift_top = @intCast(top);
-        self.scroll_shift_bot = @intCast(bot);
-
-        if (top == 0 and bot + 1 == self.rows) {
-            if (!self.all_dirty) {
-                self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
-                self.all_dirty = true;
-            }
-        } else {
-            const abs_shift: u32 = @intCast(if (self.scroll_row_shift >= 0) self.scroll_row_shift else -self.scroll_row_shift);
-            if (abs_shift >= region_height) {
-                self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
-            } else {
-                for (0..shift) |s| {
-                    const row = top + s;
-                    self.markDirtyRange(.{ .start = row * cols, .end = (row + 1) * cols });
-                }
-            }
-        }
+        // Mark entire scroll region dirty
+        self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
@@ -343,7 +306,7 @@ pub const Term = struct {
         self.rows = new_rows;
         self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
-        self.scroll_row_shift = 0;
+
 
         // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
@@ -372,11 +335,20 @@ pub const Term = struct {
             ad.deinit();
             self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
         }
+        if (self.alt_fg_rgb) |a| {
+            self.allocator.free(a);
+            self.alt_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+            @memset(self.alt_fg_rgb.?, null);
+        }
+        if (self.alt_bg_rgb) |a| {
+            self.allocator.free(a);
+            self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+            @memset(self.alt_bg_rgb.?, null);
+        }
     }
 
     pub fn switchScreen(self: *Self, alt: bool) !void {
         if (alt == self.is_alt_screen) return;
-        self.scroll_row_shift = 0;
 
         const total = @as(usize, self.cols) * @as(usize, self.rows);
 
@@ -388,8 +360,12 @@ pub const Term = struct {
                 self.alt_row_map = try self.allocator.alloc(u32, self.rows);
                 for (0..self.rows) |i| self.alt_row_map.?[i] = @intCast(i);
                 self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, total);
+                self.alt_fg_rgb = try self.allocator.alloc(?[3]u8, total);
+                @memset(self.alt_fg_rgb.?, null);
+                self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, total);
+                @memset(self.alt_bg_rgb.?, null);
             }
-            // Swap main <-> alt
+            // Swap main <-> alt (cells, row_map, dirty, TrueColor)
             const tmp_cells = self.cells;
             self.cells = self.alt_cells.?;
             self.alt_cells = tmp_cells;
@@ -401,6 +377,14 @@ pub const Term = struct {
             const tmp_dirty = self.dirty;
             self.dirty = self.alt_dirty.?;
             self.alt_dirty = tmp_dirty;
+
+            const tmp_fg = self.fg_rgb;
+            self.fg_rgb = self.alt_fg_rgb.?;
+            self.alt_fg_rgb = tmp_fg;
+
+            const tmp_bg = self.bg_rgb;
+            self.bg_rgb = self.alt_bg_rgb.?;
+            self.alt_bg_rgb = tmp_bg;
         } else {
             // Swap back
             const tmp_cells = self.cells;
@@ -414,6 +398,14 @@ pub const Term = struct {
             const tmp_dirty = self.dirty;
             self.dirty = self.alt_dirty.?;
             self.alt_dirty = tmp_dirty;
+
+            const tmp_fg = self.fg_rgb;
+            self.fg_rgb = self.alt_fg_rgb.?;
+            self.alt_fg_rgb = tmp_fg;
+
+            const tmp_bg = self.bg_rgb;
+            self.bg_rgb = self.alt_bg_rgb.?;
+            self.alt_bg_rgb = tmp_bg;
         }
 
         self.is_alt_screen = alt;
@@ -501,7 +493,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = 0, .end = total });
                 self.clearAllRgb();
                 self.has_truecolor_cells = false;
-                self.scroll_row_shift = 0;
+        
             },
             else => {},
         }
@@ -865,4 +857,34 @@ test "Term: hasDirty with single bit" {
     try testing.expect(!term.hasDirty());
     term.markDirty(4, 1);
     try testing.expect(term.hasDirty());
+}
+
+test "switchScreen preserves main screen cells" {
+    const allocator = std.testing.allocator;
+    var t = try Term.init(allocator, 80, 24);
+    defer t.deinit();
+
+    // Write recognizable content to main screen
+    t.setCell(0, 0, .{ .char = 'A' });
+    t.setCell(1, 0, .{ .char = 'B' });
+    t.setCell(2, 0, .{ .char = 'C' });
+
+    // Switch to alt screen
+    try t.switchScreen(true);
+    try std.testing.expect(t.is_alt_screen);
+    // Alt screen should be blank
+    try std.testing.expectEqual(@as(u21, ' '), t.getCell(0, 0).char);
+
+    // Write to alt screen
+    t.setCell(0, 0, .{ .char = 'X' });
+    t.setCell(1, 0, .{ .char = 'Y' });
+
+    // Switch back to main
+    try t.switchScreen(false);
+    try std.testing.expect(!t.is_alt_screen);
+
+    // Main screen content must be restored
+    try std.testing.expectEqual(@as(u21, 'A'), t.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), t.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'C'), t.getCell(2, 0).char);
 }

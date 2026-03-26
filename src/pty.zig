@@ -128,6 +128,7 @@ pub const Pty = struct {
             var ei: usize = 0;
             env_arr[ei] = "TERM=xterm-256color"; ei += 1;
             env_arr[ei] = "COLORTERM=truecolor"; ei += 1;
+            env_arr[ei] = "TERM_PROGRAM=zt"; ei += 1;
             env_arr[ei] = path_env; ei += 1;
             env_arr[ei] = lang_env; ei += 1;
             env_arr[ei] = shell_env; ei += 1;
