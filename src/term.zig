@@ -41,6 +41,8 @@ pub fn translateCharset(cp: u21, cs: CharsetType) u21 {
     return table[cp - 0x60];
 }
 
+pub const SavedDecMode = struct { mode: u16 = 0, value: bool = false };
+
 pub const Term = struct {
     const Self = @This();
 
@@ -130,6 +132,10 @@ pub const Term = struct {
 
     // Backarrow key mode (DECSET ?67): true=BS(0x08), false=DEL(0x7F)
     decbkm: bool = false,
+
+    // Saved DEC mode values (XTSAVE/XTRESTORE)
+    saved_dec_modes: [32]SavedDecMode = [_]SavedDecMode{.{}} ** 32,
+    saved_dec_mode_count: u8 = 0,
 
     // Saved cursor state (DECSC/DECRC — saves attrs + charset like st)
     saved_attrs: Cell.Attrs = .{},
@@ -790,6 +796,79 @@ pub const Term = struct {
         self.bceMemset(row_base + cx, row_base + cx + count);
 
         self.markDirtyRange(.{ .start = logical_row_start + cx, .end = logical_row_start + cx + count });
+    }
+
+    /// Selective erase display: only erase cells without DECSCA protection
+    pub fn selectiveEraseDisplay(self: *Self, mode: u8) void {
+        const cols: usize = self.cols;
+        const blank = self.blankCell();
+        switch (mode) {
+            0 => {
+                for (self.cursor_y..self.rows) |y| {
+                    const phys = self.row_map[y];
+                    const from: usize = if (y == self.cursor_y) self.cursor_x else 0;
+                    for (from..cols) |x| {
+                        if (!self.cells[phys * cols + x].attrs.protected)
+                            self.cells[phys * cols + x] = blank;
+                    }
+                }
+                self.markDirtyRange(.{ .start = @as(usize, self.cursor_y) * cols + self.cursor_x, .end = @as(usize, self.rows) * cols });
+            },
+            1 => {
+                for (0..self.cursor_y + 1) |y| {
+                    const phys = self.row_map[y];
+                    const to: usize = if (y == self.cursor_y) self.cursor_x + 1 else cols;
+                    for (0..to) |x| {
+                        if (!self.cells[phys * cols + x].attrs.protected)
+                            self.cells[phys * cols + x] = blank;
+                    }
+                }
+                self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cursor_y) * cols + self.cursor_x + 1 });
+            },
+            2 => {
+                for (0..self.rows) |y| {
+                    const phys = self.row_map[y];
+                    for (0..cols) |x| {
+                        if (!self.cells[phys * cols + x].attrs.protected)
+                            self.cells[phys * cols + x] = blank;
+                    }
+                }
+                self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cols) * @as(usize, self.rows) });
+            },
+            else => {},
+        }
+    }
+
+    /// Selective erase line: only erase cells without DECSCA protection
+    pub fn selectiveEraseLine(self: *Self, mode: u8) void {
+        const cols: usize = self.cols;
+        const phys = self.row_map[self.cursor_y];
+        const blank = self.blankCell();
+        const row_start = @as(usize, self.cursor_y) * cols;
+        switch (mode) {
+            0 => {
+                for (self.cursor_x..self.cols) |x| {
+                    if (!self.cells[phys * cols + x].attrs.protected)
+                        self.cells[phys * cols + x] = blank;
+                }
+                self.markDirtyRange(.{ .start = row_start + self.cursor_x, .end = row_start + cols });
+            },
+            1 => {
+                for (0..self.cursor_x + 1) |x| {
+                    if (!self.cells[phys * cols + x].attrs.protected)
+                        self.cells[phys * cols + x] = blank;
+                }
+                self.markDirtyRange(.{ .start = row_start, .end = row_start + self.cursor_x + 1 });
+            },
+            2 => {
+                for (0..cols) |x| {
+                    if (!self.cells[phys * cols + x].attrs.protected)
+                        self.cells[phys * cols + x] = blank;
+                }
+                self.markDirtyRange(.{ .start = row_start, .end = row_start + cols });
+            },
+            else => {},
+        }
     }
 
     /// Clear RGB entries for a physical row (O(1) memset)

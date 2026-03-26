@@ -928,13 +928,21 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             const col = if (pc > 1 and p[1] > 0) p[1] - 1 else 0;
             term.moveCursorTo(@intCast(col), @intCast(row));
         },
-        'J' => { // ED — erase display
+        'J' => { // ED / DECSED — erase display
             const mode: u8 = if (pc > 0) @intCast(p[0]) else 0;
-            term.eraseDisplay(mode);
+            if (csi.private_marker == '?') {
+                term.selectiveEraseDisplay(mode);
+            } else {
+                term.eraseDisplay(mode);
+            }
         },
-        'K' => { // EL — erase line
+        'K' => { // EL / DECSEL — erase line
             const mode: u8 = if (pc > 0) @intCast(p[0]) else 0;
-            term.eraseLine(mode);
+            if (csi.private_marker == '?') {
+                term.selectiveEraseLine(mode);
+            } else {
+                term.eraseLine(mode);
+            }
         },
         'L' => { // IL — insert lines
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
@@ -1010,16 +1018,26 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                 }
             }
         },
-        'r' => { // DECSTBM — set scroll region (1-indexed)
-            const top = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
-            const bot = if (pc > 1 and p[1] > 0) p[1] - 1 else @as(u16, @intCast(term.rows -| 1));
-            term.setScrollRegion(@intCast(top), @intCast(bot));
-            term.cursor_x = 0;
-            term.cursor_y = 0;
-            term.wrap_next = false;
+        'r' => {
+            if (csi.private_marker == '?') {
+                // XTRESTORE — Restore DEC Private Mode values
+                restoreDECModes(csi, term);
+            } else if (csi.private_marker == 0) {
+                // DECSTBM — set scroll region (1-indexed)
+                const top = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
+                const bot = if (pc > 1 and p[1] > 0) p[1] - 1 else @as(u16, @intCast(term.rows -| 1));
+                term.setScrollRegion(@intCast(top), @intCast(bot));
+                term.cursor_x = 0;
+                term.cursor_y = 0;
+                term.wrap_next = false;
+            }
         },
-        's' => { // Save cursor (only without private marker; \e[?s is XTPUSHCOLORS)
-            if (csi.private_marker == 0) {
+        's' => {
+            if (csi.private_marker == '?') {
+                // XTSAVE — Save DEC Private Mode values
+                saveDECModes(csi, term);
+            } else if (csi.private_marker == 0) {
+                // Save cursor position
                 term.saved_cursor_x = term.cursor_x;
                 term.saved_cursor_y = term.cursor_y;
             }
@@ -1497,6 +1515,29 @@ fn queryAnsiMode(term: *const Term, mode: u16) u8 {
         20 => if (term.linefeed_mode) @as(u8, 1) else 2,
         else => 0,
     };
+}
+
+fn saveDECModes(csi: CsiAction, term: *Term) void {
+    const pc = csi.param_count;
+    term.saved_dec_mode_count = 0;
+    var i: u8 = 0;
+    while (i < pc and term.saved_dec_mode_count < 32) : (i += 1) {
+        const mode = csi.params[i];
+        const value = queryDecMode(term, mode) == 1;
+        term.saved_dec_modes[term.saved_dec_mode_count] = .{ .mode = mode, .value = value };
+        term.saved_dec_mode_count += 1;
+    }
+}
+
+fn restoreDECModes(csi: CsiAction, term: *Term) void {
+    _ = csi;
+    for (0..term.saved_dec_mode_count) |idx| {
+        const saved = term.saved_dec_modes[idx];
+        var restore_csi = CsiAction{};
+        restore_csi.params[0] = saved.mode;
+        restore_csi.param_count = 1;
+        handleDecSet(restore_csi, term, saved.value);
+    }
 }
 
 // =============================================================================
