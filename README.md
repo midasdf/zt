@@ -56,7 +56,7 @@ Measured on Intel i5-12450H, 1 CPU core, Xvfb, `-Doptimize=ReleaseFast`. Pre-war
 | kitty | 235.3ms | 87x |
 | ghostty | 457.3ms | 169x |
 
-### Throughput (4.7MB dense ASCII)
+### Throughput (4.7MB dense ASCII, 20 runs)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
@@ -66,6 +66,19 @@ Measured on Intel i5-12450H, 1 CPU core, Xvfb, `-Doptimize=ReleaseFast`. Pre-war
 | alacritty | 242.7ms | 19.4 | 87x |
 | kitty | 350.5ms | 13.4 | 125x |
 | ghostty | 675.8ms | 7.0 | 241x |
+
+### Throughput (1GB dense ASCII, 5 runs)
+
+| | Time | MB/s | vs zt |
+|---|---|---|---|
+| **zt** | **2.7ms** | — | 1.0x |
+| kitty | 20.0s | 51.4 | 7,364x |
+| alacritty | 21.5s | 47.8 | 7,937x |
+| st | 31.3s | 32.8 | 11,545x |
+| xterm | 41.0s | 25.0 | 15,133x |
+| ghostty | 43.2s | 23.8 | 15,942x |
+
+> **Note:** zt's frame rate limiter (default 120fps) allows it to skip all intermediate rendering and process the entire data stream as pure parsing. At 1GB, the gap widens to 4+ orders of magnitude because other terminals are bottlenecked by per-frame rendering while zt completes parsing before a single frame is due.
 
 ### Peak RSS
 
