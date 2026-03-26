@@ -456,24 +456,11 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                         .attrs = term.current_attrs,
                     };
                 }
-                // Clear stale RGB entries for overwritten cells
-                if (term.fg_rgb_map.count() > 0) {
-                    for (0..count) |j| _ = term.fg_rgb_map.remove(phys_start + j);
-                }
-                if (term.bg_rgb_map.count() > 0) {
-                    for (0..count) |j| _ = term.bg_rgb_map.remove(phys_start + j);
-                }
-                // Set TrueColor for bulk-written cells
-                if (term.current_fg_rgb) |rgb| {
-                    for (0..count) |j| {
-                        term.fg_rgb_map.put(phys_start + j, rgb) catch {};
-                    }
-                }
-                if (term.current_bg_rgb) |rgb| {
-                    for (0..count) |j| {
-                        term.bg_rgb_map.put(phys_start + j, rgb) catch {};
-                    }
-                }
+                // Update TrueColor arrays (flat, O(n) memset)
+                const fg_val: ?[3]u8 = term.current_fg_rgb;
+                const bg_val: ?[3]u8 = term.current_bg_rgb;
+                @memset(term.fg_rgb[phys_start .. phys_start + count], fg_val);
+                @memset(term.bg_rgb[phys_start .. phys_start + count], bg_val);
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 term.markDirtyRange(.{ .start = logical_start, .end = logical_start + count });
@@ -488,6 +475,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         // Non-wide chars written directly to cells[] with batch dirty marking.
         if (parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE) {
             const start_i = i;
+            var dirty_run_start: usize = @as(usize, term.cursor_y) * @as(usize, term.cols) + term.cursor_x;
+            var dirty_run_end: usize = dirty_run_start;
             while (i < data.len and data[i] >= 0xC0 and data[i] < 0xFE) {
                 const first = data[i];
                 var cp: u21 = undefined;
@@ -521,15 +510,20 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     continue;
                 }
                 // Non-wide: direct cell write (like ASCII fast path)
-                if (term.cursor_x >= term.cols) {
+                const cols = term.cols;
+                if (term.cursor_x >= cols) {
+                    // Flush pending dirty before line change
+                    if (dirty_run_start < dirty_run_end)
+                        term.markDirtyRange(.{ .start = dirty_run_start, .end = dirty_run_end });
                     if (term.decawm) {
                         term.cursor_x = 0;
                         term.insertNewline();
                     } else {
-                        term.cursor_x = term.cols - 1;
+                        term.cursor_x = cols - 1;
                     }
+                    dirty_run_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
+                    dirty_run_end = dirty_run_start;
                 }
-                const cols = term.cols;
                 const phys_row = term.row_map[term.cursor_y];
                 const phys_idx = @as(usize, phys_row) * @as(usize, cols) + term.cursor_x;
                 // Fix wide char boundary if overwriting
@@ -542,16 +536,17 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     .bg = term.current_bg,
                     .attrs = term.current_attrs,
                 };
-                if (term.fg_rgb_map.count() > 0) _ = term.fg_rgb_map.remove(phys_idx);
-                if (term.bg_rgb_map.count() > 0) _ = term.bg_rgb_map.remove(phys_idx);
-                if (term.current_fg_rgb) |rgb| term.fg_rgb_map.put(phys_idx, rgb) catch {};
-                if (term.current_bg_rgb) |rgb| term.bg_rgb_map.put(phys_idx, rgb) catch {};
+                term.fg_rgb[phys_idx] = term.current_fg_rgb;
+                term.bg_rgb[phys_idx] = term.current_bg_rgb;
                 const logical_idx = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
-                term.markDirtyRange(.{ .start = logical_idx, .end = logical_idx + 1 });
+                dirty_run_end = logical_idx + 1;
                 term.last_printed_char = cp;
                 term.cursor_x += 1;
                 i += seq_len;
             }
+            // Flush accumulated dirty range
+            if (dirty_run_start < dirty_run_end)
+                term.markDirtyRange(.{ .start = dirty_run_start, .end = dirty_run_end });
             if (i > start_i) continue;
         }
         // Slow path: control/escape sequences, incomplete UTF-8
@@ -577,20 +572,32 @@ pub fn executeActionWithFd(action: Action, term: *Term, writer_fd: ?std.posix.fd
 }
 
 fn isWide(cp: u21) bool {
-    return (cp >= 0x1100 and cp <= 0x115F) or // Hangul Jamo
-        (cp >= 0x2E80 and cp <= 0x303E) or // CJK Radicals, Kangxi, Ideographic Description
-        (cp >= 0x3040 and cp <= 0x33BF) or // Hiragana, Katakana, Bopomofo, CJK compat
-        (cp >= 0x3400 and cp <= 0x4DBF) or // CJK Unified Extension A
-        (cp >= 0x4E00 and cp <= 0xA4CF) or // CJK Unified, Yi
-        (cp >= 0xA960 and cp <= 0xA97C) or // Hangul Jamo Extended-A
-        (cp >= 0xAC00 and cp <= 0xD7A3) or // Hangul Syllables
-        (cp >= 0xF900 and cp <= 0xFAFF) or // CJK Compatibility Ideographs
-        (cp >= 0xFE10 and cp <= 0xFE6F) or // CJK Compatibility Forms, Small Forms
-        (cp >= 0xFF01 and cp <= 0xFF60) or // Fullwidth Forms
-        (cp >= 0xFFE0 and cp <= 0xFFE6) or // Fullwidth Signs
-        (cp >= 0x1F300 and cp <= 0x1F9FF) or // Misc Symbols, Emoticons
-        (cp >= 0x20000 and cp <= 0x2FFFF) or // CJK Extension B-F
-        (cp >= 0x30000 and cp <= 0x3FFFF); // CJK Extension G+
+    // Fast rejection: ASCII, Latin, common symbols (vast majority of chars)
+    if (cp < 0x1100) return false;
+    if (cp <= 0x115F) return true; // Hangul Jamo
+    // Gap: 0x1160-0x2E7F — various scripts, none wide
+    if (cp < 0x2E80) return false;
+    // Main CJK range: 0x2E80-0xA4CF (contiguous wide block)
+    if (cp <= 0xA4CF) return true; // CJK Radicals through Yi
+    // Gap: 0xA4D0-0xA95F
+    if (cp < 0xA960) return false;
+    if (cp <= 0xA97C) return true; // Hangul Jamo Extended-A
+    if (cp < 0xAC00) return false;
+    if (cp <= 0xD7A3) return true; // Hangul Syllables
+    // Gap: 0xD7A4-0xF8FF
+    if (cp < 0xF900) return false;
+    if (cp <= 0xFAFF) return true; // CJK Compatibility Ideographs
+    if (cp < 0xFE10) return false;
+    if (cp <= 0xFE6F) return true; // CJK Compatibility Forms, Small Forms
+    if (cp < 0xFF01) return false;
+    if (cp <= 0xFF60) return true; // Fullwidth Forms
+    if (cp < 0xFFE0) return false;
+    if (cp <= 0xFFE6) return true; // Fullwidth Signs
+    // Supplementary planes
+    if (cp < 0x1F300) return false;
+    if (cp <= 0x1F9FF) return true; // Misc Symbols, Emoticons
+    if (cp < 0x20000) return false;
+    return cp <= 0x3FFFF; // CJK Extension B-G+
 }
 
 fn handlePrint(cp: u21, term: *Term) void {

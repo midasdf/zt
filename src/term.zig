@@ -50,8 +50,6 @@ pub const Term = struct {
     // Scroll region
     scroll_top: u32 = 0,
     scroll_bottom: u32 = 0,
-    /// Accumulated scroll delta since last render (positive = up, negative = down)
-    scroll_delta: i32 = 0,
 
     // Current drawing state
     current_fg: u8 = 7,
@@ -60,9 +58,9 @@ pub const Term = struct {
     current_fg_rgb: ?[3]u8 = null,
     current_bg_rgb: ?[3]u8 = null,
 
-    // TrueColor sparse maps (keyed by physical cell index)
-    fg_rgb_map: std.AutoHashMap(usize, [3]u8),
-    bg_rgb_map: std.AutoHashMap(usize, [3]u8),
+    // TrueColor flat arrays (indexed by physical cell index, null = no override)
+    fg_rgb: []?[3]u8,
+    bg_rgb: []?[3]u8,
 
     // Last printed graphic character (for REP / CSI b)
     last_printed_char: u21 = 0,
@@ -83,6 +81,11 @@ pub const Term = struct {
 
         const dirty = try std.DynamicBitSet.initEmpty(allocator, total);
 
+        const fg_rgb = try allocator.alloc(?[3]u8, total);
+        @memset(fg_rgb, null);
+        const bg_rgb = try allocator.alloc(?[3]u8, total);
+        @memset(bg_rgb, null);
+
         return Self{
             .allocator = allocator,
             .cols = cols,
@@ -91,8 +94,8 @@ pub const Term = struct {
             .row_map = row_map,
             .dirty = dirty,
             .scroll_bottom = rows -| 1,
-            .fg_rgb_map = std.AutoHashMap(usize, [3]u8).init(allocator),
-            .bg_rgb_map = std.AutoHashMap(usize, [3]u8).init(allocator),
+            .fg_rgb = fg_rgb,
+            .bg_rgb = bg_rgb,
         };
     }
 
@@ -105,8 +108,8 @@ pub const Term = struct {
         if (self.alt_dirty != null) {
             self.alt_dirty.?.deinit();
         }
-        self.fg_rgb_map.deinit();
-        self.bg_rgb_map.deinit();
+        self.allocator.free(self.fg_rgb);
+        self.allocator.free(self.bg_rgb);
     }
 
     /// Physical cell index via row_map indirection
@@ -135,8 +138,8 @@ pub const Term = struct {
         self.cells[phys_idx] = cell;
         self.dirty.set(self.dirtyIndex(x, y, self.cols));
         self.dirty_flag = true;
-        if (self.fg_rgb_map.count() > 0) _ = self.fg_rgb_map.remove(phys_idx);
-        if (self.bg_rgb_map.count() > 0) _ = self.bg_rgb_map.remove(phys_idx);
+        self.fg_rgb[phys_idx] = null;
+        self.bg_rgb[phys_idx] = null;
     }
 
     pub fn isDirty(self: *const Self, x: u32, y: u32) bool {
@@ -226,11 +229,6 @@ pub const Term = struct {
         // Rotate row_map: moves top rows to bottom in one pass
         std.mem.rotate(u32, self.row_map[top .. bot + 1], shift);
 
-        // Track pixel scroll delta for memmove optimization
-        if (top == 0 and bot + 1 == self.rows) {
-            self.scroll_delta +|= @intCast(shift);
-        }
-
         // Mark entire scroll region dirty — row_map pointers rotated but
         // the pixel buffer still has old content at old positions
         if (top == 0 and bot + 1 == self.rows) {
@@ -261,11 +259,6 @@ pub const Term = struct {
 
         // Rotate row_map: moves bottom rows to top in one pass
         std.mem.rotate(u32, self.row_map[top .. bot + 1], region_height - shift);
-
-        // Track pixel scroll delta
-        if (top == 0 and bot + 1 == self.rows) {
-            self.scroll_delta -|= @intCast(shift);
-        }
 
         // Mark entire scroll region dirty
         self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
@@ -307,8 +300,13 @@ pub const Term = struct {
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
-        // Clear TrueColor maps (physical indices invalidated)
-        self.clearAllRgb();
+        // Resize TrueColor arrays (physical indices invalidated)
+        self.allocator.free(self.fg_rgb);
+        self.allocator.free(self.bg_rgb);
+        self.fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        @memset(self.fg_rgb, null);
+        self.bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        @memset(self.bg_rgb, null);
 
         // Resize alt buffer if allocated
         if (self.alt_cells) |alt| {
@@ -640,64 +638,52 @@ pub const Term = struct {
         self.clearRgbPhysRange(row_base + cx, row_base + cx + count);
     }
 
-    /// Clear RGB entries for a physical row
+    /// Clear RGB entries for a physical row (O(1) memset)
     fn clearRgbRow(self: *Self, phys_row: usize) void {
-        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
         const cols: usize = self.cols;
         const start = phys_row * cols;
-        const end = start + cols;
-        for (start..end) |idx| {
-            _ = self.fg_rgb_map.remove(idx);
-            _ = self.bg_rgb_map.remove(idx);
-        }
+        @memset(self.fg_rgb[start .. start + cols], null);
+        @memset(self.bg_rgb[start .. start + cols], null);
     }
 
-    /// Clear RGB entries for a physical index range
+    /// Clear RGB entries for a physical index range (O(1) memset)
     fn clearRgbPhysRange(self: *Self, start: usize, end: usize) void {
-        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
-        for (start..end) |idx| {
-            _ = self.fg_rgb_map.remove(idx);
-            _ = self.bg_rgb_map.remove(idx);
-        }
+        @memset(self.fg_rgb[start..end], null);
+        @memset(self.bg_rgb[start..end], null);
     }
 
     /// Clear RGB entries for logical rows [y_start, y_end)
     fn clearRgbRange(self: *Self, y_start: usize, y_end: usize, _: usize) void {
-        if (self.fg_rgb_map.count() == 0 and self.bg_rgb_map.count() == 0) return;
         const cols: usize = self.cols;
         for (y_start..y_end) |y| {
             const phys = self.row_map[y];
-            for (0..cols) |x| {
-                const idx = phys * cols + x;
-                _ = self.fg_rgb_map.remove(idx);
-                _ = self.bg_rgb_map.remove(idx);
-            }
+            const start = phys * cols;
+            @memset(self.fg_rgb[start .. start + cols], null);
+            @memset(self.bg_rgb[start .. start + cols], null);
         }
     }
 
     /// Clear all TrueColor entries.
     fn clearAllRgb(self: *Self) void {
-        self.fg_rgb_map.clearRetainingCapacity();
-        self.bg_rgb_map.clearRetainingCapacity();
+        @memset(self.fg_rgb, null);
+        @memset(self.bg_rgb, null);
     }
 
-    // TrueColor helpers (keyed by physical index)
+    // TrueColor helpers (indexed by physical cell position)
     pub fn setFgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) !void {
-        try self.fg_rgb_map.put(self.cellIndex(x, y), rgb);
+        self.fg_rgb[self.cellIndex(x, y)] = rgb;
     }
 
     pub fn getFgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {
-        if (self.fg_rgb_map.count() == 0) return null;
-        return self.fg_rgb_map.get(self.cellIndex(x, y));
+        return self.fg_rgb[self.cellIndex(x, y)];
     }
 
     pub fn setBgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) !void {
-        try self.bg_rgb_map.put(self.cellIndex(x, y), rgb);
+        self.bg_rgb[self.cellIndex(x, y)] = rgb;
     }
 
     pub fn getBgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {
-        if (self.bg_rgb_map.count() == 0) return null;
-        return self.bg_rgb_map.get(self.cellIndex(x, y));
+        return self.bg_rgb[self.cellIndex(x, y)];
     }
 };
 

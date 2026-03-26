@@ -333,13 +333,16 @@ pub fn main() !void {
     var bytes_since_render: usize = 0;
 
     while (running) {
-        // Adaptive frame rate: during heavy output, reduce render frequency
-        // Normal: frame_min_ns (default 8ms = 120fps)
-        // Bulk:   frame_min_ns * 8 (default 64ms = ~15fps) when >64KB since last render
+        // Adaptive frame rate: smoothly reduce render frequency during heavy output
+        // Tier 0: <64KB  → frame_min_ns (default 8ms = 120fps)
+        // Tier 1: 64KB+  → frame_min_ns * 2 (default 16ms = 60fps)
+        // Tier 2: 256KB+ → frame_min_ns * 8 (default 64ms = ~15fps)
         const effective_frame_ns: i128 = if (config.frame_min_ns == 0)
             0
-        else if (bytes_since_render > 65536)
+        else if (bytes_since_render > 262144)
             @as(i128, config.frame_min_ns) * 8
+        else if (bytes_since_render > 65536)
+            @as(i128, config.frame_min_ns) * 2
         else
             @as(i128, config.frame_min_ns);
 
@@ -452,7 +455,8 @@ pub fn main() !void {
                                 .expose => {
                                     // Force full redraw — mark all term cells dirty
                                     const total = @as(usize, term.cols) * @as(usize, term.rows);
-                                    term.dirty.setRangeValue(.{ .start = 0, .end = total }, true);
+                                    term.markDirtyRange(.{ .start = 0, .end = total });
+                                    term.all_dirty = true;
                                 },
                                 .close => {
                                     running = false;
@@ -499,12 +503,14 @@ pub fn main() !void {
         }
 
         // Extra PTY drain: data may have arrived during event processing.
-        // Avoids unnecessary epoll_wait roundtrip when data is flowing rapidly.
+        // Capped at 1MB to prevent render starvation from infinite producers (yes, cat /dev/urandom).
         if (running) {
-            while (true) {
+            var extra_total: usize = 0;
+            while (extra_total < 1_048_576) {
                 const extra = pty.read(&pty_buf) catch break;
                 if (extra == 0) { running = false; break; }
                 bytes_since_render += extra;
+                extra_total += extra;
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
             }
         }
@@ -528,23 +534,6 @@ pub fn main() !void {
 
         const buf = backend.getBuffer();
         const stride = backend.getStride();
-
-        // Pixel buffer scroll optimization: memmove pixels instead of re-rendering
-        // Only effective for partial scrolls (delta < rows)
-        const scroll_delta = term.scroll_delta;
-        term.scroll_delta = 0;
-        if (scroll_delta > 0 and scroll_delta < term.rows) {
-            const pixel_shift = @as(u32, @intCast(scroll_delta)) * config.cell_height;
-            const total_h = term.rows * config.cell_height;
-            if (pixel_shift < total_h) {
-                const src_start = pixel_shift * stride;
-                const dst_end = (total_h - pixel_shift) * stride;
-                std.mem.copyForwards(u8, buf[0..dst_end], buf[src_start .. src_start + dst_end]);
-                // Only bottom rows need full re-render; clear their dirty to force it
-                // (they're already dirty from scrollUp)
-                backend.markDirtyRows(0, total_h - 1);
-            }
-        }
 
         const skip_dirty_check = term.isAllDirty();
         var y: u32 = 0;
