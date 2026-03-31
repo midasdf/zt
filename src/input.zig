@@ -95,6 +95,110 @@ pub const KEY = struct {
     pub const YEN = 124; // ¥ and | on JIS
 };
 
+/// macOS virtual keycode → Linux evdev keycode translation.
+/// Maps macOS kVK_* codes (0x00-0x7E) to evdev KEY_* codes.
+/// Unmapped keycodes return 0.
+pub fn macosToEvdev(keycode: u8) u16 {
+    if (keycode >= macos_to_evdev_table.len) return 0;
+    return macos_to_evdev_table[keycode];
+}
+
+const macos_to_evdev_table: [128]u16 = buildMacosTable();
+
+fn buildMacosTable() [128]u16 {
+    var table = [_]u16{0} ** 128;
+    // Letters (ANSI layout — macOS kVK_ANSI_* keycodes)
+    table[0x00] = KEY.A;
+    table[0x01] = KEY.S;
+    table[0x02] = KEY.D;
+    table[0x03] = KEY.F;
+    table[0x04] = KEY.H;
+    table[0x05] = KEY.G;
+    table[0x06] = KEY.Z;
+    table[0x07] = KEY.X;
+    table[0x08] = KEY.C;
+    table[0x09] = KEY.V;
+    table[0x0B] = KEY.B;
+    table[0x0C] = KEY.Q;
+    table[0x0D] = KEY.W;
+    table[0x0E] = KEY.E;
+    table[0x0F] = KEY.R;
+    table[0x10] = KEY.Y;
+    table[0x11] = KEY.T;
+    // Numbers
+    table[0x12] = KEY.@"1";
+    table[0x13] = KEY.@"2";
+    table[0x14] = KEY.@"3";
+    table[0x15] = KEY.@"4";
+    table[0x16] = KEY.@"6";
+    table[0x17] = KEY.@"5";
+    table[0x18] = KEY.EQUAL;
+    table[0x19] = KEY.@"9";
+    table[0x1A] = KEY.@"7";
+    table[0x1B] = KEY.MINUS;
+    table[0x1C] = KEY.@"8";
+    table[0x1D] = KEY.@"0";
+    // Symbols / remaining letters
+    table[0x1E] = KEY.RIGHTBRACE;
+    table[0x1F] = KEY.O;
+    table[0x20] = KEY.U;
+    table[0x21] = KEY.LEFTBRACE;
+    table[0x22] = KEY.I;
+    table[0x23] = KEY.P;
+    table[0x25] = KEY.L;
+    table[0x26] = KEY.J;
+    table[0x27] = KEY.APOSTROPHE;
+    table[0x28] = KEY.K;
+    table[0x29] = KEY.SEMICOLON;
+    table[0x2A] = KEY.BACKSLASH;
+    table[0x2B] = KEY.COMMA;
+    table[0x2C] = KEY.SLASH;
+    table[0x2D] = KEY.N;
+    table[0x2E] = KEY.M;
+    table[0x2F] = KEY.DOT;
+    table[0x32] = KEY.GRAVE;
+    // Special keys
+    table[0x24] = KEY.ENTER;
+    table[0x30] = KEY.TAB;
+    table[0x31] = KEY.SPACE;
+    table[0x33] = KEY.BACKSPACE;
+    table[0x35] = KEY.ESC;
+    // Modifier keycodes (for flagsChanged:)
+    table[0x38] = KEY.LEFTSHIFT;
+    table[0x3A] = KEY.LEFTALT; // Option
+    table[0x3B] = KEY.LEFTCTRL;
+    table[0x3C] = KEY.RIGHTSHIFT;
+    table[0x3D] = KEY.RIGHTALT; // Right Option
+    table[0x3E] = KEY.RIGHTCTRL;
+    table[0x37] = KEY.LEFTMETA; // Command
+    table[0x36] = KEY.RIGHTMETA; // Right Command
+    // Function keys
+    table[0x7A] = KEY.F1;
+    table[0x78] = KEY.F2;
+    table[0x63] = KEY.F3;
+    table[0x76] = KEY.F4;
+    table[0x60] = KEY.F5;
+    table[0x61] = KEY.F6;
+    table[0x62] = KEY.F7;
+    table[0x64] = KEY.F8;
+    table[0x65] = KEY.F9;
+    table[0x6D] = KEY.F10;
+    table[0x67] = KEY.F11;
+    table[0x6F] = KEY.F12;
+    // Navigation
+    table[0x7E] = KEY.UP;
+    table[0x7D] = KEY.DOWN;
+    table[0x7B] = KEY.LEFT;
+    table[0x7C] = KEY.RIGHT;
+    table[0x73] = KEY.HOME;
+    table[0x77] = KEY.END;
+    table[0x74] = KEY.PAGEUP;
+    table[0x79] = KEY.PAGEDOWN;
+    table[0x72] = KEY.INSERT; // Help key on Mac → Insert
+    table[0x75] = KEY.DELETE; // Forward Delete
+    return table;
+}
+
 pub const Modifiers = packed struct(u8) {
     shift: bool = false,
     ctrl: bool = false,
@@ -524,4 +628,25 @@ test "Input: HOME with DECCKM on produces SS3 H" {
 test "Input: unknown keycode returns empty" {
     const result = translateKey(255, .{}, false);
     try testing.expectEqualSlices(u8, "", result);
+}
+
+test "macOS keycode translation: common keys" {
+    // kVK_ANSI_A (0x00) → KEY_A (30)
+    try testing.expectEqual(@as(u16, KEY.A), macosToEvdev(0x00));
+    // kVK_Return (0x24) → KEY_ENTER (28)
+    try testing.expectEqual(@as(u16, KEY.ENTER), macosToEvdev(0x24));
+    // kVK_Delete (0x33) → KEY_BACKSPACE (14)
+    try testing.expectEqual(@as(u16, KEY.BACKSPACE), macosToEvdev(0x33));
+    // kVK_Escape (0x35) → KEY_ESC (1)
+    try testing.expectEqual(@as(u16, KEY.ESC), macosToEvdev(0x35));
+    // kVK_UpArrow (0x7E) → KEY_UP (103)
+    try testing.expectEqual(@as(u16, KEY.UP), macosToEvdev(0x7E));
+    // kVK_Space (0x31) → KEY_SPACE (57)
+    try testing.expectEqual(@as(u16, KEY.SPACE), macosToEvdev(0x31));
+    // kVK_Tab (0x30) → KEY_TAB (15)
+    try testing.expectEqual(@as(u16, KEY.TAB), macosToEvdev(0x30));
+    // Unknown keycode → 0
+    try testing.expectEqual(@as(u16, 0), macosToEvdev(0x7F));
+    // Out of range → 0
+    try testing.expectEqual(@as(u16, 0), macosToEvdev(0xFF));
 }
