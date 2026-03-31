@@ -4,8 +4,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev, x11, or macos") orelse "fbdev";
+    const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev, x11, wayland, or macos") orelse "fbdev";
     const is_x11 = std.mem.eql(u8, backend_opt, "x11");
+    const is_wayland = std.mem.eql(u8, backend_opt, "wayland");
     const is_macos = std.mem.eql(u8, backend_opt, "macos");
 
     const keymap_opt = b.option([]const u8, "keymap", "Keyboard layout: us or jp (default: us)") orelse "us";
@@ -19,6 +20,7 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption(bool, "use_x11", is_x11);
+    options.addOption(bool, "use_wayland", is_wayland);
     options.addOption(bool, "use_macos", is_macos);
     options.addOption(bool, "use_jp_keymap", use_jp_keymap);
     options.addOption(u32, "scale", scale_opt);
@@ -56,6 +58,9 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("xkbcommon");
         exe.linkSystemLibrary("xkbcommon-x11");
         exe.linkLibC();
+    } else if (is_wayland) {
+        exe.linkSystemLibrary("xkbcommon");
+        exe.linkLibC();
     } else if (is_macos) {
         exe.linkFramework("Cocoa");
         exe.linkFramework("QuartzCore");
@@ -76,6 +81,24 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{
         .root_module = test_mod,
     });
+
+    if (is_x11) {
+        unit_tests.linkSystemLibrary("xcb");
+        unit_tests.linkSystemLibrary("xcb-shm");
+        unit_tests.linkSystemLibrary("xcb-xkb");
+        unit_tests.linkSystemLibrary("xcb-imdkit");
+        unit_tests.linkSystemLibrary("xcb-util");
+        unit_tests.linkSystemLibrary("xkbcommon");
+        unit_tests.linkSystemLibrary("xkbcommon-x11");
+        unit_tests.linkLibC();
+    } else if (is_wayland) {
+        unit_tests.linkSystemLibrary("xkbcommon");
+        unit_tests.linkLibC();
+    } else if (is_macos) {
+        unit_tests.linkFramework("Cocoa");
+        unit_tests.linkFramework("QuartzCore");
+        unit_tests.linkLibC();
+    }
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
