@@ -185,7 +185,9 @@ fn kqueueSetPtyWrite(kq: i32, pty_fd: std.posix.fd_t, enable: bool) void {
         .data = 0,
         .udata = @intFromEnum(KqueueTag.pty),
     }};
-    _ = std.posix.kevent(kq, &changelist, &.{}, null) catch {};
+    _ = std.posix.kevent(kq, &changelist, &.{}, null) catch |err| {
+        std.log.debug("kqueueSetPtyWrite failed: {}", .{err});
+    };
 }
 
 /// Write to PTY with buffering on WouldBlock.
@@ -277,8 +279,8 @@ const SIG_CHLD = if (is_linux) linux.SIG.CHLD else std.c.SIG.CHLD;
 const SIG_TERM = if (is_linux) linux.SIG.TERM else std.c.SIG.TERM;
 const SIG_INT = if (is_linux) linux.SIG.INT else std.c.SIG.INT;
 const SIG_HUP = if (is_linux) linux.SIG.HUP else std.c.SIG.HUP;
-const SIG_USR1 = if (is_linux) linux.SIG.USR1 else 0;
-const SIG_USR2 = if (is_linux) linux.SIG.USR2 else 0;
+const SIG_USR1 = if (is_linux) linux.SIG.USR1 else std.c.SIG.USR1;
+const SIG_USR2 = if (is_linux) linux.SIG.USR2 else std.c.SIG.USR2;
 
 fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend) bool {
     const signo: u32 = if (signo_override) |s| s else blk: {
@@ -701,9 +703,15 @@ pub fn main() !void {
                                         const new_cols = rsz.width / config.cell_width;
                                         const new_rows = rsz.height / config.cell_height;
                                         if (new_cols > 0 and new_rows > 0) {
-                                            term.resize(new_cols, new_rows) catch {};
-                                            pty.resize(@intCast(new_cols), @intCast(new_rows)) catch {};
-                                            backend.resize(rsz.width, rsz.height) catch {};
+                                            term.resize(new_cols, new_rows) catch |err| {
+                                                std.log.err("term resize: {}", .{err});
+                                            };
+                                            pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
+                                                std.log.err("pty resize: {}", .{err});
+                                            };
+                                            backend.resize(rsz.width, rsz.height) catch |err| {
+                                                std.log.err("backend resize: {}", .{err});
+                                            };
                                         }
                                     },
                                     .expose => {

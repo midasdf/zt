@@ -310,6 +310,10 @@ pub const MacosBackend = struct {
     pub fn init() !Self {
         // 1. Self-pipe for waking kqueue from Cocoa callbacks
         const pipe_fds = try std.posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
+        errdefer {
+            std.posix.close(pipe_fds[0]);
+            std.posix.close(pipe_fds[1]);
+        }
 
         // 2. NSApplication setup
         const app = msgSend_id(cls("NSApplication"), sel("sharedApplication"));
@@ -565,7 +569,7 @@ fn registerZTViewClass() ?id {
     const new_class = objc_allocateClassPair(nsview, "ZTView", 0) orelse return null;
 
     // Add ivar to hold *MacosBackend pointer
-    _ = class_addIvar(new_class, "_zt_backend", @sizeOf(*anyopaque), @intCast(@alignOf(*anyopaque)), "^v");
+    _ = class_addIvar(new_class, "_zt_backend", @sizeOf(*anyopaque), 3, "^v"); // log2(8) = 3 for 64-bit pointers
 
     // Add NSTextInputClient protocol
     if (objc_getProtocol("NSTextInputClient")) |proto| {
@@ -759,7 +763,7 @@ fn ztFirstRect(_: id, _: SEL, _: NSRange, _: ?*NSRange) callconv(.c) CGRect {
 }
 
 fn ztCharacterIndex(_: id, _: SEL, _: CGPoint) callconv(.c) NSUInteger {
-    return 0; // NSNotFound equivalent: not used in our case
+    return std.math.maxInt(NSUInteger); // NSNotFound
 }
 
 fn ztAttributedSubstring(_: id, _: SEL, _: NSRange, _: ?*NSRange) callconv(.c) ?id {

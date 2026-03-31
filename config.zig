@@ -1,3 +1,4 @@
+const std = @import("std");
 const build_options = @import("build_options");
 
 pub const Backend = enum {
@@ -37,4 +38,4 @@ pub const max_fps: u32 = build_options.max_fps;
 pub const frame_min_ns: u64 = if (max_fps == 0) 0 else 1_000_000_000 / max_fps;
 pub const pty_buf_size: u32 = build_options.pty_buf_kb * 1024;
 
-pub const shell: [:0]const u8 = @ptrCast(build_options.shell);
+pub const shell: [:0]const u8 = std.mem.span(@as([*:0]const u8, build_options.shell));

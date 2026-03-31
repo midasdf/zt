@@ -6,6 +6,12 @@ const builtin = @import("builtin");
 const is_macos = builtin.os.tag == .macos;
 const is_linux = builtin.os.tag == .linux;
 
+comptime {
+    if (!is_macos and !is_linux) {
+        @compileError("PTY support is only implemented for Linux and macOS");
+    }
+}
+
 const c = if (is_macos) @cImport({
     @cInclude("stdlib.h");
     @cInclude("unistd.h");
@@ -237,9 +243,19 @@ pub const Pty = struct {
         }
 
         // === Parent process ===
-        // Set master_fd nonblocking using portable std.posix constants
-        const cur_flags = try posix.fcntl(master_fd, @as(i32, 3), 0); // F_GETFL
-        _ = try posix.fcntl(master_fd, @as(i32, 4), cur_flags | @as(u32, if (is_macos) 0x0004 else 0x800)); // O_NONBLOCK
+        // Set master_fd nonblocking
+        if (is_macos) {
+            // macOS: use libc constants
+            const cur_flags = try posix.fcntl(master_fd, std.c.F.GETFL, 0);
+            _ = try posix.fcntl(master_fd, std.c.F.SETFL, cur_flags | std.c.O.NONBLOCK);
+        } else {
+            // Linux: named constants (not in std.os.linux.F)
+            const F_GETFL = 3;
+            const F_SETFL = 4;
+            const O_NONBLOCK: u32 = 0x800;
+            const cur_flags = try posix.fcntl(master_fd, F_GETFL, 0);
+            _ = try posix.fcntl(master_fd, F_SETFL, cur_flags | O_NONBLOCK);
+        }
 
         return Pty{
             .master_fd = master_fd,
