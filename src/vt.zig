@@ -1214,7 +1214,7 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             } else if (csi.private_marker == '>' and pc > 0 and p[0] == 0) {
                 // XTVERSION — respond with terminal identification
                 if (writer_fd) |fd| {
-                    _ = std.posix.write(fd, "\x1bP>|zt(0.3.0)\x1b\\") catch {};
+                    _ = std.posix.write(fd, "\x1bP>|zt(0.4.0)\x1b\\") catch {};
                 }
             }
         },

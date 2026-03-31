@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
-Minimal terminal emulator written in Zig. Renders directly to the Linux framebuffer, X11 via shared memory, or macOS via Cocoa/AppKit. No GPU required.
+Minimal terminal emulator written in Zig. Renders directly to the Linux framebuffer, X11 via shared memory, Wayland via pure Zig wire protocol, or macOS via Cocoa/AppKit. No GPU required.
 
 ![Image](https://github.com/user-attachments/assets/01ab9a42-2efe-41f7-b123-e7312dc5b8d7)
 
@@ -12,14 +12,14 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 ## Features
 
-- **Triple backend** — framebuffer direct rendering (no X11/Wayland), XCB + SHM under X11, or Cocoa/AppKit on macOS
+- **Quad backend** — framebuffer direct rendering (no X11/Wayland), XCB + SHM under X11, pure Zig Wayland client (no libwayland), or Cocoa/AppKit on macOS
 - **Comptime everything** — backend, font, palette, pixel scale all resolved at compile time. Zero runtime cost for unused code paths
 - **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI/PC displays. Integer scaling renders each bitmap pixel as an NxN block. Same font blob, no quality loss
 - **Row-map scroll** — O(1) scroll via row indirection table instead of cell copying. 60K scrolls move 44MB of pointers vs 880MB of cell data
 - **Damage tracking** — per-cell dirty bitmap with O(1) flag, row-level skip, dirty region present. Scroll marks only recycled rows dirty
 - **Double-buffered SHM** — tear-free X11 rendering with lazy second-buffer init (no startup cost)
-- **XKB keyboard layout** — any X11 keyboard layout works automatically via libxkbcommon (US, JP, DE, FR, etc.)
-- **Input method (XIM)** — Japanese/Chinese/Korean input via fcitx5, ibus, etc. Lazy-initialized on first key press
+- **XKB keyboard layout** — any X11/Wayland keyboard layout works automatically via libxkbcommon (US, JP, DE, FR, etc.)
+- **Input method** — XIM under X11, text-input-v3 under Wayland. Japanese/Chinese/Korean input via fcitx5, ibus, etc.
 - **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim), DEC modes, alternate screen
 - **CJK wide character support** — correct double-width rendering with wide-char boundary repair on erase/delete
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
@@ -35,12 +35,12 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 ## Numbers
 
-|  | fbdev | X11 |
-|---|---|---|
-| Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB |
-| Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit |
-| Build time | < 1s | < 1s |
-| Source | 6,462 lines across 11 files |  |
+|  | fbdev | X11 | Wayland |
+|---|---|---|---|
+| Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB | 2.8 MB |
+| Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit | libxkbcommon |
+| Build time | < 1s | < 1s | < 1s |
+| Source | ~10K lines across 19 files | | |
 
 ## Benchmarks
 
@@ -112,9 +112,14 @@ Requires Zig 0.15+.
 
 ### Build Profiles
 
-**PC (maximum speed):**
+**PC — X11:**
 ```sh
 zig build -Dbackend=x11 -Doptimize=ReleaseFast
+```
+
+**PC — Wayland (Sway, Hyprland, GNOME, KDE, etc.):**
+```sh
+zig build -Dbackend=wayland -Doptimize=ReleaseFast
 ```
 
 **HackberryPi (minimum size):**
@@ -131,8 +136,14 @@ ReleaseSmall minimizes binary size for constrained devices (512MB RAM).
 # fbdev (default) — runs on bare Linux console
 zig build -Doptimize=ReleaseSmall
 
-# X11 — runs under window managers
+# X11 — runs under X11 window managers
 zig build -Dbackend=x11 -Doptimize=ReleaseFast
+
+# Wayland — runs under Wayland compositors (Sway, Hyprland, GNOME, KDE, etc.)
+zig build -Dbackend=wayland -Doptimize=ReleaseFast
+
+# Wayland with 2x pixel scaling for HiDPI displays
+zig build -Dbackend=wayland -Dscale=2 -Doptimize=ReleaseFast
 
 # X11 with 2x pixel scaling for PC/HiDPI displays
 zig build -Dbackend=x11 -Dscale=2 -Doptimize=ReleaseFast
@@ -140,13 +151,13 @@ zig build -Dbackend=x11 -Dscale=2 -Doptimize=ReleaseFast
 # X11 with 4x pixel scaling for 4K displays
 zig build -Dbackend=x11 -Dscale=4 -Doptimize=ReleaseFast
 
-# X11 with 60fps cap (battery saving)
+# X11/Wayland with 60fps cap (battery saving)
 zig build -Dbackend=x11 -Dmax_fps=60 -Doptimize=ReleaseFast
 
-# X11 with unlimited frame rate (no cap)
+# X11/Wayland with unlimited frame rate (no cap)
 zig build -Dbackend=x11 -Dmax_fps=0 -Doptimize=ReleaseFast
 
-# X11 with smaller PTY buffer (conserve memory on RPi)
+# X11/Wayland with smaller PTY buffer (conserve memory on RPi)
 zig build -Dbackend=x11 -Dpty_buf_kb=256 -Doptimize=ReleaseSmall
 
 # fbdev with JIS keyboard layout (default: us)
@@ -169,6 +180,14 @@ zig build -Dbackend=x11 -Dshell=/bin/fish -Doptimize=ReleaseFast
 zig build test
 ```
 
+### Wayland Backend
+
+The Wayland backend implements the wire protocol directly in pure Zig — no libwayland-client dependency. Only `libxkbcommon` is required for keyboard layout support.
+
+Supported protocols: xdg-shell (window management), wl_shm (rendering), text-input-v3 (IME), wl_data_device + primary selection (clipboard), xdg-decoration (server-side decorations), wp_cursor_shape_manager_v1 (cursor).
+
+Works on any xdg-shell compliant compositor: Sway, Hyprland, GNOME, KDE, river, etc.
+
 ### macOS Backend (Experimental)
 
 > **Note:** The macOS backend was developed without access to macOS hardware and has not been tested on a real Mac. It uses Cocoa/AppKit via `objc_msgSend` from Zig, with CGBitmapContext for pixel rendering and NSTextInputClient for IME support. Bug reports and patches welcome.
@@ -180,7 +199,7 @@ Requires macOS SDK (Xcode or Command Line Tools).
 Edit `config.zig` and rebuild — [st](https://st.suckless.org/)-style, no runtime config files.
 
 ```zig
-pub const backend: Backend = .fbdev;  // .fbdev or .x11 (set via -Dbackend)
+pub const backend: Backend = .fbdev;  // .fbdev, .x11, .wayland, or .macos (set via -Dbackend)
 pub const keymap: Keymap = .us;       // .us or .jp (set via -Dkeymap; fbdev only, X11 uses XKB)
 pub const default_fg: u8 = 7;        // white
 pub const default_bg: u8 = 0;        // black
@@ -217,7 +236,8 @@ epoll event loop (single-threaded, dynamic timeout)
 │       └── Action executor → Cell grid mutations via row_map
 ├── Input handler
 │   ├── evdev (fbdev) — raw keyboard events, compile-time keymap (US/JP)
-│   └── X11 — XKB + XIM (lazy-initialized on first key press)
+│   ├── X11 — XKB + XIM (lazy-initialized on first key press)
+│   └── Wayland — XKB + text-input-v3 (IME), client-side key repeat
 ├── Term grid
 │   ├── row_map[logical] → physical: O(1) scroll via pointer rotation
 │   ├── Dirty bitmap (logical order) with O(1) hasDirty flag
@@ -229,7 +249,8 @@ epoll event loop (single-threaded, dynamic timeout)
 │   └── Per-cell: glyph lookup → scaled pixel composition (memcpy row duplication)
 ├── Backend
 │   ├── fbdev: shadow buffer → dirty row memcpy to /dev/fb0 mmap
-│   └── X11: double-buffered SHM → dirty region xcb_shm_put_image
+│   ├── X11: double-buffered SHM → dirty region xcb_shm_put_image
+│   └── Wayland: double-buffered wl_shm → dirty region damage_buffer + commit
 ├── Signal handling (signalfd: SIGCHLD, SIGTERM, SIGINT, SIGHUP)
 ├── VT switching (fbdev: SIGUSR1/2 for console switch)
 ├── Cursor blink (timerfd, 500ms interval)
@@ -246,6 +267,8 @@ epoll event loop (single-threaded, dynamic timeout)
 | `src/main.zig` | 559 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
 | `src/render.zig` | 389 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
+| `src/backend/wayland.zig` | 1,099 | Pure Zig Wayland client: wl_shm double buffer, xdg-shell, event dispatch, internal epoll |
+| `src/backend/wayland/*.zig` | 2,028 | Wire protocol, core/xdg-shell/seat/text-input-v3/clipboard/decoration modules |
 | `src/backend/fbdev.zig` | 319 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
 | `src/font.zig` | 353 | Binary blob loader, comptime ASCII cache, 256-slot runtime glyph cache |
 | `src/pty.zig` | 221 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
@@ -418,7 +441,7 @@ vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, r
 ## Limitations
 
 - No scrollback buffer — only the current viewport is kept
-- No clipboard (OSC 52 parsed but not acted on)
+- No clipboard on fbdev/X11 (Wayland supports Ctrl+Shift+V paste and primary selection)
 - No mouse support
 - fbdev keymap is compile-time only (US/JP); X11 uses XKB for any layout
 - No inline pre-edit display — IME candidate window is handled by the input method (fcitx5 default)
