@@ -10,6 +10,7 @@ const xdg_shell = @import("wayland/xdg_shell.zig");
 const decoration = @import("wayland/decoration.zig");
 const seat_mod = @import("wayland/seat.zig");
 const text_input_mod = @import("wayland/text_input.zig");
+const clipboard_mod = @import("wayland/clipboard.zig");
 
 // ============================================================================
 // Event types — mirrors x11.zig's Event union
@@ -115,6 +116,9 @@ pub const WaylandBackend = struct {
     // IME
     text_input: text_input_mod.TextInputState = .{},
 
+    // Clipboard
+    clipboard: clipboard_mod.ClipboardState = .{},
+
     pub fn init() !Self {
         // 1. Connect to Wayland compositor
         var conn = try wire.Connection.connect();
@@ -197,6 +201,18 @@ pub const WaylandBackend = struct {
         // 7. Bind all discovered globals
         try core.bindGlobals(&conn, &globals, registry_id);
         try conn.flush();
+
+        // 7b. Set up clipboard devices (requires data_device_manager + seat bound above)
+        var clipboard = clipboard_mod.ClipboardState{};
+        if (globals.data_device_manager != 0 and globals.seat != 0) {
+            clipboard.data_device_id = clipboard_mod.getDataDevice(&conn, globals.data_device_manager, globals.seat);
+        }
+        if (globals.primary_selection_manager != 0 and globals.seat != 0) {
+            clipboard.primary_device_id = clipboard_mod.getPrimaryDevice(&conn, globals.primary_selection_manager, globals.seat);
+        }
+        if (clipboard.data_device_id != 0 or clipboard.primary_device_id != 0) {
+            try conn.flush();
+        }
 
         // 8. Receive wl_shm.format events and verify ARGB8888 support
         sync_callback_id = try core.sync(&conn);
@@ -323,6 +339,7 @@ pub const WaylandBackend = struct {
             .internal_epoll_fd = internal_epoll_fd,
             .focused = focused,
             .was_focused = focused,
+            .clipboard = clipboard,
         };
     }
 
@@ -333,6 +350,9 @@ pub const WaylandBackend = struct {
         }
         if (self.internal_epoll_fd >= 0) {
             posix.close(self.internal_epoll_fd);
+        }
+        if (self.clipboard.paste_pipe_fd >= 0) {
+            posix.close(self.clipboard.paste_pipe_fd);
         }
         self.conn.deinit();
     }
@@ -609,6 +629,34 @@ pub const WaylandBackend = struct {
         } else if (self.text_input.id != 0 and header.object_id == self.text_input.id) {
             // zwp_text_input_v3 events
             self.dispatchTextInputEvent(header.opcode, payload);
+        } else if (self.clipboard.data_device_id != 0 and header.object_id == self.clipboard.data_device_id) {
+            // wl_data_device events
+            self.dispatchDataDeviceEvent(header.opcode, payload);
+        } else if (self.clipboard.current_offer_id != 0 and header.object_id == self.clipboard.current_offer_id) {
+            // wl_data_offer events (clipboard)
+            if (header.opcode == clipboard_mod.WL_DATA_OFFER_EVENT_OFFER) {
+                var pos: usize = 0;
+                const mime = wire.getString(payload, &pos);
+                if (std.mem.eql(u8, mime, "text/plain;charset=utf-8") or
+                    std.mem.eql(u8, mime, "text/plain"))
+                {
+                    self.clipboard.offer_has_text = true;
+                }
+            }
+        } else if (self.clipboard.primary_device_id != 0 and header.object_id == self.clipboard.primary_device_id) {
+            // zwp_primary_selection_device_v1 events
+            self.dispatchPrimaryDeviceEvent(header.opcode, payload);
+        } else if (self.clipboard.primary_offer_id != 0 and header.object_id == self.clipboard.primary_offer_id) {
+            // zwp_primary_selection_offer_v1 events
+            if (header.opcode == clipboard_mod.ZWP_PRIMARY_SELECTION_OFFER_EVENT_OFFER) {
+                var pos: usize = 0;
+                const mime = wire.getString(payload, &pos);
+                if (std.mem.eql(u8, mime, "text/plain;charset=utf-8") or
+                    std.mem.eql(u8, mime, "text/plain"))
+                {
+                    self.clipboard.primary_has_text = true;
+                }
+            }
         } else if (self.shm_buffers != null) {
             // Check for wl_buffer.release events
             const bufs = &(self.shm_buffers.?);
@@ -684,6 +732,36 @@ pub const WaylandBackend = struct {
                     // Handle key repeat
                     self.keyboard.startRepeat(key);
                     self.ensureRepeatTimerRegistered();
+
+                    // Shift+Insert -> primary selection paste
+                    if (evdev_keycode == input_mod.KEY.INSERT and mods.shift) {
+                        if (self.clipboard.primary_offer_id != 0 and self.clipboard.primary_has_text) {
+                            clipboard_mod.requestPaste(&self.conn, self.clipboard.primary_offer_id, &self.clipboard) catch {};
+                            if (self.clipboard.paste_pipe_fd >= 0) {
+                                var epev = linux.epoll_event{
+                                    .events = linux.EPOLL.IN | linux.EPOLL.HUP,
+                                    .data = .{ .u32 = EPOLL_TAG_CLIPBOARD },
+                                };
+                                _ = linux.epoll_ctl(self.internal_epoll_fd, linux.EPOLL.CTL_ADD, self.clipboard.paste_pipe_fd, &epev);
+                            }
+                        }
+                        return;
+                    }
+
+                    // Ctrl+Shift+V -> clipboard paste
+                    if (evdev_keycode == input_mod.KEY.V and mods.ctrl and mods.shift) {
+                        if (self.clipboard.current_offer_id != 0 and self.clipboard.offer_has_text) {
+                            clipboard_mod.requestPaste(&self.conn, self.clipboard.current_offer_id, &self.clipboard) catch {};
+                            if (self.clipboard.paste_pipe_fd >= 0) {
+                                var epev = linux.epoll_event{
+                                    .events = linux.EPOLL.IN | linux.EPOLL.HUP,
+                                    .data = .{ .u32 = EPOLL_TAG_CLIPBOARD },
+                                };
+                                _ = linux.epoll_ctl(self.internal_epoll_fd, linux.EPOLL.CTL_ADD, self.clipboard.paste_pipe_fd, &epev);
+                            }
+                        }
+                        return;
+                    }
 
                     // Special keys -> KeyEvent
                     if (isSpecialKey(evdev_keycode)) {
@@ -789,6 +867,56 @@ pub const WaylandBackend = struct {
                 var pos: usize = 0;
                 const serial = wire.getUint(payload, &pos);
                 self.pointer_serial = serial;
+            },
+            else => {},
+        }
+    }
+
+    /// Handle wl_data_device events.
+    fn dispatchDataDeviceEvent(self: *Self, opcode: u16, payload: []const u8) void {
+        switch (opcode) {
+            clipboard_mod.WL_DATA_DEVICE_EVENT_DATA_OFFER => {
+                // Compositor announcing a new data offer object.
+                // Payload: new_id(u32)
+                var pos: usize = 0;
+                const new_id = wire.getUint(payload, &pos);
+                self.clipboard.current_offer_id = new_id;
+                self.clipboard.offer_has_text = false;
+            },
+            clipboard_mod.WL_DATA_DEVICE_EVENT_SELECTION => {
+                // The current offer is now the active clipboard selection.
+                // Payload: offer_id(u32) — may be 0 meaning no selection.
+                var pos: usize = 0;
+                const offer_id = wire.getUint(payload, &pos);
+                if (offer_id == 0) {
+                    // Selection cleared
+                    self.clipboard.current_offer_id = 0;
+                    self.clipboard.offer_has_text = false;
+                }
+                // If non-zero: current_offer_id was already set by DATA_OFFER event
+            },
+            else => {},
+        }
+    }
+
+    /// Handle zwp_primary_selection_device_v1 events.
+    fn dispatchPrimaryDeviceEvent(self: *Self, opcode: u16, payload: []const u8) void {
+        switch (opcode) {
+            clipboard_mod.ZWP_PRIMARY_SELECTION_DEVICE_EVENT_DATA_OFFER => {
+                // Payload: new_id(u32)
+                var pos: usize = 0;
+                const new_id = wire.getUint(payload, &pos);
+                self.clipboard.primary_offer_id = new_id;
+                self.clipboard.primary_has_text = false;
+            },
+            clipboard_mod.ZWP_PRIMARY_SELECTION_DEVICE_EVENT_SELECTION => {
+                // Payload: offer_id(u32) — may be 0 meaning no selection.
+                var pos: usize = 0;
+                const offer_id = wire.getUint(payload, &pos);
+                if (offer_id == 0) {
+                    self.clipboard.primary_offer_id = 0;
+                    self.clipboard.primary_has_text = false;
+                }
             },
             else => {},
         }
@@ -914,7 +1042,26 @@ pub const WaylandBackend = struct {
                     }
                 }
             }
-            // EPOLL_TAG_CLIPBOARD will be handled in later chunks
+            if (tag == EPOLL_TAG_CLIPBOARD) {
+                // Read data from paste pipe (non-blocking)
+                const more = clipboard_mod.readPastePipe(&self.clipboard);
+                if (!more) {
+                    // EOF or error: remove from epoll and queue paste event
+                    if (self.clipboard.paste_pipe_fd >= 0) {
+                        _ = linux.epoll_ctl(self.internal_epoll_fd, linux.EPOLL.CTL_DEL, self.clipboard.paste_pipe_fd, null);
+                        posix.close(self.clipboard.paste_pipe_fd);
+                        self.clipboard.paste_pipe_fd = -1;
+                    }
+                    if (self.clipboard.paste_len > 0) {
+                        var paste_ev = PasteEvent{};
+                        const len: u32 = @intCast(@min(self.clipboard.paste_len, paste_ev.data.len));
+                        @memcpy(paste_ev.data[0..len], self.clipboard.paste_buf[0..len]);
+                        paste_ev.len = len;
+                        self.clipboard.paste_len = 0;
+                        self.queueEvent(.{ .paste = paste_ev });
+                    }
+                }
+            }
         }
 
         // Return next pending event
