@@ -258,6 +258,17 @@ pub fn setCursorShape(conn: *wire.Connection, device_id: u32, serial: u32, shape
     try conn.sendMessage(device_id, WP_CURSOR_SHAPE_DEVICE_SET_SHAPE, payload[0..pos], &.{});
 }
 
+/// Reuse an existing cursor surface for subsequent pointer.enter events.
+pub fn setPointerCursor(conn: *wire.Connection, pointer_id: u32, serial: u32, cursor_surface_id: u32) !void {
+    var buf: [16]u8 = undefined;
+    var pos: usize = 0;
+    wire.putUint(&buf, &pos, serial);
+    wire.putUint(&buf, &pos, cursor_surface_id);
+    wire.putInt(&buf, &pos, 0); // hotspot_x
+    wire.putInt(&buf, &pos, 0); // hotspot_y
+    try conn.sendMessage(pointer_id, WL_POINTER_SET_CURSOR, buf[0..pos], &.{});
+}
+
 /// Fallback cursor: create a 1x1 surface with a single pixel, set as cursor.
 /// Used when wp_cursor_shape_manager_v1 is not available.
 pub fn setFallbackCursor(

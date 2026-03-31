@@ -110,6 +110,7 @@ pub const WaylandBackend = struct {
     keyboard_id: u32 = 0,
     pointer_id: u32 = 0,
     cursor_shape_device_id: u32 = 0,
+    fallback_cursor_surface_id: u32 = 0, // reuse across pointer.enter events
     pointer_serial: u32 = 0,
     repeat_registered: bool = false,
 
@@ -453,8 +454,9 @@ pub const WaylandBackend = struct {
         if (w == self.width and h == self.height) return;
         if (w == 0 or h == 0) return;
 
-        // Destroy old SHM buffers
+        // Destroy old SHM buffers (server-side objects + local mmap)
         if (self.shm_buffers) |*bufs| {
+            bufs.destroyRemote(&self.conn);
             bufs.deinit();
             self.shm_buffers = null;
         }
@@ -857,8 +859,11 @@ pub const WaylandBackend = struct {
                 // Set cursor shape
                 if (self.cursor_shape_device_id != 0) {
                     seat_mod.setCursorShape(&self.conn, self.cursor_shape_device_id, serial, seat_mod.CURSOR_TEXT) catch {};
+                } else if (self.fallback_cursor_surface_id != 0) {
+                    // Reuse existing fallback cursor surface
+                    seat_mod.setPointerCursor(&self.conn, self.pointer_id, serial, self.fallback_cursor_surface_id) catch {};
                 } else {
-                    _ = seat_mod.setFallbackCursor(&self.conn, self.pointer_id, serial, self.globals.compositor, self.globals.shm) catch {};
+                    self.fallback_cursor_surface_id = seat_mod.setFallbackCursor(&self.conn, self.pointer_id, serial, self.globals.compositor, self.globals.shm) catch 0;
                 }
                 self.conn.flush() catch {};
             },

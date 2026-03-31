@@ -309,6 +309,18 @@ pub const ShmBuffer = struct {
         posix.munmap(self.data);
         posix.close(self.fd);
     }
+
+    /// Destroy server-side resources (buffers + pool) and release object IDs.
+    pub fn destroyRemote(self: *ShmBuffer, conn: *wire.Connection) void {
+        // Destroy both wl_buffer objects (opcode 0 = destroy)
+        for (self.buffer_ids) |buf_id| {
+            conn.sendMessage(buf_id, 0, &.{}, &.{}) catch {};
+            conn.id_alloc.release(buf_id);
+        }
+        // Destroy wl_shm_pool (opcode 2 = destroy)
+        conn.sendMessage(self.pool_id, WL_SHM_POOL_DESTROY, &.{}, &.{}) catch {};
+        conn.id_alloc.release(self.pool_id);
+    }
 };
 
 /// Create a double-buffered SHM buffer.

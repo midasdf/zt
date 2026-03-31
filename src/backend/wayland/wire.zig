@@ -175,7 +175,7 @@ pub const Connection = struct {
         var path_buf: [256]u8 = undefined;
         const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ runtime_dir, display }) catch return error.PathTooLong;
 
-        const sock_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+        const sock_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK, 0);
         errdefer posix.close(sock_fd);
 
         var addr = std.mem.zeroes(posix.sockaddr.un);
