@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
-Minimal terminal emulator written in Zig. Renders directly to the Linux framebuffer or X11 via shared memory. No GPU required.
+Minimal terminal emulator written in Zig. Renders directly to the Linux framebuffer, X11 via shared memory, or macOS via Cocoa/AppKit. No GPU required.
 
 ![Image](https://github.com/user-attachments/assets/01ab9a42-2efe-41f7-b123-e7312dc5b8d7)
 
@@ -12,7 +12,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 ## Features
 
-- **Dual backend** — framebuffer direct rendering (no X11/Wayland) or XCB + SHM under X11
+- **Triple backend** — framebuffer direct rendering (no X11/Wayland), XCB + SHM under X11, or Cocoa/AppKit on macOS
 - **Comptime everything** — backend, font, palette, pixel scale all resolved at compile time. Zero runtime cost for unused code paths
 - **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI/PC displays. Integer scaling renders each bitmap pixel as an NxN block. Same font blob, no quality loss
 - **Row-map scroll** — O(1) scroll via row indirection table instead of cell copying. 60K scrolls move 44MB of pointers vs 880MB of cell data
@@ -159,9 +159,21 @@ zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
 zig build -Dtarget=aarch64-linux-gnu.2.38 -Dbackend=x11 -Doptimize=ReleaseFast \
   --search-prefix /path/to/aarch64-sysroot
 
+# macOS (experimental — see note below)
+zig build -Dbackend=macos -Dshell=/bin/zsh -Doptimize=ReleaseFast
+
+# Custom shell (default: /bin/sh)
+zig build -Dbackend=x11 -Dshell=/bin/fish -Doptimize=ReleaseFast
+
 # Run tests
 zig build test
 ```
+
+### macOS Backend (Experimental)
+
+> **Note:** The macOS backend was developed without access to macOS hardware and has not been tested on a real Mac. It uses Cocoa/AppKit via `objc_msgSend` from Zig, with CGBitmapContext for pixel rendering and NSTextInputClient for IME support. Bug reports and patches welcome.
+
+Requires macOS SDK (Xcode or Command Line Tools).
 
 ## Configuration
 
