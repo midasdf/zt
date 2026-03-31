@@ -8,6 +8,8 @@ const wire = @import("wayland/wire.zig");
 const core = @import("wayland/core.zig");
 const xdg_shell = @import("wayland/xdg_shell.zig");
 const decoration = @import("wayland/decoration.zig");
+const seat_mod = @import("wayland/seat.zig");
+const text_input_mod = @import("wayland/text_input.zig");
 
 // ============================================================================
 // Event types — mirrors x11.zig's Event union
@@ -101,6 +103,17 @@ pub const WaylandBackend = struct {
     // Focus state
     focused: bool = false,
     was_focused: bool = false,
+
+    // Input
+    keyboard: seat_mod.KeyboardState = .{},
+    keyboard_id: u32 = 0,
+    pointer_id: u32 = 0,
+    cursor_shape_device_id: u32 = 0,
+    pointer_serial: u32 = 0,
+    repeat_registered: bool = false,
+
+    // IME
+    text_input: text_input_mod.TextInputState = .{},
 
     pub fn init() !Self {
         // 1. Connect to Wayland compositor
@@ -314,6 +327,7 @@ pub const WaylandBackend = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.keyboard.deinit();
         if (self.shm_buffers) |*bufs| {
             bufs.deinit();
         }
@@ -324,8 +338,8 @@ pub const WaylandBackend = struct {
     }
 
     pub fn postInit(self: *Self) void {
-        _ = self;
-        // Keyboard/input will be initialized in later chunks
+        // Initialize xkbcommon context for keyboard input
+        self.keyboard = seat_mod.KeyboardState.init();
     }
 
     // ========================================================================
@@ -472,6 +486,33 @@ pub const WaylandBackend = struct {
         return null;
     }
 
+    /// Register the repeat timer fd in the internal epoll (idempotent).
+    fn ensureRepeatTimerRegistered(self: *Self) void {
+        if (self.repeat_registered) return;
+        if (self.keyboard.repeat_timer_fd < 0) return;
+        var ev = linux.epoll_event{
+            .events = linux.EPOLL.IN,
+            .data = .{ .u32 = EPOLL_TAG_REPEAT },
+        };
+        _ = linux.epoll_ctl(self.internal_epoll_fd, linux.EPOLL.CTL_ADD, self.keyboard.repeat_timer_fd, &ev);
+        self.repeat_registered = true;
+    }
+
+    /// Check if an evdev keycode is a special key handled via escape sequences.
+    fn isSpecialKey(evdev_keycode: u16) bool {
+        const K = input_mod.KEY;
+        return switch (evdev_keycode) {
+            K.ESC, K.ENTER, K.BACKSPACE, K.TAB,
+            K.UP, K.DOWN, K.LEFT, K.RIGHT,
+            K.HOME, K.END, K.INSERT, K.DELETE,
+            K.PAGEUP, K.PAGEDOWN,
+            K.F1, K.F2, K.F3, K.F4, K.F5, K.F6,
+            K.F7, K.F8, K.F9, K.F10, K.F11, K.F12,
+            => true,
+            else => false,
+        };
+    }
+
     /// Dispatch a single Wayland event by object ID and opcode.
     fn dispatchEvent(self: *Self, header: wire.Header, payload: []const u8) void {
         if (header.object_id == 1) {
@@ -522,6 +563,52 @@ pub const WaylandBackend = struct {
             } else if (header.opcode == xdg_shell.XDG_TOPLEVEL_EVENT_CLOSE) {
                 self.queueEvent(.close);
             }
+        } else if (self.globals.seat != 0 and header.object_id == self.globals.seat) {
+            // wl_seat events
+            if (header.opcode == seat_mod.WL_SEAT_EVENT_CAPABILITIES) {
+                var pos: usize = 0;
+                const caps = wire.getUint(payload, &pos);
+
+                // Get keyboard if available and not yet acquired
+                if (caps & seat_mod.CAPABILITY_KEYBOARD != 0 and self.keyboard_id == 0) {
+                    self.keyboard_id = seat_mod.getKeyboard(&self.conn, self.globals.seat) catch 0;
+                }
+
+                // Get pointer if available and not yet acquired
+                if (caps & seat_mod.CAPABILITY_POINTER != 0 and self.pointer_id == 0) {
+                    self.pointer_id = seat_mod.getPointer(&self.conn, self.globals.seat) catch 0;
+
+                    // Get cursor shape device if manager is available
+                    if (self.pointer_id != 0 and self.globals.cursor_shape_manager != 0 and self.cursor_shape_device_id == 0) {
+                        self.cursor_shape_device_id = seat_mod.getCursorShapeDevice(
+                            &self.conn,
+                            self.globals.cursor_shape_manager,
+                            self.pointer_id,
+                        ) catch 0;
+                    }
+                }
+
+                // Get text input if manager is available
+                if (self.globals.text_input_manager != 0 and self.text_input.id == 0) {
+                    self.text_input.id = text_input_mod.getTextInput(
+                        &self.conn,
+                        self.globals.text_input_manager,
+                        self.globals.seat,
+                    ) catch 0;
+                }
+
+                self.conn.flush() catch {};
+            }
+            // WL_SEAT_EVENT_NAME (opcode 1) -- ignore
+        } else if (self.keyboard_id != 0 and header.object_id == self.keyboard_id) {
+            // wl_keyboard events
+            self.dispatchKeyboardEvent(header.opcode, payload);
+        } else if (self.pointer_id != 0 and header.object_id == self.pointer_id) {
+            // wl_pointer events
+            self.dispatchPointerEvent(header.opcode, payload);
+        } else if (self.text_input.id != 0 and header.object_id == self.text_input.id) {
+            // zwp_text_input_v3 events
+            self.dispatchTextInputEvent(header.opcode, payload);
         } else if (self.shm_buffers != null) {
             // Check for wl_buffer.release events
             const bufs = &(self.shm_buffers.?);
@@ -531,8 +618,208 @@ pub const WaylandBackend = struct {
                 bufs.released[1] = true;
             }
         }
-        // All other events (seat, keyboard, pointer, etc.) will be handled
-        // in later chunks
+    }
+
+    /// Handle wl_keyboard events.
+    fn dispatchKeyboardEvent(self: *Self, opcode: u16, payload: []const u8) void {
+        switch (opcode) {
+            seat_mod.WL_KEYBOARD_EVENT_KEYMAP => {
+                // Payload: format(u32) + size(u32), fd via SCM_RIGHTS
+                var pos: usize = 0;
+                _ = wire.getUint(payload, &pos); // format (XKB_V1 = 1)
+                const size = wire.getUint(payload, &pos);
+                const fd = self.conn.consumeFd() orelse return;
+                self.keyboard.handleKeymap(fd, size);
+            },
+            seat_mod.WL_KEYBOARD_EVENT_ENTER => {
+                // Payload: serial(u32) + surface(u32) + keys(array)
+                var pos: usize = 0;
+                const serial = wire.getUint(payload, &pos);
+                _ = wire.getUint(payload, &pos); // surface
+                _ = wire.getArray(payload, &pos); // currently pressed keys -- consume
+
+                self.keyboard.focused = true;
+                self.keyboard.last_serial = serial;
+                self.focused = true;
+
+                // Enable text input
+                if (self.text_input.id != 0) {
+                    text_input_mod.enable(&self.conn, self.text_input.id) catch {};
+                    text_input_mod.setContentType(&self.conn, self.text_input.id, 0, 0) catch {};
+                    text_input_mod.commit(&self.conn, self.text_input.id) catch {};
+                    self.text_input.enabled = true;
+                    self.conn.flush() catch {};
+                }
+            },
+            seat_mod.WL_KEYBOARD_EVENT_LEAVE => {
+                // Payload: serial(u32) + surface(u32)
+                self.keyboard.focused = false;
+                self.keyboard.stopRepeat();
+                self.focused = false;
+
+                // Disable text input
+                if (self.text_input.id != 0 and self.text_input.enabled) {
+                    text_input_mod.disable(&self.conn, self.text_input.id) catch {};
+                    text_input_mod.commit(&self.conn, self.text_input.id) catch {};
+                    self.text_input.enabled = false;
+                    self.conn.flush() catch {};
+                }
+
+                self.queueEvent(.focus_out);
+            },
+            seat_mod.WL_KEYBOARD_EVENT_KEY => {
+                // Payload: serial(u32) + time(u32) + key(u32) + state(u32)
+                var pos: usize = 0;
+                const serial = wire.getUint(payload, &pos);
+                _ = wire.getUint(payload, &pos); // time
+                const key = wire.getUint(payload, &pos);
+                const state = wire.getUint(payload, &pos); // 1 = pressed, 0 = released
+
+                self.keyboard.last_serial = serial;
+                const evdev_keycode: u16 = @intCast(key & 0xFFFF);
+                const mods = self.keyboard.getModifiers();
+                const pressed = (state == 1);
+
+                if (pressed) {
+                    // Handle key repeat
+                    self.keyboard.startRepeat(key);
+                    self.ensureRepeatTimerRegistered();
+
+                    // Special keys -> KeyEvent
+                    if (isSpecialKey(evdev_keycode)) {
+                        self.queueEvent(.{ .key = .{
+                            .keycode = evdev_keycode,
+                            .pressed = true,
+                            .modifiers = mods,
+                        } });
+                        return;
+                    }
+
+                    // Ctrl+letter -> KeyEvent (for control sequences)
+                    if (mods.ctrl) {
+                        self.queueEvent(.{ .key = .{
+                            .keycode = evdev_keycode,
+                            .pressed = true,
+                            .modifiers = mods,
+                        } });
+                        return;
+                    }
+
+                    // Use xkbcommon for layout-aware text translation
+                    var utf8_buf: [32]u8 = undefined;
+                    const utf8_len = self.keyboard.getUtf8(key, &utf8_buf);
+                    if (utf8_len > 0) {
+                        var text_ev: TextEvent = .{};
+                        if (mods.alt) {
+                            // Alt+key -> prefix with ESC
+                            text_ev.data[0] = 0x1b;
+                            const clamped: u32 = @intCast(@min(utf8_len, 127));
+                            @memcpy(text_ev.data[1 .. 1 + clamped], utf8_buf[0..clamped]);
+                            text_ev.len = clamped + 1;
+                        } else {
+                            const clamped: u32 = @intCast(@min(utf8_len, 128));
+                            @memcpy(text_ev.data[0..clamped], utf8_buf[0..clamped]);
+                            text_ev.len = clamped;
+                        }
+                        self.queueEvent(.{ .text = text_ev });
+                        return;
+                    }
+
+                    // Fallback: KeyEvent
+                    self.queueEvent(.{ .key = .{
+                        .keycode = evdev_keycode,
+                        .pressed = true,
+                        .modifiers = mods,
+                    } });
+                } else {
+                    // Key released
+                    if (self.keyboard.repeat_key) |rk| {
+                        if (rk == key) {
+                            self.keyboard.stopRepeat();
+                        }
+                    }
+                    self.queueEvent(.{ .key = .{
+                        .keycode = evdev_keycode,
+                        .pressed = false,
+                        .modifiers = mods,
+                    } });
+                }
+            },
+            seat_mod.WL_KEYBOARD_EVENT_MODIFIERS => {
+                // Payload: serial(u32) + depressed(u32) + latched(u32) + locked(u32) + group(u32)
+                var pos: usize = 0;
+                _ = wire.getUint(payload, &pos); // serial
+                const depressed = wire.getUint(payload, &pos);
+                const latched = wire.getUint(payload, &pos);
+                const locked = wire.getUint(payload, &pos);
+                const group = wire.getUint(payload, &pos);
+                self.keyboard.handleModifiers(depressed, latched, locked, group);
+            },
+            seat_mod.WL_KEYBOARD_EVENT_REPEAT_INFO => {
+                // Payload: rate(i32) + delay(i32)
+                var pos: usize = 0;
+                const rate = wire.getInt(payload, &pos);
+                const delay = wire.getInt(payload, &pos);
+                self.keyboard.repeat_rate = rate;
+                self.keyboard.repeat_delay = delay;
+            },
+            else => {},
+        }
+    }
+
+    /// Handle wl_pointer events.
+    fn dispatchPointerEvent(self: *Self, opcode: u16, payload: []const u8) void {
+        switch (opcode) {
+            seat_mod.WL_POINTER_EVENT_ENTER => {
+                // Payload: serial(u32) + surface(u32) + x(fixed) + y(fixed)
+                var pos: usize = 0;
+                const serial = wire.getUint(payload, &pos);
+                self.pointer_serial = serial;
+
+                // Set cursor shape
+                if (self.cursor_shape_device_id != 0) {
+                    seat_mod.setCursorShape(&self.conn, self.cursor_shape_device_id, serial, seat_mod.CURSOR_TEXT) catch {};
+                } else {
+                    _ = seat_mod.setFallbackCursor(&self.conn, self.pointer_id, serial, self.globals.compositor, self.globals.shm) catch {};
+                }
+                self.conn.flush() catch {};
+            },
+            seat_mod.WL_POINTER_EVENT_BUTTON => {
+                // Payload: serial(u32) + time(u32) + button(u32) + state(u32)
+                var pos: usize = 0;
+                const serial = wire.getUint(payload, &pos);
+                self.pointer_serial = serial;
+            },
+            else => {},
+        }
+    }
+
+    /// Handle zwp_text_input_v3 events.
+    fn dispatchTextInputEvent(self: *Self, opcode: u16, payload: []const u8) void {
+        switch (opcode) {
+            text_input_mod.ZWP_TEXT_INPUT_EVENT_PREEDIT_STRING => {
+                text_input_mod.handlePreeditString(&self.text_input, payload);
+            },
+            text_input_mod.ZWP_TEXT_INPUT_EVENT_COMMIT_STRING => {
+                text_input_mod.handleCommitString(&self.text_input, payload);
+            },
+            text_input_mod.ZWP_TEXT_INPUT_EVENT_DONE => {
+                text_input_mod.handleDone(&self.text_input);
+
+                // If there is a committed string, queue a text event
+                if (self.text_input.has_pending_commit and self.text_input.pending_commit_len > 0) {
+                    var text_ev: TextEvent = .{};
+                    const len: u32 = @intCast(@min(self.text_input.pending_commit_len, text_ev.data.len));
+                    @memcpy(text_ev.data[0..len], self.text_input.pending_commit[0..len]);
+                    text_ev.len = len;
+                    self.queueEvent(.{ .text = text_ev });
+
+                    self.text_input.has_pending_commit = false;
+                    self.text_input.pending_commit_len = 0;
+                }
+            },
+            else => {},
+        }
     }
 
     pub fn pollEvents(self: *Self) ?Event {
@@ -577,7 +864,57 @@ pub const WaylandBackend = struct {
                     self.dispatchEvent(header, payload);
                 }
             }
-            // EPOLL_TAG_REPEAT and EPOLL_TAG_CLIPBOARD will be handled in later chunks
+            if (tag == EPOLL_TAG_REPEAT) {
+                // Key repeat timer fired -- read to acknowledge
+                var timer_buf: [8]u8 = undefined;
+                _ = posix.read(self.keyboard.repeat_timer_fd, &timer_buf) catch {};
+
+                if (self.keyboard.repeat_key) |rk| {
+                    const evdev_keycode: u16 = @intCast(rk & 0xFFFF);
+                    const mods = self.keyboard.getModifiers();
+
+                    // Special keys -> KeyEvent
+                    if (isSpecialKey(evdev_keycode)) {
+                        self.queueEvent(.{ .key = .{
+                            .keycode = evdev_keycode,
+                            .pressed = true,
+                            .modifiers = mods,
+                        } });
+                    } else if (mods.ctrl) {
+                        // Ctrl+letter -> KeyEvent
+                        self.queueEvent(.{ .key = .{
+                            .keycode = evdev_keycode,
+                            .pressed = true,
+                            .modifiers = mods,
+                        } });
+                    } else {
+                        // Text repeat via xkbcommon
+                        var utf8_buf: [32]u8 = undefined;
+                        const utf8_len = self.keyboard.getUtf8(rk, &utf8_buf);
+                        if (utf8_len > 0) {
+                            var text_ev: TextEvent = .{};
+                            if (mods.alt) {
+                                text_ev.data[0] = 0x1b;
+                                const clamped: u32 = @intCast(@min(utf8_len, 127));
+                                @memcpy(text_ev.data[1 .. 1 + clamped], utf8_buf[0..clamped]);
+                                text_ev.len = clamped + 1;
+                            } else {
+                                const clamped: u32 = @intCast(@min(utf8_len, 128));
+                                @memcpy(text_ev.data[0..clamped], utf8_buf[0..clamped]);
+                                text_ev.len = clamped;
+                            }
+                            self.queueEvent(.{ .text = text_ev });
+                        } else {
+                            self.queueEvent(.{ .key = .{
+                                .keycode = evdev_keycode,
+                                .pressed = true,
+                                .modifiers = mods,
+                            } });
+                        }
+                    }
+                }
+            }
+            // EPOLL_TAG_CLIPBOARD will be handled in later chunks
         }
 
         // Return next pending event
