@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const linux = std.os.linux;
+const is_macos = builtin.os.tag == .macos;
+const is_linux = builtin.os.tag == .linux;
+const linux = if (is_linux) std.os.linux else struct {};
 const config = @import("config");
 
 const Term = @import("term.zig").Term;
@@ -12,16 +14,17 @@ const render = @import("render.zig");
 const font_mod = @import("font.zig");
 
 // Backend selection at comptime
-const Backend = if (config.backend == .fbdev)
-    @import("backend/fbdev.zig").FbdevBackend
-else
-    @import("backend/x11.zig").X11Backend;
+const Backend = switch (config.backend) {
+    .fbdev => @import("backend/fbdev.zig").FbdevBackend,
+    .x11 => @import("backend/x11.zig").X11Backend,
+    .macos => @import("backend/macos.zig").MacosBackend,
+};
 
-// X11 Event type (only used for x11 backend)
-const X11Event = if (config.backend == .x11)
-    @import("backend/x11.zig").Event
-else
-    void;
+const BackendEvent = switch (config.backend) {
+    .x11 => @import("backend/x11.zig").Event,
+    .macos => @import("backend/macos.zig").Event,
+    .fbdev => void,
+};
 
 // Embed font at comptime
 // Large fonts use pre-compiled blob (bdf2blob.py) to avoid slow comptime parsing
@@ -32,30 +35,40 @@ const FontType = font_mod.FontBlob(@embedFile("fonts/ufo-nf.bin"));
 // =============================================================================
 
 fn setupSignals() !std.posix.fd_t {
-    var mask = linux.sigemptyset();
-    linux.sigaddset(&mask, linux.SIG.CHLD);
-    linux.sigaddset(&mask, linux.SIG.TERM);
-    linux.sigaddset(&mask, linux.SIG.INT);
-    linux.sigaddset(&mask, linux.SIG.HUP);
-    linux.sigaddset(&mask, linux.SIG.USR1);
-    linux.sigaddset(&mask, linux.SIG.USR2);
+    if (is_linux) {
+        var mask = linux.sigemptyset();
+        linux.sigaddset(&mask, linux.SIG.CHLD);
+        linux.sigaddset(&mask, linux.SIG.TERM);
+        linux.sigaddset(&mask, linux.SIG.INT);
+        linux.sigaddset(&mask, linux.SIG.HUP);
+        linux.sigaddset(&mask, linux.SIG.USR1);
+        linux.sigaddset(&mask, linux.SIG.USR2);
 
-    // SIG_BLOCK = 0
-    _ = linux.sigprocmask(0, &mask, null);
+        // SIG_BLOCK = 0
+        _ = linux.sigprocmask(0, &mask, null);
 
-    // signalfd4(fd, mask, mask_size, flags)
-    const SFD_NONBLOCK: u32 = 0o4000;
-    const SFD_CLOEXEC: u32 = 0o2000000;
-    const fd_raw = linux.syscall4(
-        .signalfd4,
-        @as(usize, @bitCast(@as(isize, -1))),
-        @intFromPtr(&mask),
-        @sizeOf(linux.sigset_t),
-        SFD_NONBLOCK | SFD_CLOEXEC,
-    );
-    const fd_isize: isize = @bitCast(fd_raw);
-    if (fd_isize < 0) return error.SignalFdFailed;
-    return @intCast(fd_isize);
+        // signalfd4(fd, mask, mask_size, flags)
+        const SFD_NONBLOCK: u32 = 0o4000;
+        const SFD_CLOEXEC: u32 = 0o2000000;
+        const fd_raw = linux.syscall4(
+            .signalfd4,
+            @as(usize, @bitCast(@as(isize, -1))),
+            @intFromPtr(&mask),
+            @sizeOf(linux.sigset_t),
+            SFD_NONBLOCK | SFD_CLOEXEC,
+        );
+        const fd_isize: isize = @bitCast(fd_raw);
+        if (fd_isize < 0) return error.SignalFdFailed;
+        return @intCast(fd_isize);
+    } else {
+        var mask = std.mem.zeroes(std.c.sigset_t);
+        _ = std.c.sigaddset(&mask, std.c.SIG.CHLD);
+        _ = std.c.sigaddset(&mask, std.c.SIG.TERM);
+        _ = std.c.sigaddset(&mask, std.c.SIG.INT);
+        _ = std.c.sigaddset(&mask, std.c.SIG.HUP);
+        _ = std.c.sigprocmask(std.c.SIG.BLOCK, &mask, null);
+        return -1;
+    }
 }
 
 // =============================================================================
@@ -63,19 +76,23 @@ fn setupSignals() !std.posix.fd_t {
 // =============================================================================
 
 fn createTimerFd(interval_ns: u64) !std.posix.fd_t {
-    const fd_raw = linux.timerfd_create(.MONOTONIC, .{ .NONBLOCK = true, .CLOEXEC = true });
-    const fd_isize: isize = @bitCast(fd_raw);
-    if (fd_isize < 0) return error.TimerFdFailed;
-    const timer_fd: std.posix.fd_t = @intCast(fd_isize);
+    if (is_linux) {
+        const fd_raw = linux.timerfd_create(.MONOTONIC, .{ .NONBLOCK = true, .CLOEXEC = true });
+        const fd_isize: isize = @bitCast(fd_raw);
+        if (fd_isize < 0) return error.TimerFdFailed;
+        const timer_fd: std.posix.fd_t = @intCast(fd_isize);
 
-    const sec: isize = @intCast(interval_ns / std.time.ns_per_s);
-    const nsec: isize = @intCast(interval_ns % std.time.ns_per_s);
-    const ts = linux.timespec{ .sec = sec, .nsec = nsec };
-    const spec = linux.itimerspec{ .it_interval = ts, .it_value = ts };
-    const rc = linux.timerfd_settime(timer_fd, .{}, &spec, null);
-    const rc_isize: isize = @bitCast(rc);
-    if (rc_isize < 0) return error.TimerSetFailed;
-    return timer_fd;
+        const sec: isize = @intCast(interval_ns / std.time.ns_per_s);
+        const nsec: isize = @intCast(interval_ns % std.time.ns_per_s);
+        const ts = linux.timespec{ .sec = sec, .nsec = nsec };
+        const spec = linux.itimerspec{ .it_interval = ts, .it_value = ts };
+        const rc = linux.timerfd_settime(timer_fd, .{}, &spec, null);
+        const rc_isize: isize = @bitCast(rc);
+        if (rc_isize < 0) return error.TimerSetFailed;
+        return timer_fd;
+    } else {
+        return -1;
+    }
 }
 
 // =============================================================================
@@ -109,6 +126,68 @@ fn epollSetPtyEvents(epoll_fd: i32, pty_fd: std.posix.fd_t, want_write: bool) vo
     _ = linux.epoll_ctl(epoll_fd, linux.EPOLL.CTL_MOD, pty_fd, &ev);
 }
 
+// =============================================================================
+// kqueue helpers (macOS)
+// =============================================================================
+
+// kqueue ident tags (macOS) — used in udata field for fd-based filters
+const KqueueTag = enum(usize) {
+    pty = 0,
+    backend = 1,
+};
+
+// Timer and signal idents use their own filter types in kqueue,
+// so they're identified by filter+ident, not by a tag.
+const KQUEUE_TIMER_IDENT: usize = 100;
+
+fn kqueueAddFd(kq: i32, fd: std.posix.fd_t, tag: usize) !void {
+    const changelist = [1]std.posix.Kevent{.{
+        .ident = @intCast(fd),
+        .filter = std.c.EVFILT.READ,
+        .flags = std.c.EV.ADD,
+        .fflags = 0,
+        .data = 0,
+        .udata = tag,
+    }};
+    _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+}
+
+fn kqueueAddSignal(kq: i32, sig: u6) !void {
+    const changelist = [1]std.posix.Kevent{.{
+        .ident = sig,
+        .filter = std.c.EVFILT.SIGNAL,
+        .flags = std.c.EV.ADD,
+        .fflags = 0,
+        .data = 0,
+        .udata = 0,
+    }};
+    _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+}
+
+fn kqueueAddTimer(kq: i32, ident: usize, interval_ms: isize) !void {
+    const changelist = [1]std.posix.Kevent{.{
+        .ident = ident,
+        .filter = std.c.EVFILT.TIMER,
+        .flags = std.c.EV.ADD,
+        .fflags = 0, // default unit is milliseconds
+        .data = interval_ms,
+        .udata = 0,
+    }};
+    _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+}
+
+fn kqueueSetPtyWrite(kq: i32, pty_fd: std.posix.fd_t, enable: bool) void {
+    const changelist = [1]std.posix.Kevent{.{
+        .ident = @intCast(pty_fd),
+        .filter = std.c.EVFILT.WRITE,
+        .flags = std.c.EV.ADD | if (enable) std.c.EV.ENABLE else std.c.EV.DISABLE,
+        .fflags = 0,
+        .data = 0,
+        .udata = @intFromEnum(KqueueTag.pty),
+    }};
+    _ = std.posix.kevent(kq, &changelist, &.{}, null) catch {};
+}
+
 /// Write to PTY with buffering on WouldBlock.
 fn ptyBufferedWrite(
     pty_ptr: *Pty,
@@ -135,7 +214,11 @@ fn ptyBufferedWrite(
             const to_copy = @min(data.len, write_buf.len);
             @memcpy(write_buf[0..to_copy], data[0..to_copy]);
             write_pending.* = to_copy;
-            epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
+            if (is_linux) {
+                epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
+            } else {
+                kqueueSetPtyWrite(epoll_fd, pty_ptr.master_fd, true);
+            }
             return true;
         },
         else => return false,
@@ -147,7 +230,11 @@ fn ptyBufferedWrite(
         const to_copy = @min(remaining, write_buf.len);
         @memcpy(write_buf[0..to_copy], data[written .. written + to_copy]);
         write_pending.* = to_copy;
-        epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
+        if (is_linux) {
+            epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
+        } else {
+            kqueueSetPtyWrite(epoll_fd, pty_ptr.master_fd, true);
+        }
     }
     return true;
 }
@@ -168,7 +255,11 @@ fn ptyFlushPending(
 
     if (written >= write_pending.*) {
         write_pending.* = 0;
-        epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, false);
+        if (is_linux) {
+            epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, false);
+        } else {
+            kqueueSetPtyWrite(epoll_fd, pty_ptr.master_fd, false);
+        }
     } else {
         // Shift remaining data to front
         const remaining = write_pending.* - written;
@@ -182,17 +273,27 @@ fn ptyFlushPending(
 // Signal handler
 // =============================================================================
 
-fn handleSignal(sig_fd: std.posix.fd_t, backend: *Backend) bool {
-    var siginfo: linux.signalfd_siginfo = undefined;
-    _ = std.posix.read(sig_fd, std.mem.asBytes(&siginfo)) catch return true;
+const SIG_CHLD = if (is_linux) linux.SIG.CHLD else std.c.SIG.CHLD;
+const SIG_TERM = if (is_linux) linux.SIG.TERM else std.c.SIG.TERM;
+const SIG_INT = if (is_linux) linux.SIG.INT else std.c.SIG.INT;
+const SIG_HUP = if (is_linux) linux.SIG.HUP else std.c.SIG.HUP;
+const SIG_USR1 = if (is_linux) linux.SIG.USR1 else 0;
+const SIG_USR2 = if (is_linux) linux.SIG.USR2 else 0;
 
-    return switch (siginfo.signo) {
-        linux.SIG.CHLD, linux.SIG.TERM, linux.SIG.INT, linux.SIG.HUP => false,
-        linux.SIG.USR1 => blk: {
+fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend) bool {
+    const signo: u32 = if (signo_override) |s| s else blk: {
+        var siginfo: linux.signalfd_siginfo = undefined;
+        _ = std.posix.read(sig_fd, std.mem.asBytes(&siginfo)) catch return true;
+        break :blk siginfo.signo;
+    };
+
+    return switch (signo) {
+        SIG_CHLD, SIG_TERM, SIG_INT, SIG_HUP => false,
+        SIG_USR1 => blk: {
             backend.releaseVt();
             break :blk true;
         },
-        linux.SIG.USR2 => blk: {
+        SIG_USR2 => blk: {
             backend.acquireVt();
             break :blk true;
         },
@@ -214,7 +315,7 @@ pub fn main() !void {
     };
     const allocator = if (builtin.mode == .Debug)
         gpa.allocator()
-    else if (config.backend == .x11)
+    else if (config.backend == .x11 or config.backend == .macos)
         std.heap.c_allocator
     else
         std.heap.page_allocator;
@@ -240,14 +341,14 @@ pub fn main() !void {
     }
 
     // 1. Init backend
-    var backend = if (config.backend == .fbdev)
-        try Backend.init(allocator)
-    else
-        try Backend.init();
+    var backend = switch (config.backend) {
+        .fbdev => try Backend.init(allocator),
+        .x11, .macos => try Backend.init(),
+    };
     defer backend.deinit();
 
-    // 1b. Post-init for X11 (XKB + XIM, needs stable self pointer)
-    if (config.backend == .x11) {
+    // 1b. Post-init for X11/macOS (XKB + XIM, needs stable self pointer)
+    if (config.backend == .x11 or config.backend == .macos) {
         backend.postInit();
     }
 
@@ -272,32 +373,44 @@ pub fn main() !void {
 
     // 7. Setup signals
     const sig_fd = try setupSignals();
-    defer std.posix.close(sig_fd);
+    defer if (sig_fd >= 0) std.posix.close(sig_fd);
 
     // 8. Setup cursor blink timer (500ms)
     const timer_fd = try createTimerFd(500_000_000);
-    defer std.posix.close(timer_fd);
+    defer if (timer_fd >= 0) std.posix.close(timer_fd);
 
-    // 9. Setup epoll
-    const epoll_fd_raw = linux.epoll_create1(linux.EPOLL.CLOEXEC);
-    const epoll_isize: isize = @bitCast(epoll_fd_raw);
-    if (epoll_isize < 0) return error.EpollCreateFailed;
-    const epoll_fd: i32 = @intCast(epoll_isize);
-    defer std.posix.close(epoll_fd);
+    // 9. Setup event loop (epoll on Linux, kqueue on macOS)
+    const evloop_fd: i32 = if (is_linux) blk: {
+        const raw = linux.epoll_create1(linux.EPOLL.CLOEXEC);
+        const isize_val: isize = @bitCast(raw);
+        if (isize_val < 0) return error.EpollCreateFailed;
+        break :blk @intCast(isize_val);
+    } else blk: {
+        break :blk try std.posix.kqueue();
+    };
+    defer std.posix.close(evloop_fd);
 
-    try epollAdd(epoll_fd, pty.master_fd, @intFromEnum(EpollTag.pty));
-    try epollAdd(epoll_fd, sig_fd, @intFromEnum(EpollTag.signal));
-    try epollAdd(epoll_fd, timer_fd, @intFromEnum(EpollTag.timer));
-
-    // Backend event fd (X11 has xcb fd, fbdev returns null)
-    if (backend.getFd()) |fd| {
-        try epollAdd(epoll_fd, fd, @intFromEnum(EpollTag.backend));
-    }
-
-    // For fbdev: register evdev fds
-    if (config.backend == .fbdev) {
-        for (0..backend.evdev_count) |i| {
-            try epollAdd(epoll_fd, backend.evdev_fds[i], EVDEV_BASE + @as(u32, @intCast(i)));
+    if (is_linux) {
+        try epollAdd(evloop_fd, pty.master_fd, @intFromEnum(EpollTag.pty));
+        try epollAdd(evloop_fd, sig_fd, @intFromEnum(EpollTag.signal));
+        try epollAdd(evloop_fd, timer_fd, @intFromEnum(EpollTag.timer));
+        if (backend.getFd()) |fd| {
+            try epollAdd(evloop_fd, fd, @intFromEnum(EpollTag.backend));
+        }
+        if (config.backend == .fbdev) {
+            for (0..backend.evdev_count) |i| {
+                try epollAdd(evloop_fd, backend.evdev_fds[i], EVDEV_BASE + @as(u32, @intCast(i)));
+            }
+        }
+    } else {
+        try kqueueAddFd(evloop_fd, pty.master_fd, @intFromEnum(KqueueTag.pty));
+        try kqueueAddSignal(evloop_fd, std.c.SIG.CHLD);
+        try kqueueAddSignal(evloop_fd, std.c.SIG.TERM);
+        try kqueueAddSignal(evloop_fd, std.c.SIG.INT);
+        try kqueueAddSignal(evloop_fd, std.c.SIG.HUP);
+        try kqueueAddTimer(evloop_fd, KQUEUE_TIMER_IDENT, 500);
+        if (backend.getFd()) |fd| {
+            try kqueueAddFd(evloop_fd, fd, @intFromEnum(KqueueTag.backend));
         }
     }
 
@@ -306,7 +419,7 @@ pub fn main() !void {
     //     (e.g., during MapRequest handling). Query the real X11 geometry and
     //     update PTY/term/backend to match. This handles the initial resize
     //     that ConfigureNotify-based detection might miss due to XCB buffering.
-    if (config.backend == .x11) {
+    if (config.backend == .x11 or config.backend == .macos) {
         const actual = backend.queryGeometry();
         if (actual.w > 0 and actual.h > 0 and (actual.w != backend.getWidth() or actual.h != backend.getHeight())) {
             const new_cols = actual.w / config.cell_width;
@@ -350,32 +463,191 @@ pub fn main() !void {
         else
             @as(i128, config.frame_min_ns);
 
-        // Dynamic epoll timeout: short wait when render pending, block otherwise
-        const epoll_timeout: i32 = if (effective_frame_ns > 0 and term.hasDirty()) blk: {
+        // Dynamic event loop timeout: short wait when render pending, block otherwise
+        const event_timeout: i32 = if (effective_frame_ns > 0 and term.hasDirty()) blk: {
             const elapsed = loop_now - last_render_ns;
             if (elapsed >= effective_frame_ns) break :blk 0;
             const remaining_ms = @divFloor(effective_frame_ns - elapsed, 1_000_000);
             break :blk @intCast(@max(remaining_ms, 1));
         } else -1;
 
-        var events: [16]linux.epoll_event = undefined;
-        const n_raw = linux.epoll_wait(epoll_fd, &events, events.len, epoll_timeout);
-        const n_isize: isize = @bitCast(n_raw);
-        if (n_isize < 0) continue; // EINTR
-        const n: usize = @intCast(n_raw);
+        if (is_linux) {
+            // ---- Linux epoll dispatch ----
+            var events: [16]linux.epoll_event = undefined;
+            const n_raw = linux.epoll_wait(evloop_fd, &events, events.len, event_timeout);
+            const n_isize: isize = @bitCast(n_raw);
+            if (n_isize < 0) continue; // EINTR
+            const n: usize = @intCast(n_raw);
 
-        for (events[0..n]) |ev| {
-            switch (ev.data.u32) {
-                @intFromEnum(EpollTag.pty) => {
-                    // Flush pending writes if EPOLLOUT
-                    if (ev.events & linux.EPOLL.OUT != 0) {
-                        if (!ptyFlushPending(&pty, &write_buf, &write_pending, epoll_fd)) {
-                            running = false;
-                            break;
+            for (events[0..n]) |ev| {
+                switch (ev.data.u32) {
+                    @intFromEnum(EpollTag.pty) => {
+                        // Flush pending writes if EPOLLOUT
+                        if (ev.events & linux.EPOLL.OUT != 0) {
+                            if (!ptyFlushPending(&pty, &write_buf, &write_pending, evloop_fd)) {
+                                running = false;
+                                break;
+                            }
                         }
-                    }
-                    // PTY readable — drain all available data before rendering
-                    if (ev.events & linux.EPOLL.IN != 0) {
+                        // PTY readable — drain all available data before rendering
+                        if (ev.events & linux.EPOLL.IN != 0) {
+                            while (true) {
+                                const bytes_read = pty.read(&pty_buf) catch |err| switch (err) {
+                                    error.WouldBlock => break,
+                                    else => {
+                                        running = false;
+                                        break;
+                                    },
+                                };
+                                if (bytes_read == 0) {
+                                    running = false;
+                                    break;
+                                }
+                                bytes_since_render += bytes_read;
+                                vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
+                            }
+                        }
+                    },
+                    @intFromEnum(EpollTag.signal) => {
+                        running = handleSignal(sig_fd, null, &backend);
+                    },
+                    @intFromEnum(EpollTag.timer) => {
+                        // Read timer to acknowledge
+                        var exp: u64 = 0;
+                        _ = std.posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
+                        cursor_visible_blink = !cursor_visible_blink;
+                        // Mark cursor cell dirty for redraw
+                        term.markDirty(term.cursor_x, term.cursor_y);
+                    },
+                    @intFromEnum(EpollTag.backend) => {
+                        // Backend events (X11 or macOS)
+                        if (config.backend == .x11 or config.backend == .macos) {
+                            while (backend.pollEvents()) |event| {
+                                switch (event) {
+                                    .key => |key_ev| {
+                                        if (key_ev.pressed) {
+                                            const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
+                                            if (bytes.len > 0) {
+                                                if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
+                                                    running = false;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    .text => |text_ev| {
+                                        // IME committed text -- write UTF-8 directly to PTY
+                                        const text = text_ev.slice();
+                                        if (text.len > 0) {
+                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .paste => |paste_ev| {
+                                        // Clipboard paste -- write to PTY
+                                        const text = paste_ev.slice();
+                                        if (text.len > 0) {
+                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .resize => |rsz| {
+                                        const new_cols = rsz.width / config.cell_width;
+                                        const new_rows = rsz.height / config.cell_height;
+                                        if (new_cols > 0 and new_rows > 0) {
+                                            term.resize(new_cols, new_rows) catch |err| {
+                                                std.log.err("term resize: {}", .{err});
+                                            };
+                                            pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
+                                                std.log.err("pty resize: {}", .{err});
+                                            };
+                                            backend.resize(rsz.width, rsz.height) catch |err| {
+                                                std.log.err("backend resize: {}", .{err});
+                                            };
+                                        }
+                                    },
+                                    .expose => {
+                                        // Force full redraw — mark all term cells dirty
+                                        const total = @as(usize, term.cols) * @as(usize, term.rows);
+                                        term.markDirtyRange(.{ .start = 0, .end = total });
+                                        term.all_dirty = true;
+                                    },
+                                    .focus_in => {
+                                        if (term.focus_events) {
+                                            if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .focus_out => {
+                                        if (term.focus_events) {
+                                            if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .close => {
+                                        running = false;
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    else => {
+                        // evdev fds (fbdev backend)
+                        if (config.backend == .fbdev) {
+                            const evdev_idx = ev.data.u32 - EVDEV_BASE;
+                            while (backend.readEvdev(evdev_idx)) |input_event| {
+                                const K = input.KEY;
+                                switch (input_event.keycode) {
+                                    K.LEFTSHIFT, K.RIGHTSHIFT => {
+                                        mod_state.shift = input_event.pressed;
+                                    },
+                                    K.LEFTCTRL, K.RIGHTCTRL => {
+                                        mod_state.ctrl = input_event.pressed;
+                                    },
+                                    K.LEFTALT, K.RIGHTALT => {
+                                        mod_state.alt = input_event.pressed;
+                                    },
+                                    K.LEFTMETA, K.RIGHTMETA => {
+                                        mod_state.meta = input_event.pressed;
+                                    },
+                                    else => {
+                                        if (input_event.pressed or input_event.repeat) {
+                                            const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm);
+                                            if (bytes.len > 0) {
+                                                if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
+                                                    running = false;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        } else {
+            // ---- macOS kqueue dispatch ----
+            const timeout_spec: ?std.posix.timespec = if (event_timeout < 0) null else .{
+                .sec = @divFloor(@as(isize, event_timeout), 1000),
+                .nsec = @rem(@as(isize, event_timeout), 1000) * 1_000_000,
+            };
+            var kevents: [16]std.posix.Kevent = undefined;
+            const n = std.posix.kevent(evloop_fd, &.{}, &kevents, timeout_spec) catch 0;
+
+            for (kevents[0..n]) |kev| {
+                if (kev.filter == std.c.EVFILT.READ) {
+                    if (kev.udata == @intFromEnum(KqueueTag.pty)) {
+                        // PTY readable — drain all available data
                         while (true) {
                             const bytes_read = pty.read(&pty_buf) catch |err| switch (err) {
                                 error.WouldBlock => break,
@@ -391,133 +663,89 @@ pub fn main() !void {
                             bytes_since_render += bytes_read;
                             vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                         }
+                    } else if (kev.udata == @intFromEnum(KqueueTag.backend)) {
+                        // Backend events (X11 or macOS)
+                        if (config.backend == .x11 or config.backend == .macos) {
+                            while (backend.pollEvents()) |event| {
+                                switch (event) {
+                                    .key => |key_ev| {
+                                        if (key_ev.pressed) {
+                                            const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
+                                            if (bytes.len > 0) {
+                                                if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
+                                                    running = false;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    .text => |text_ev| {
+                                        const text = text_ev.slice();
+                                        if (text.len > 0) {
+                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .paste => |paste_ev| {
+                                        const text = paste_ev.slice();
+                                        if (text.len > 0) {
+                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .resize => |rsz| {
+                                        const new_cols = rsz.width / config.cell_width;
+                                        const new_rows = rsz.height / config.cell_height;
+                                        if (new_cols > 0 and new_rows > 0) {
+                                            term.resize(new_cols, new_rows) catch {};
+                                            pty.resize(@intCast(new_cols), @intCast(new_rows)) catch {};
+                                            backend.resize(rsz.width, rsz.height) catch {};
+                                        }
+                                    },
+                                    .expose => {
+                                        const total = @as(usize, term.cols) * @as(usize, term.rows);
+                                        term.markDirtyRange(.{ .start = 0, .end = total });
+                                        term.all_dirty = true;
+                                    },
+                                    .focus_in => {
+                                        if (term.focus_events) {
+                                            if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .focus_out => {
+                                        if (term.focus_events) {
+                                            if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, evloop_fd)) {
+                                                running = false;
+                                                break;
+                                            }
+                                        }
+                                    },
+                                    .close => {
+                                        running = false;
+                                    },
+                                }
+                            }
+                        }
                     }
-                },
-                @intFromEnum(EpollTag.signal) => {
-                    running = handleSignal(sig_fd, &backend);
-                },
-                @intFromEnum(EpollTag.timer) => {
-                    // Read timer to acknowledge
-                    var exp: u64 = 0;
-                    _ = std.posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
+                } else if (kev.filter == std.c.EVFILT.WRITE) {
+                    // PTY writable
+                    if (!ptyFlushPending(&pty, &write_buf, &write_pending, evloop_fd)) {
+                        running = false;
+                        break;
+                    }
+                } else if (kev.filter == std.c.EVFILT.SIGNAL) {
+                    running = handleSignal(-1, @intCast(kev.ident), &backend);
+                } else if (kev.filter == std.c.EVFILT.TIMER) {
                     cursor_visible_blink = !cursor_visible_blink;
-                    // Mark cursor cell dirty for redraw
                     term.markDirty(term.cursor_x, term.cursor_y);
-                },
-                @intFromEnum(EpollTag.backend) => {
-                    // X11 events (keys, resize, close)
-                    if (config.backend == .x11) {
-                        while (backend.pollEvents()) |event| {
-                            switch (event) {
-                                .key => |key_ev| {
-                                    if (key_ev.pressed) {
-                                        const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
-                                        if (bytes.len > 0) {
-                                            if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, epoll_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                },
-                                .text => |text_ev| {
-                                    // IME committed text → write UTF-8 directly to PTY
-                                    const text = text_ev.slice();
-                                    if (text.len > 0) {
-                                        if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, epoll_fd)) {
-                                            running = false;
-                                            break;
-                                        }
-                                    }
-                                },
-                                .paste => |paste_ev| {
-                                    // Clipboard paste → write to PTY
-                                    const text = paste_ev.slice();
-                                    if (text.len > 0) {
-                                        if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, epoll_fd)) {
-                                            running = false;
-                                            break;
-                                        }
-                                    }
-                                },
-                                .resize => |rsz| {
-                                    const new_cols = rsz.width / config.cell_width;
-                                    const new_rows = rsz.height / config.cell_height;
-                                    if (new_cols > 0 and new_rows > 0) {
-                                        term.resize(new_cols, new_rows) catch |err| {
-                                            std.log.err("term resize: {}", .{err});
-                                        };
-                                        pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
-                                            std.log.err("pty resize: {}", .{err});
-                                        };
-                                        backend.resize(rsz.width, rsz.height) catch |err| {
-                                            std.log.err("backend resize: {}", .{err});
-                                        };
-                                    }
-                                },
-                                .expose => {
-                                    // Force full redraw — mark all term cells dirty
-                                    const total = @as(usize, term.cols) * @as(usize, term.rows);
-                                    term.markDirtyRange(.{ .start = 0, .end = total });
-                                    term.all_dirty = true;
-                                },
-                                .focus_in => {
-                                    if (term.focus_events) {
-                                        if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, epoll_fd)) {
-                                            running = false;
-                                            break;
-                                        }
-                                    }
-                                },
-                                .focus_out => {
-                                    if (term.focus_events) {
-                                        if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, epoll_fd)) {
-                                            running = false;
-                                            break;
-                                        }
-                                    }
-                                },
-                                .close => {
-                                    running = false;
-                                },
-                            }
-                        }
-                    }
-                },
-                else => {
-                    // evdev fds (fbdev backend)
-                    if (config.backend == .fbdev) {
-                        const evdev_idx = ev.data.u32 - EVDEV_BASE;
-                        while (backend.readEvdev(evdev_idx)) |input_event| {
-                            const K = input.KEY;
-                            switch (input_event.keycode) {
-                                K.LEFTSHIFT, K.RIGHTSHIFT => {
-                                    mod_state.shift = input_event.pressed;
-                                },
-                                K.LEFTCTRL, K.RIGHTCTRL => {
-                                    mod_state.ctrl = input_event.pressed;
-                                },
-                                K.LEFTALT, K.RIGHTALT => {
-                                    mod_state.alt = input_event.pressed;
-                                },
-                                K.LEFTMETA, K.RIGHTMETA => {
-                                    mod_state.meta = input_event.pressed;
-                                },
-                                else => {
-                                    if (input_event.pressed or input_event.repeat) {
-                                        const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm);
-                                        if (bytes.len > 0) {
-                                            if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, epoll_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                },
-                            }
-                        }
-                    }
-                },
+                }
             }
         }
 
