@@ -2,12 +2,21 @@ const std = @import("std");
 const testing = std.testing;
 const linux = std.os.linux;
 const posix = std.posix;
+const builtin = @import("builtin");
+const is_macos = builtin.os.tag == .macos;
+const is_linux = builtin.os.tag == .linux;
 
-// ioctl constants (Linux x86_64 / aarch64)
-const TIOCSPTLCK: u32 = 0x40045431;
-const TIOCGPTN: u32 = 0x80045430;
-const TIOCSCTTY: u32 = 0x540E;
-const TIOCSWINSZ: u32 = 0x5414;
+const c = if (is_macos) @cImport({
+    @cInclude("stdlib.h");
+    @cInclude("unistd.h");
+    @cInclude("fcntl.h");
+}) else struct {};
+
+// ioctl constants
+const TIOCSPTLCK: u32 = 0x40045431; // Linux only, not used on macOS
+const TIOCGPTN: u32 = 0x80045430; // Linux only, not used on macOS
+const TIOCSCTTY: u32 = if (is_macos) 0x20007461 else 0x540E;
+const TIOCSWINSZ: u32 = if (is_macos) 0x80087467 else 0x5414;
 
 const Winsize = extern struct {
     ws_row: u16,
@@ -21,8 +30,14 @@ pub const Pty = struct {
     child_pid: posix.pid_t,
 
     pub fn spawn(cols: u16, rows: u16, shell_path: [*:0]const u8, exec_argv: ?[]const [:0]const u8) !Pty {
-        // 1. Open /dev/ptmx
-        const master_fd = try posix.open(
+        // 1. Open master PTY
+        const master_fd: posix.fd_t = if (is_macos) blk: {
+            // macOS: posix_openpt(O_RDWR | O_NOCTTY)
+            // O_RDWR=2, O_NOCTTY=0x20000 on macOS
+            const fd = c.posix_openpt(@as(c_int, 2 | 0x20000));
+            if (fd < 0) return error.OpenFailed;
+            break :blk @intCast(fd);
+        } else try posix.open(
             "/dev/ptmx",
             .{ .ACCMODE = .RDWR, .NOCTTY = true },
             0,
@@ -30,30 +45,43 @@ pub const Pty = struct {
         errdefer posix.close(master_fd);
 
         // 2. Unlock slave
-        var unlock: c_int = 0;
-        const unlock_rc = linux.ioctl(
-            @intCast(master_fd),
-            TIOCSPTLCK,
-            @intFromPtr(&unlock),
-        );
-        if (@as(isize, @bitCast(unlock_rc)) < 0) return error.IoctlFailed;
+        if (is_macos) {
+            if (c.grantpt(master_fd) != 0) return error.IoctlFailed;
+            if (c.unlockpt(master_fd) != 0) return error.IoctlFailed;
+        } else {
+            var unlock: c_int = 0;
+            const unlock_rc = linux.ioctl(
+                @intCast(master_fd),
+                TIOCSPTLCK,
+                @intFromPtr(&unlock),
+            );
+            if (@as(isize, @bitCast(unlock_rc)) < 0) return error.IoctlFailed;
+        }
 
-        // 3. Get slave pts number
-        var pty_num: c_int = undefined;
-        const ptn_rc = linux.ioctl(
-            @intCast(master_fd),
-            TIOCGPTN,
-            @intFromPtr(&pty_num),
-        );
-        if (@as(isize, @bitCast(ptn_rc)) < 0) return error.IoctlFailed;
-
-        // Build slave path: "/dev/pts/" ++ number
-        var slave_path_buf: [32]u8 = undefined;
-        const slave_path = std.fmt.bufPrintZ(
-            &slave_path_buf,
-            "/dev/pts/{d}",
-            .{pty_num},
-        ) catch return error.PathTooLong;
+        // 3. Get slave pts path
+        var slave_path_buf: [64]u8 = undefined;
+        const slave_path: [:0]const u8 = if (is_macos) blk: {
+            const name_ptr = c.ptsname(master_fd);
+            if (name_ptr == null) return error.IoctlFailed;
+            const name_slice = std.mem.span(name_ptr);
+            if (name_slice.len + 1 > slave_path_buf.len) return error.PathTooLong;
+            @memcpy(slave_path_buf[0..name_slice.len], name_slice);
+            slave_path_buf[name_slice.len] = 0;
+            break :blk slave_path_buf[0..name_slice.len :0];
+        } else blk: {
+            var pty_num: c_int = undefined;
+            const ptn_rc = linux.ioctl(
+                @intCast(master_fd),
+                TIOCGPTN,
+                @intFromPtr(&pty_num),
+            );
+            if (@as(isize, @bitCast(ptn_rc)) < 0) return error.IoctlFailed;
+            break :blk std.fmt.bufPrintZ(
+                &slave_path_buf,
+                "/dev/pts/{d}",
+                .{pty_num},
+            ) catch return error.PathTooLong;
+        };
 
         // 4. Fork
         const pid = try posix.fork();
@@ -64,7 +92,11 @@ pub const Pty = struct {
             posix.close(master_fd);
 
             // a. Create new session
-            _ = linux.syscall0(.setsid);
+            if (is_macos) {
+                _ = std.c.setsid();
+            } else {
+                _ = linux.syscall0(.setsid);
+            }
 
             // b. Open slave fd
             const slave_fd = posix.open(
@@ -76,11 +108,19 @@ pub const Pty = struct {
             };
 
             // c. Set controlling terminal
-            _ = linux.ioctl(@intCast(slave_fd), TIOCSCTTY, 0);
+            if (is_macos) {
+                _ = std.c.ioctl(@intCast(slave_fd), TIOCSCTTY, @as(c_int, 0));
+            } else {
+                _ = linux.ioctl(@intCast(slave_fd), TIOCSCTTY, 0);
+            }
 
             // f. Set window size before dup2
             var ws = Winsize{ .ws_row = rows, .ws_col = cols };
-            _ = linux.ioctl(@intCast(slave_fd), TIOCSWINSZ, @intFromPtr(&ws));
+            if (is_macos) {
+                _ = std.c.ioctl(@intCast(slave_fd), TIOCSWINSZ, @intFromPtr(&ws));
+            } else {
+                _ = linux.ioctl(@intCast(slave_fd), TIOCSWINSZ, @intFromPtr(&ws));
+            }
 
             // d. Redirect stdin/stdout/stderr
             posix.dup2(slave_fd, 0) catch std.posix.exit(1);
@@ -112,35 +152,63 @@ pub const Pty = struct {
             var path_env_buf: [1024]u8 = undefined;
             const path_env = std.fmt.bufPrintZ(&path_env_buf, "PATH={s}", .{path_val}) catch "PATH=/usr/local/bin:/usr/bin:/bin";
 
-            // X11 / Wayland display variables
-            var display_env_buf: [128]u8 = undefined;
-            var wayland_env_buf: [128]u8 = undefined;
-            var xauth_env_buf: [256]u8 = undefined;
-            var xdg_runtime_buf: [256]u8 = undefined;
-            var dbus_env_buf: [256]u8 = undefined;
-            const display_env: ?[*:0]const u8 = if (std.posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{std.posix.getenv("DISPLAY").?}) catch null) else null;
-            const wayland_env: ?[*:0]const u8 = if (std.posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{std.posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
-            const xauth_env: ?[*:0]const u8 = if (std.posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{std.posix.getenv("XAUTHORITY").?}) catch null) else null;
-            const xdg_runtime_env: ?[*:0]const u8 = if (std.posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{std.posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
-            const dbus_env: ?[*:0]const u8 = if (std.posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{std.posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
-
             var env_arr: [20:null]?[*:0]const u8 = .{null} ** 20;
             var ei: usize = 0;
-            env_arr[ei] = "TERM=xterm-256color"; ei += 1;
-            env_arr[ei] = "COLORTERM=truecolor"; ei += 1;
-            env_arr[ei] = "TERM_PROGRAM=zt"; ei += 1;
-            env_arr[ei] = path_env; ei += 1;
-            env_arr[ei] = lang_env; ei += 1;
-            env_arr[ei] = shell_env; ei += 1;
-            env_arr[ei] = home_env; ei += 1;
-            env_arr[ei] = user_env; ei += 1;
-            env_arr[ei] = col_env; ei += 1;
-            env_arr[ei] = row_env; ei += 1;
-            if (display_env) |e| { env_arr[ei] = e; ei += 1; }
-            if (wayland_env) |e| { env_arr[ei] = e; ei += 1; }
-            if (xauth_env) |e| { env_arr[ei] = e; ei += 1; }
-            if (xdg_runtime_env) |e| { env_arr[ei] = e; ei += 1; }
-            if (dbus_env) |e| { env_arr[ei] = e; ei += 1; }
+            env_arr[ei] = "TERM=xterm-256color";
+            ei += 1;
+            env_arr[ei] = "COLORTERM=truecolor";
+            ei += 1;
+            env_arr[ei] = "TERM_PROGRAM=zt";
+            ei += 1;
+            env_arr[ei] = path_env;
+            ei += 1;
+            env_arr[ei] = lang_env;
+            ei += 1;
+            env_arr[ei] = shell_env;
+            ei += 1;
+            env_arr[ei] = home_env;
+            ei += 1;
+            env_arr[ei] = user_env;
+            ei += 1;
+            env_arr[ei] = col_env;
+            ei += 1;
+            env_arr[ei] = row_env;
+            ei += 1;
+
+            // X11 / Wayland display variables (Linux only)
+            if (!is_macos) {
+                var display_env_buf: [128]u8 = undefined;
+                var wayland_env_buf: [128]u8 = undefined;
+                var xauth_env_buf: [256]u8 = undefined;
+                var xdg_runtime_buf: [256]u8 = undefined;
+                var dbus_env_buf: [256]u8 = undefined;
+                const display_env: ?[*:0]const u8 = if (std.posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{std.posix.getenv("DISPLAY").?}) catch null) else null;
+                const wayland_env: ?[*:0]const u8 = if (std.posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{std.posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
+                const xauth_env: ?[*:0]const u8 = if (std.posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{std.posix.getenv("XAUTHORITY").?}) catch null) else null;
+                const xdg_runtime_env: ?[*:0]const u8 = if (std.posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{std.posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
+                const dbus_env: ?[*:0]const u8 = if (std.posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{std.posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
+                if (display_env) |e| {
+                    env_arr[ei] = e;
+                    ei += 1;
+                }
+                if (wayland_env) |e| {
+                    env_arr[ei] = e;
+                    ei += 1;
+                }
+                if (xauth_env) |e| {
+                    env_arr[ei] = e;
+                    ei += 1;
+                }
+                if (xdg_runtime_env) |e| {
+                    env_arr[ei] = e;
+                    ei += 1;
+                }
+                if (dbus_env) |e| {
+                    env_arr[ei] = e;
+                    ei += 1;
+                }
+            }
+
             const env: [*:null]const ?[*:0]const u8 = &env_arr;
 
             // h. execvpe (PATH-searching exec)
@@ -169,12 +237,9 @@ pub const Pty = struct {
         }
 
         // === Parent process ===
-        // Set master_fd nonblocking
-        const F_GETFL = 3;
-        const F_SETFL = 4;
-        const O_NONBLOCK = 0x800;
-        const flags = try posix.fcntl(master_fd, F_GETFL, 0);
-        _ = try posix.fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
+        // Set master_fd nonblocking using portable std.posix constants
+        const cur_flags = try posix.fcntl(master_fd, @as(i32, 3), 0); // F_GETFL
+        _ = try posix.fcntl(master_fd, @as(i32, 4), cur_flags | @as(u32, if (is_macos) 0x0004 else 0x800)); // O_NONBLOCK
 
         return Pty{
             .master_fd = master_fd,
@@ -199,12 +264,17 @@ pub const Pty = struct {
 
     pub fn resize(self: *Pty, cols: u16, rows: u16) !void {
         var ws = Winsize{ .ws_row = rows, .ws_col = cols };
-        const rc = linux.ioctl(
-            @intCast(self.master_fd),
-            TIOCSWINSZ,
-            @intFromPtr(&ws),
-        );
-        if (@as(isize, @bitCast(rc)) < 0) return error.IoctlFailed;
+        if (is_macos) {
+            const rc = std.c.ioctl(@intCast(self.master_fd), TIOCSWINSZ, @intFromPtr(&ws));
+            if (rc < 0) return error.IoctlFailed;
+        } else {
+            const rc = linux.ioctl(
+                @intCast(self.master_fd),
+                TIOCSWINSZ,
+                @intFromPtr(&ws),
+            );
+            if (@as(isize, @bitCast(rc)) < 0) return error.IoctlFailed;
+        }
     }
 };
 
