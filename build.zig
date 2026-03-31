@@ -4,8 +4,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev or x11") orelse "fbdev";
+    const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev, x11, or macos") orelse "fbdev";
     const is_x11 = std.mem.eql(u8, backend_opt, "x11");
+    const is_macos = std.mem.eql(u8, backend_opt, "macos");
 
     const keymap_opt = b.option([]const u8, "keymap", "Keyboard layout: us or jp (default: us)") orelse "us";
     const use_jp_keymap = std.mem.eql(u8, keymap_opt, "jp");
@@ -17,6 +18,7 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption(bool, "use_x11", is_x11);
+    options.addOption(bool, "use_macos", is_macos);
     options.addOption(bool, "use_jp_keymap", use_jp_keymap);
     options.addOption(u32, "scale", scale_opt);
     options.addOption(u32, "max_fps", max_fps_opt);
@@ -44,7 +46,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    if (std.mem.eql(u8, backend_opt, "x11")) {
+    if (is_x11) {
         exe.linkSystemLibrary("xcb");
         exe.linkSystemLibrary("xcb-shm");
         exe.linkSystemLibrary("xcb-xkb");
@@ -52,6 +54,10 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("xcb-util");
         exe.linkSystemLibrary("xkbcommon");
         exe.linkSystemLibrary("xkbcommon-x11");
+        exe.linkLibC();
+    } else if (is_macos) {
+        exe.linkFramework("Cocoa");
+        exe.linkFramework("QuartzCore");
         exe.linkLibC();
     }
 

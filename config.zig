@@ -3,9 +3,10 @@ const build_options = @import("build_options");
 pub const Backend = enum {
     fbdev,
     x11,
+    macos,
 };
 
-pub const backend: Backend = if (build_options.use_x11) .x11 else .fbdev;
+pub const backend: Backend = if (build_options.use_macos) .macos else if (build_options.use_x11) .x11 else .fbdev;
 
 pub const default_fg: u8 = 7;
 pub const default_bg: u8 = 0;
