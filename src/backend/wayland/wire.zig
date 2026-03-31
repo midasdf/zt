@@ -13,6 +13,14 @@ const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
 
+/// cmsg header for SCM_RIGHTS ancillary data.
+/// Not exposed by Zig 0.15 std.os.linux, so defined locally.
+const cmsghdr = extern struct {
+    len: usize,
+    level: c_int,
+    type: c_int,
+};
+
 // ============================================================================
 // Header encode / decode
 // ============================================================================
@@ -221,21 +229,21 @@ pub const Connection = struct {
             std.mem.writeInt(u32, hdr_bytes[0..4], header[0], .little);
             std.mem.writeInt(u32, hdr_bytes[4..8], header[1], .little);
 
-            const iov = [2]linux.iovec_const{
+            const iov = [2]posix.iovec_const{
                 .{ .base = &hdr_bytes, .len = 8 },
                 .{ .base = payload.ptr, .len = payload.len },
             };
 
             // Build ancillary data buffer for SCM_RIGHTS
             const fd_bytes = std.mem.sliceAsBytes(fds);
-            const cmsg_space = std.mem.alignForward(usize, @sizeOf(linux.cmsghdr) + fd_bytes.len, @alignOf(linux.cmsghdr));
-            var cmsg_buf: [(@sizeOf(linux.cmsghdr) + 4 * @sizeOf(posix.fd_t) + @alignOf(linux.cmsghdr) - 1) & ~(@alignOf(linux.cmsghdr) - 1)]u8 align(@alignOf(linux.cmsghdr)) = undefined;
+            const cmsg_space = std.mem.alignForward(usize, @sizeOf(cmsghdr) + fd_bytes.len, @alignOf(cmsghdr));
+            var cmsg_buf: [std.mem.alignForward(usize, @sizeOf(cmsghdr) + 4 * @sizeOf(posix.fd_t), @alignOf(cmsghdr))]u8 align(@alignOf(cmsghdr)) = undefined;
 
-            const cmsg: *linux.cmsghdr = @alignCast(@ptrCast(&cmsg_buf));
-            cmsg.len = @intCast(@sizeOf(linux.cmsghdr) + fd_bytes.len);
+            const cmsg: *cmsghdr = @alignCast(@ptrCast(&cmsg_buf));
+            cmsg.len = @intCast(@sizeOf(cmsghdr) + fd_bytes.len);
             cmsg.level = posix.SOL.SOCKET;
             cmsg.type = 1; // SCM_RIGHTS
-            @memcpy(cmsg_buf[@sizeOf(linux.cmsghdr)..][0..fd_bytes.len], fd_bytes);
+            @memcpy(cmsg_buf[@sizeOf(cmsghdr)..][0..fd_bytes.len], fd_bytes);
 
             const msghdr = linux.msghdr_const{
                 .name = null,
@@ -250,7 +258,6 @@ pub const Connection = struct {
             const rc = linux.sendmsg(self.fd, &msghdr, linux.MSG.NOSIGNAL);
             const rc_isize: isize = @bitCast(rc);
             if (rc_isize < 0) return error.SendFailed;
-            _ = msg_size;
         }
     }
 
@@ -280,16 +287,16 @@ pub const Connection = struct {
         const space = self.recv_buf.len - self.recv_len;
         if (space == 0) return error.RecvBufferFull;
 
-        const iov = [1]linux.iovec{
+        var iov = [1]posix.iovec{
             .{ .base = self.recv_buf[self.recv_len..].ptr, .len = space },
         };
 
         // Ancillary buffer for up to 4 received fds
         const max_fds = 4;
-        const cmsg_buf_size = std.mem.alignForward(usize, @sizeOf(linux.cmsghdr) + max_fds * @sizeOf(posix.fd_t), @alignOf(linux.cmsghdr));
-        var cmsg_buf: [cmsg_buf_size]u8 align(@alignOf(linux.cmsghdr)) = undefined;
+        const cmsg_buf_size = comptime std.mem.alignForward(usize, @sizeOf(cmsghdr) + max_fds * @sizeOf(posix.fd_t), @alignOf(cmsghdr));
+        var cmsg_buf: [cmsg_buf_size]u8 align(@alignOf(cmsghdr)) = undefined;
 
-        var msghdr = linux.msghdr{
+        var msg = linux.msghdr{
             .name = null,
             .namelen = 0,
             .iov = &iov,
@@ -299,12 +306,12 @@ pub const Connection = struct {
             .flags = 0,
         };
 
-        const rc = linux.recvmsg(self.fd, &msghdr, 0);
+        const rc = linux.recvmsg(self.fd, &msg, 0);
         const rc_isize: isize = @bitCast(rc);
         if (rc_isize < 0) {
             const err: i32 = @intCast(-rc_isize);
             return switch (err) {
-                @intFromEnum(posix.E.AGAIN), @intFromEnum(posix.E.WOULDBLOCK) => error.WouldBlock,
+                @intFromEnum(posix.E.AGAIN) => error.WouldBlock,
                 @intFromEnum(posix.E.CONNRESET) => error.ConnectionReset,
                 else => error.RecvFailed,
             };
@@ -314,14 +321,14 @@ pub const Connection = struct {
         self.recv_len += bytes_recv;
 
         // Extract received fds from ancillary data
-        if (msghdr.controllen > 0) {
+        if (msg.controllen > 0) {
             var cmsg_ptr: usize = 0;
-            while (cmsg_ptr + @sizeOf(linux.cmsghdr) <= msghdr.controllen) {
-                const cmsg: *const linux.cmsghdr = @alignCast(@ptrCast(&cmsg_buf[cmsg_ptr]));
+            while (cmsg_ptr + @sizeOf(cmsghdr) <= msg.controllen) {
+                const cmsg: *const cmsghdr = @alignCast(@ptrCast(&cmsg_buf[cmsg_ptr]));
                 if (cmsg.level == posix.SOL.SOCKET and cmsg.type == 1) { // SCM_RIGHTS
-                    const data_len = cmsg.len - @sizeOf(linux.cmsghdr);
+                    const data_len = cmsg.len - @sizeOf(cmsghdr);
                     const n_fds = data_len / @sizeOf(posix.fd_t);
-                    const fd_ptr: [*]const posix.fd_t = @alignCast(@ptrCast(&cmsg_buf[cmsg_ptr + @sizeOf(linux.cmsghdr)]));
+                    const fd_ptr: [*]const posix.fd_t = @alignCast(@ptrCast(&cmsg_buf[cmsg_ptr + @sizeOf(cmsghdr)]));
                     var i: usize = 0;
                     while (i < n_fds and self.recv_fd_count < self.recv_fds.len) : (i += 1) {
                         self.recv_fds[self.recv_fd_count] = fd_ptr[i];
@@ -332,7 +339,7 @@ pub const Connection = struct {
                         posix.close(fd_ptr[i]);
                     }
                 }
-                const next = std.mem.alignForward(usize, cmsg.len, @alignOf(linux.cmsghdr));
+                const next = std.mem.alignForward(usize, cmsg.len, @alignOf(cmsghdr));
                 if (next == 0) break;
                 cmsg_ptr += next;
             }
@@ -376,7 +383,7 @@ pub const Connection = struct {
         if (self.send_len == 0) return;
         var sent: usize = 0;
         while (sent < self.send_len) {
-            const iov = [1]linux.iovec_const{
+            const iov = [1]posix.iovec_const{
                 .{ .base = self.send_buf[sent..].ptr, .len = self.send_len - sent },
             };
             const msghdr = linux.msghdr_const{

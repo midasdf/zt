@@ -325,7 +325,7 @@ pub fn createShmBuffers(
 ) !ShmBuffer {
     const stride = width * 4; // ARGB8888 = 4 bytes per pixel
     const raw_size = @as(usize, stride) * @as(usize, height);
-    const page_sz = std.mem.page_size;
+    const page_sz = std.heap.pageSize();
     const page_size = std.mem.alignForward(usize, raw_size, page_sz);
     const total_size = page_size * 2;
 
