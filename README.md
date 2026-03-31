@@ -192,7 +192,7 @@ pub const frame_min_ns: u64 = ...;   // computed: 1_000_000_000 / max_fps (0 if 
 pub const pty_buf_size: u32 = ...;   // PTY read buffer in bytes (set via -Dpty_buf_kb, default 1024)
 pub const cell_width = font_width * scale;   // screen cell width
 pub const cell_height = font_height * scale; // screen cell height
-pub const shell = "/bin/fish";        // login shell
+// shell: set via -Dshell= (default: /bin/sh)
 ```
 
 ## Font

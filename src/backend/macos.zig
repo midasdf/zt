@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const config = @import("config");
 const input_mod = @import("../input.zig");
 
@@ -37,6 +38,7 @@ const CGRect = extern struct {
 
 // Objective-C runtime externs
 extern "objc" fn objc_msgSend() void;
+extern "objc" fn objc_msgSend_stret() void;
 extern "objc" fn objc_getClass(name: [*:0]const u8) ?id;
 extern "objc" fn sel_registerName(name: [*:0]const u8) SEL;
 extern "objc" fn objc_allocateClassPair(superclass: ?id, name: [*:0]const u8, extra_bytes: usize) ?id;
@@ -157,13 +159,20 @@ fn msgSend_nextEvent(target: id, _sel: SEL, mask: u64, date: ?id, mode: id, dequ
 }
 
 // id → CGRect (frame)
-// On x86_64 macOS, CGRect is returned in registers. On ARM64 as well.
-// We use objc_msgSend_stret only when the struct doesn't fit in registers,
-// but CGRect (32 bytes) fits in 4 registers on ARM64 and is returned directly
-// on both architectures in practice. Use the regular objc_msgSend for this.
+// On x86_64, structs > 16 bytes are returned via the stret convention: a hidden
+// pointer to the result buffer is passed as the first argument. CGRect is 32 bytes,
+// so we must use objc_msgSend_stret on x86_64 to avoid stack corruption.
+// On ARM64, all return types use the regular objc_msgSend.
 fn msgSend_CGRect(target: id, _sel: SEL) CGRect {
-    const f: *const fn (id, SEL) callconv(.c) CGRect = @ptrCast(&objc_msgSend);
-    return f(target, _sel);
+    if (builtin.cpu.arch == .x86_64) {
+        const f: *const fn (*CGRect, id, SEL) callconv(.c) void = @ptrCast(&objc_msgSend_stret);
+        var result: CGRect = undefined;
+        f(&result, target, _sel);
+        return result;
+    } else {
+        const f: *const fn (id, SEL) callconv(.c) CGRect = @ptrCast(&objc_msgSend);
+        return f(target, _sel);
+    }
 }
 
 // id, id → id (stringForType:)
@@ -182,11 +191,6 @@ fn msgSend_cgctx(target: id, _sel: SEL) ?id {
 fn msgSend_setMarked(target: id, _sel: SEL, text: id, selRange: NSRange, repRange: NSRange) void {
     const f: *const fn (id, SEL, id, NSRange, NSRange) callconv(.c) void = @ptrCast(&objc_msgSend);
     f(target, _sel, text, selRange, repRange);
-}
-
-// firstRectForCharacterRange:actualRange:
-fn msgSend_firstRect(_: id, _: SEL, _: NSRange, _: ?*NSRange) callconv(.c) CGRect {
-    return CGRect.make(0, 0, 0, 0);
 }
 
 // insertText:replacementRange:
@@ -602,6 +606,10 @@ fn registerZTViewClass() ?id {
     _ = class_addMethod(new_class, sel("windowDidBecomeKey:"), @ptrCast(&ztWindowDidBecomeKey), "v@:@");
     _ = class_addMethod(new_class, sel("windowDidResignKey:"), @ptrCast(&ztWindowDidResignKey), "v@:@");
     _ = class_addMethod(new_class, sel("windowDidResize:"), @ptrCast(&ztWindowDidResize), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidChangeOcclusionState:"), @ptrCast(&ztWindowDidChangeOcclusion), "v@:@");
+
+    // --- NSView backing properties ---
+    _ = class_addMethod(new_class, sel("viewDidChangeBackingProperties"), @ptrCast(&ztViewDidChangeBackingProperties), "v@:");
 
     objc_registerClassPair(new_class);
     zt_view_class_registered = new_class;
@@ -820,6 +828,23 @@ fn ztWindowDidResize(self_view: id, _: SEL, _: id) callconv(.c) void {
     if (w != backend.width or h != backend.height) {
         backend.pushEvent(.{ .resize = .{ .width = w, .height = h } });
     }
+}
+
+fn ztWindowDidChangeOcclusion(self_view: id, _: SEL, _: id) callconv(.c) void {
+    const backend = MacosBackend.getBackendFromView(self_view) orelse return;
+    // Check if window is now visible (NSWindowOcclusionStateVisible = 1 << 1)
+    const window = msgSend_id(self_view, sel("window"));
+    const getOcclusion: *const fn (id, SEL) callconv(.c) u64 = @ptrCast(&objc_msgSend);
+    const state = getOcclusion(window, sel("occlusionState"));
+    if (state & (1 << 1) != 0) { // NSWindowOcclusionStateVisible
+        backend.pushEvent(.expose);
+    }
+}
+
+fn ztViewDidChangeBackingProperties(self_view: id, _: SEL) callconv(.c) void {
+    const backend = MacosBackend.getBackendFromView(self_view) orelse return;
+    // Trigger full redraw on scale change (e.g. moving window between Retina/non-Retina displays)
+    backend.pushEvent(.expose);
 }
 
 // =============================================================================
