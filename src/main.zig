@@ -17,11 +17,13 @@ const font_mod = @import("font.zig");
 const Backend = switch (config.backend) {
     .fbdev => @import("backend/fbdev.zig").FbdevBackend,
     .x11 => @import("backend/x11.zig").X11Backend,
+    .wayland => @import("backend/wayland.zig").WaylandBackend,
     .macos => @import("backend/macos.zig").MacosBackend,
 };
 
 const BackendEvent = switch (config.backend) {
     .x11 => @import("backend/x11.zig").Event,
+    .wayland => @import("backend/wayland.zig").Event,
     .macos => @import("backend/macos.zig").Event,
     .fbdev => void,
 };
@@ -317,7 +319,7 @@ pub fn main() !void {
     };
     const allocator = if (builtin.mode == .Debug)
         gpa.allocator()
-    else if (config.backend == .x11 or config.backend == .macos)
+    else if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos)
         std.heap.c_allocator
     else
         std.heap.page_allocator;
@@ -345,12 +347,12 @@ pub fn main() !void {
     // 1. Init backend
     var backend = switch (config.backend) {
         .fbdev => try Backend.init(allocator),
-        .x11, .macos => try Backend.init(),
+        .x11, .wayland, .macos => try Backend.init(),
     };
     defer backend.deinit();
 
-    // 1b. Post-init for X11/macOS (XKB + XIM, needs stable self pointer)
-    if (config.backend == .x11 or config.backend == .macos) {
+    // 1b. Post-init for X11/Wayland/macOS (XKB + XIM, needs stable self pointer)
+    if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
         backend.postInit();
     }
 
@@ -418,10 +420,10 @@ pub fn main() !void {
 
     // 10. Sync with actual window geometry.
     //     A tiling WM may have resized our window between creation and now
-    //     (e.g., during MapRequest handling). Query the real X11 geometry and
+    //     (e.g., during MapRequest handling). Query the real geometry and
     //     update PTY/term/backend to match. This handles the initial resize
-    //     that ConfigureNotify-based detection might miss due to XCB buffering.
-    if (config.backend == .x11 or config.backend == .macos) {
+    //     that event-based detection might miss due to buffering.
+    if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
         const actual = backend.queryGeometry();
         if (actual.w > 0 and actual.h > 0 and (actual.w != backend.getWidth() or actual.h != backend.getHeight())) {
             const new_cols = actual.w / config.cell_width;
@@ -522,8 +524,8 @@ pub fn main() !void {
                         term.markDirty(term.cursor_x, term.cursor_y);
                     },
                     @intFromEnum(EpollTag.backend) => {
-                        // Backend events (X11 or macOS)
-                        if (config.backend == .x11 or config.backend == .macos) {
+                        // Backend events (X11, Wayland or macOS)
+                        if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
                                 switch (event) {
                                     .key => |key_ev| {
@@ -666,8 +668,8 @@ pub fn main() !void {
                             vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                         }
                     } else if (kev.udata == @intFromEnum(KqueueTag.backend)) {
-                        // Backend events (X11 or macOS)
-                        if (config.backend == .x11 or config.backend == .macos) {
+                        // Backend events (X11, Wayland or macOS)
+                        if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
                                 switch (event) {
                                     .key => |key_ev| {
