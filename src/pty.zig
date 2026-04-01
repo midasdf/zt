@@ -18,7 +18,11 @@ const c = if (is_macos) @cImport({
     @cInclude("fcntl.h");
 }) else struct {};
 
-// ioctl constants
+// ioctl constants — stored as u32 for Linux (linux.ioctl takes u32).
+// On macOS, std.c.ioctl takes c_int, so callers use @bitCast(TIOCSWINSZ)
+// to reinterpret the u32 bit pattern as c_int. The kernel reads the
+// 32-bit request code from the low bits of the register regardless of
+// sign extension — this matches how C compilers pass ioctl constants.
 const TIOCSPTLCK: u32 = 0x40045431; // Linux only, not used on macOS
 const TIOCGPTN: u32 = 0x80045430; // Linux only, not used on macOS
 const TIOCSCTTY: u32 = if (is_macos) 0x20007461 else 0x540E;
@@ -244,17 +248,10 @@ pub const Pty = struct {
 
         // === Parent process ===
         // Set master_fd nonblocking
-        if (is_macos) {
+        {
             const F_GETFL = 3;
             const F_SETFL = 4;
-            const O_NONBLOCK: u32 = 0x0004; // macOS O_NONBLOCK
-            const cur_flags = try posix.fcntl(master_fd, F_GETFL, 0);
-            _ = try posix.fcntl(master_fd, F_SETFL, cur_flags | O_NONBLOCK);
-        } else {
-            // Linux: named constants (not in std.os.linux.F)
-            const F_GETFL = 3;
-            const F_SETFL = 4;
-            const O_NONBLOCK: u32 = 0x800;
+            const O_NONBLOCK: u32 = @bitCast(std.posix.O{ .NONBLOCK = true });
             const cur_flags = try posix.fcntl(master_fd, F_GETFL, 0);
             _ = try posix.fcntl(master_fd, F_SETFL, cur_flags | O_NONBLOCK);
         }

@@ -307,6 +307,85 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
     };
 }
 
+/// Handle a single backend event (key, text, paste, resize, etc.).
+/// Returns false if the event loop should stop (close event or write failure).
+fn handleBackendEvent(
+    event: BackendEvent,
+    term: *@import("term.zig").Term,
+    pty_ptr: *Pty,
+    backend: *Backend,
+    write_buf: *[4096]u8,
+    write_pending: *usize,
+    evloop_fd: i32,
+) bool {
+    switch (event) {
+        .key => |key_ev| {
+            if (key_ev.pressed) {
+                const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
+                if (bytes.len > 0) {
+                    if (!ptyBufferedWrite(pty_ptr, bytes, write_buf, write_pending, evloop_fd)) {
+                        return false;
+                    }
+                }
+            }
+        },
+        .text => |text_ev| {
+            const text = text_ev.slice();
+            if (text.len > 0) {
+                if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) {
+                    return false;
+                }
+            }
+        },
+        .paste => |paste_ev| {
+            const text = paste_ev.slice();
+            if (text.len > 0) {
+                if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) {
+                    return false;
+                }
+            }
+        },
+        .resize => |rsz| {
+            const new_cols = rsz.width / config.cell_width;
+            const new_rows = rsz.height / config.cell_height;
+            if (new_cols > 0 and new_rows > 0) {
+                term.resize(new_cols, new_rows) catch |err| {
+                    std.log.err("term resize: {}", .{err});
+                };
+                pty_ptr.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
+                    std.log.err("pty resize: {}", .{err});
+                };
+                backend.resize(rsz.width, rsz.height) catch |err| {
+                    std.log.err("backend resize: {}", .{err});
+                };
+            }
+        },
+        .expose => {
+            const total = @as(usize, term.cols) * @as(usize, term.rows);
+            term.markDirtyRange(.{ .start = 0, .end = total });
+            term.all_dirty = true;
+        },
+        .focus_in => {
+            if (term.focus_events) {
+                if (!ptyBufferedWrite(pty_ptr, "\x1b[I", write_buf, write_pending, evloop_fd)) {
+                    return false;
+                }
+            }
+        },
+        .focus_out => {
+            if (term.focus_events) {
+                if (!ptyBufferedWrite(pty_ptr, "\x1b[O", write_buf, write_pending, evloop_fd)) {
+                    return false;
+                }
+            }
+        },
+        .close => {
+            return false;
+        },
+    }
+    return true;
+}
+
 // =============================================================================
 // Main
 // =============================================================================
@@ -529,78 +608,9 @@ pub fn main() !void {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
-                                switch (event) {
-                                    .key => |key_ev| {
-                                        if (key_ev.pressed) {
-                                            const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
-                                            if (bytes.len > 0) {
-                                                if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
-                                                    running = false;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    },
-                                    .text => |text_ev| {
-                                        // IME committed text -- write UTF-8 directly to PTY
-                                        const text = text_ev.slice();
-                                        if (text.len > 0) {
-                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .paste => |paste_ev| {
-                                        // Clipboard paste -- write to PTY
-                                        const text = paste_ev.slice();
-                                        if (text.len > 0) {
-                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .resize => |rsz| {
-                                        const new_cols = rsz.width / config.cell_width;
-                                        const new_rows = rsz.height / config.cell_height;
-                                        if (new_cols > 0 and new_rows > 0) {
-                                            term.resize(new_cols, new_rows) catch |err| {
-                                                std.log.err("term resize: {}", .{err});
-                                            };
-                                            pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
-                                                std.log.err("pty resize: {}", .{err});
-                                            };
-                                            backend.resize(rsz.width, rsz.height) catch |err| {
-                                                std.log.err("backend resize: {}", .{err});
-                                            };
-                                        }
-                                    },
-                                    .expose => {
-                                        // Force full redraw — mark all term cells dirty
-                                        const total = @as(usize, term.cols) * @as(usize, term.rows);
-                                        term.markDirtyRange(.{ .start = 0, .end = total });
-                                        term.all_dirty = true;
-                                    },
-                                    .focus_in => {
-                                        if (term.focus_events) {
-                                            if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .focus_out => {
-                                        if (term.focus_events) {
-                                            if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .close => {
-                                        running = false;
-                                    },
+                                if (!handleBackendEvent(event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                                    running = false;
+                                    break;
                                 }
                             }
                         }
@@ -678,75 +688,9 @@ pub fn main() !void {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
-                                switch (event) {
-                                    .key => |key_ev| {
-                                        if (key_ev.pressed) {
-                                            const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
-                                            if (bytes.len > 0) {
-                                                if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
-                                                    running = false;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    },
-                                    .text => |text_ev| {
-                                        const text = text_ev.slice();
-                                        if (text.len > 0) {
-                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .paste => |paste_ev| {
-                                        const text = paste_ev.slice();
-                                        if (text.len > 0) {
-                                            if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .resize => |rsz| {
-                                        const new_cols = rsz.width / config.cell_width;
-                                        const new_rows = rsz.height / config.cell_height;
-                                        if (new_cols > 0 and new_rows > 0) {
-                                            term.resize(new_cols, new_rows) catch |err| {
-                                                std.log.err("term resize: {}", .{err});
-                                            };
-                                            pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
-                                                std.log.err("pty resize: {}", .{err});
-                                            };
-                                            backend.resize(rsz.width, rsz.height) catch |err| {
-                                                std.log.err("backend resize: {}", .{err});
-                                            };
-                                        }
-                                    },
-                                    .expose => {
-                                        const total = @as(usize, term.cols) * @as(usize, term.rows);
-                                        term.markDirtyRange(.{ .start = 0, .end = total });
-                                        term.all_dirty = true;
-                                    },
-                                    .focus_in => {
-                                        if (term.focus_events) {
-                                            if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .focus_out => {
-                                        if (term.focus_events) {
-                                            if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, evloop_fd)) {
-                                                running = false;
-                                                break;
-                                            }
-                                        }
-                                    },
-                                    .close => {
-                                        running = false;
-                                    },
+                                if (!handleBackendEvent(event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                                    running = false;
+                                    break;
                                 }
                             }
                         }
@@ -771,75 +715,9 @@ pub fn main() !void {
             // never appears because Cocoa callbacks never fire.
             if (config.backend == .macos) {
                 while (backend.pollEvents()) |event| {
-                    switch (event) {
-                        .key => |key_ev| {
-                            if (key_ev.pressed) {
-                                const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
-                                if (bytes.len > 0) {
-                                    if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
-                                        running = false;
-                                        break;
-                                    }
-                                }
-                            }
-                        },
-                        .text => |text_ev| {
-                            const text = text_ev.slice();
-                            if (text.len > 0) {
-                                if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
-                                    running = false;
-                                    break;
-                                }
-                            }
-                        },
-                        .paste => |paste_ev| {
-                            const text = paste_ev.slice();
-                            if (text.len > 0) {
-                                if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
-                                    running = false;
-                                    break;
-                                }
-                            }
-                        },
-                        .resize => |rsz| {
-                            const new_cols = rsz.width / config.cell_width;
-                            const new_rows = rsz.height / config.cell_height;
-                            if (new_cols > 0 and new_rows > 0) {
-                                term.resize(new_cols, new_rows) catch |err| {
-                                    std.log.err("term resize: {}", .{err});
-                                };
-                                pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
-                                    std.log.err("pty resize: {}", .{err});
-                                };
-                                backend.resize(rsz.width, rsz.height) catch |err| {
-                                    std.log.err("backend resize: {}", .{err});
-                                };
-                            }
-                        },
-                        .expose => {
-                            const total = @as(usize, term.cols) * @as(usize, term.rows);
-                            term.markDirtyRange(.{ .start = 0, .end = total });
-                            term.all_dirty = true;
-                        },
-                        .focus_in => {
-                            if (term.focus_events) {
-                                if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, evloop_fd)) {
-                                    running = false;
-                                    break;
-                                }
-                            }
-                        },
-                        .focus_out => {
-                            if (term.focus_events) {
-                                if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, evloop_fd)) {
-                                    running = false;
-                                    break;
-                                }
-                            }
-                        },
-                        .close => {
-                            running = false;
-                        },
+                    if (!handleBackendEvent(event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                        running = false;
+                        break;
                     }
                 }
             }
