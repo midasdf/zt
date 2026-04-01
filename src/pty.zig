@@ -115,7 +115,7 @@ pub const Pty = struct {
 
             // c. Set controlling terminal
             if (is_macos) {
-                _ = std.c.ioctl(@intCast(slave_fd), TIOCSCTTY, @as(c_int, 0));
+                _ = std.c.ioctl(@intCast(slave_fd), @bitCast(TIOCSCTTY), @as(c_int, 0));
             } else {
                 _ = linux.ioctl(@intCast(slave_fd), TIOCSCTTY, 0);
             }
@@ -123,7 +123,7 @@ pub const Pty = struct {
             // f. Set window size before dup2
             var ws = Winsize{ .ws_row = rows, .ws_col = cols };
             if (is_macos) {
-                _ = std.c.ioctl(@intCast(slave_fd), TIOCSWINSZ, @intFromPtr(&ws));
+                _ = std.c.ioctl(@intCast(slave_fd), @bitCast(TIOCSWINSZ), @intFromPtr(&ws));
             } else {
                 _ = linux.ioctl(@intCast(slave_fd), TIOCSWINSZ, @intFromPtr(&ws));
             }
@@ -245,9 +245,11 @@ pub const Pty = struct {
         // === Parent process ===
         // Set master_fd nonblocking
         if (is_macos) {
-            // macOS: use libc constants
-            const cur_flags = try posix.fcntl(master_fd, std.c.F.GETFL, 0);
-            _ = try posix.fcntl(master_fd, std.c.F.SETFL, cur_flags | std.c.O.NONBLOCK);
+            const F_GETFL = 3;
+            const F_SETFL = 4;
+            const O_NONBLOCK: u32 = 0x0004; // macOS O_NONBLOCK
+            const cur_flags = try posix.fcntl(master_fd, F_GETFL, 0);
+            _ = try posix.fcntl(master_fd, F_SETFL, cur_flags | O_NONBLOCK);
         } else {
             // Linux: named constants (not in std.os.linux.F)
             const F_GETFL = 3;
@@ -281,7 +283,7 @@ pub const Pty = struct {
     pub fn resize(self: *Pty, cols: u16, rows: u16) !void {
         var ws = Winsize{ .ws_row = rows, .ws_col = cols };
         if (is_macos) {
-            const rc = std.c.ioctl(@intCast(self.master_fd), TIOCSWINSZ, @intFromPtr(&ws));
+            const rc = std.c.ioctl(@intCast(self.master_fd), @bitCast(TIOCSWINSZ), @intFromPtr(&ws));
             if (rc < 0) return error.IoctlFailed;
         } else {
             const rc = linux.ioctl(

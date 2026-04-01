@@ -122,8 +122,8 @@ fn msgSend_void_id(target: id, _sel: SEL, arg: id) void {
     f(target, _sel, arg);
 }
 
-// id, ?id → void (for passing nil/null sender)
-fn msgSend_void_opt_id(target: id, _sel: SEL, arg: ?id) void {
+// id, ?id → void (for methods that accept nil, e.g. makeKeyAndOrderFront:)
+fn msgSend_void_optid(target: id, _sel: SEL, arg: ?id) void { macos
     const f: *const fn (id, SEL, ?id) callconv(.c) void = @ptrCast(&objc_msgSend);
     f(target, _sel, arg);
 }
@@ -383,8 +383,11 @@ pub const MacosBackend = struct {
         const title_str = createNSString("zt");
         msgSend_void_id(window, sel("setTitle:"), title_str);
 
-        // 10. Show window
-        msgSend_void_opt_id(window, sel("makeKeyAndOrderFront:"), null);
+        // 10. Show window and activate app
+        msgSend_void_optid(window, sel("makeKeyAndOrderFront:"), null);
+        // finishLaunching is required for non-bundle apps to properly
+        // initialize the window server connection and menu bar.
+        msgSend_void(app, sel("finishLaunching")); macos
         msgSend_void_bool(app, sel("activateIgnoringOtherApps:"), YES);
 
         // NOTE: The backend pointer ivar is set in postInit() after the struct
@@ -587,35 +590,40 @@ fn registerZTViewClass() ?id {
     }
 
     // --- NSView overrides ---
-    _ = class_addMethod(new_class, sel("drawRect:"), @ptrCast(&ztDrawRect), "v@:{CGRect=dddd}");
-    _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @ptrCast(&ztAcceptsFirstResponder), "c@:");
-    _ = class_addMethod(new_class, sel("canBecomeKeyView"), @ptrCast(&ztCanBecomeKeyView), "c@:");
+    _ = class_addMethod(new_class, sel("drawRect:"), @constCast(@ptrCast(&ztDrawRect)), "v@:{CGRect=dddd}");
+    _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @constCast(@ptrCast(&ztAcceptsFirstResponder)), "c@:");
+    _ = class_addMethod(new_class, sel("canBecomeKeyView"), @constCast(@ptrCast(&ztCanBecomeKeyView)), "c@:");
 
     // --- Keyboard ---
-    _ = class_addMethod(new_class, sel("keyDown:"), @ptrCast(&ztKeyDown), "v@:@");
-    _ = class_addMethod(new_class, sel("flagsChanged:"), @ptrCast(&ztFlagsChanged), "v@:@");
+    _ = class_addMethod(new_class, sel("keyDown:"), @constCast(@ptrCast(&ztKeyDown)), "v@:@");
+    _ = class_addMethod(new_class, sel("flagsChanged:"), @constCast(@ptrCast(&ztFlagsChanged)), "v@:@");
+    // doCommandBySelector: is called by interpretKeyEvents: for non-text
+    // keys (Enter, Tab, arrows, Escape, etc.). Without this, the default
+    // NSView implementation calls NSBeep() for every unhandled command.
+    // We handle all keys through the evdev key event path, so this is a no-op.
+    _ = class_addMethod(new_class, sel("doCommandBySelector:"), @constCast(@ptrCast(&ztDoCommandBySelector)), "v@::");
 
     // --- NSTextInputClient ---
-    _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @ptrCast(&ztInsertText), "v@:@{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("hasMarkedText"), @ptrCast(&ztHasMarkedText), "c@:");
-    _ = class_addMethod(new_class, sel("setMarkedText:selectedRange:replacementRange:"), @ptrCast(&ztSetMarkedText), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("unmarkText"), @ptrCast(&ztUnmarkText), "v@:");
-    _ = class_addMethod(new_class, sel("validAttributesForMarkedText"), @ptrCast(&ztValidAttributes), "@@:");
-    _ = class_addMethod(new_class, sel("firstRectForCharacterRange:actualRange:"), @ptrCast(&ztFirstRect), "{CGRect=dddd}@:{_NSRange=QQ}^{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("characterIndexForPoint:"), @ptrCast(&ztCharacterIndex), "Q@:{CGPoint=dd}");
-    _ = class_addMethod(new_class, sel("attributedSubstringForProposedRange:actualRange:"), @ptrCast(&ztAttributedSubstring), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("markedRange"), @ptrCast(&ztMarkedRange), "{_NSRange=QQ}@:");
-    _ = class_addMethod(new_class, sel("selectedRange"), @ptrCast(&ztSelectedRange), "{_NSRange=QQ}@:");
+    _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @constCast(@ptrCast(&ztInsertText)), "v@:@{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("hasMarkedText"), @constCast(@ptrCast(&ztHasMarkedText)), "c@:");
+    _ = class_addMethod(new_class, sel("setMarkedText:selectedRange:replacementRange:"), @constCast(@ptrCast(&ztSetMarkedText)), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("unmarkText"), @constCast(@ptrCast(&ztUnmarkText)), "v@:");
+    _ = class_addMethod(new_class, sel("validAttributesForMarkedText"), @constCast(@ptrCast(&ztValidAttributes)), "@@:");
+    _ = class_addMethod(new_class, sel("firstRectForCharacterRange:actualRange:"), @constCast(@ptrCast(&ztFirstRect)), "{CGRect=dddd}@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("characterIndexForPoint:"), @constCast(@ptrCast(&ztCharacterIndex)), "Q@:{CGPoint=dd}");
+    _ = class_addMethod(new_class, sel("attributedSubstringForProposedRange:actualRange:"), @constCast(@ptrCast(&ztAttributedSubstring)), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("markedRange"), @constCast(@ptrCast(&ztMarkedRange)), "{_NSRange=QQ}@:");
+    _ = class_addMethod(new_class, sel("selectedRange"), @constCast(@ptrCast(&ztSelectedRange)), "{_NSRange=QQ}@:");
 
     // --- NSWindowDelegate ---
-    _ = class_addMethod(new_class, sel("windowShouldClose:"), @ptrCast(&ztWindowShouldClose), "c@:@");
-    _ = class_addMethod(new_class, sel("windowDidBecomeKey:"), @ptrCast(&ztWindowDidBecomeKey), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidResignKey:"), @ptrCast(&ztWindowDidResignKey), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidResize:"), @ptrCast(&ztWindowDidResize), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidChangeOcclusionState:"), @ptrCast(&ztWindowDidChangeOcclusion), "v@:@");
+    _ = class_addMethod(new_class, sel("windowShouldClose:"), @constCast(@ptrCast(&ztWindowShouldClose)), "c@:@");
+    _ = class_addMethod(new_class, sel("windowDidBecomeKey:"), @constCast(@ptrCast(&ztWindowDidBecomeKey)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidResignKey:"), @constCast(@ptrCast(&ztWindowDidResignKey)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidResize:"), @constCast(@ptrCast(&ztWindowDidResize)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidChangeOcclusionState:"), @constCast(@ptrCast(&ztWindowDidChangeOcclusion)), "v@:@");
 
     // --- NSView backing properties ---
-    _ = class_addMethod(new_class, sel("viewDidChangeBackingProperties"), @ptrCast(&ztViewDidChangeBackingProperties), "v@:");
+    _ = class_addMethod(new_class, sel("viewDidChangeBackingProperties"), @constCast(@ptrCast(&ztViewDidChangeBackingProperties)), "v@:");
 
     objc_registerClassPair(new_class);
     zt_view_class_registered = new_class;
@@ -650,6 +658,12 @@ fn ztAcceptsFirstResponder(_: id, _: SEL) callconv(.c) BOOL {
 
 fn ztCanBecomeKeyView(_: id, _: SEL) callconv(.c) BOOL {
     return YES;
+}
+
+fn ztDoCommandBySelector(_: id, _: SEL, _: SEL) callconv(.c) void {
+    // No-op: all keys are handled through the evdev key event path.
+    // Without this, NSView's default calls NSBeep() for every
+    // unhandled command selector (insertNewline:, insertTab:, etc.).
 }
 
 fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
@@ -739,9 +753,12 @@ fn ztInsertText(self_view: id, _: SEL, text_obj: id, _: NSRange) callconv(.c) vo
     const len = std.mem.len(cstr);
     if (len == 0) return;
 
-    // If single ASCII character that would be handled by keyDown, skip
-    // to avoid duplicates (interpretKeyEvents already pushed a key event).
-    if (len == 1 and cstr[0] >= 0x20 and cstr[0] < 0x7F) return;
+    // Skip all single-byte ASCII — these are already handled by the key
+    // event path (macosToEvdev → translateKey). Without this guard, keys
+    // like Enter (0x0D) and Tab (0x09) produce duplicates: one from the
+    // key event and one from insertText. Only let through multi-byte
+    // sequences (IME-composed text, dead key output, etc.).
+    if (len == 1 and cstr[0] < 0x80) return;
 
     var text_event: TextEvent = .{};
     const copy_len = @min(len, text_event.data.len);
