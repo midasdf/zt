@@ -1,0 +1,7 @@
+zt               0.0250s
+foot             0.0600s
+kitty            0.2450s
+st               0.0600s
+xterm            0.0350s
+alacritty        0.1250s
+ghostty          1.0300s

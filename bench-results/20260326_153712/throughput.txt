@@ -1,0 +1,50 @@
+--- seq-100k (576K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0580s     .0340s       5016        8.6
+foot              .1040s     .0940s      26372        4.8
+kitty             .3740s     .3460s     219724        1.3
+st                .1140s     .0600s      31052        4.3
+xterm             .1360s     .1160s      13388        3.6
+alacritty         .1840s     .1640s     182796        2.7
+ghostty          1.1460s     .5940s     312168         .4
+
+--- dense-ascii (4.7M) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0760s     .0580s       6012       60.4
+foot              .1340s     .1180s      26348       34.3
+kitty             .3880s     .3560s     196796       11.8
+st                .1920s     .1320s      31188       23.9
+xterm             .2140s     .1860s      13428       21.4
+alacritty         .3000s     .2700s     184984       15.3
+ghostty          1.0980s     .5940s     311972        4.1
+
+--- truecolor (292K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0140s         0s       5016       14.1
+foot              .0600s     .0500s      26212        3.3
+kitty             .2540s     .2260s     190628         .7
+st                .0640s     .0460s      31108        3.1
+xterm             .0420s     .0180s      13472        4.7
+alacritty         .1400s     .1220s     171168        1.4
+ghostty          1.0880s     .5920s     306720         .1
+
+--- unicode (300K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0180s         0s       6296       11.0
+foot              .0620s     .0500s      29172        3.2
+kitty             .2620s     .2340s     191068         .7
+st                .0660s     .0380s      31056        3.0
+xterm             .0440s     .0200s      13584        4.5
+alacritty         .1540s     .1260s     172664        1.2
+ghostty          1.1180s     .6120s     305532         .1
+
+--- cursor-stress (416K) ---
+Terminal         Avg(s)     CPU(s)    RSS(KB)         MB/s
+zt                .0180s         0s       5016       22.0
+foot              .0620s     .0460s      24228        6.4
+kitty             .2680s     .2340s     185912        1.4
+st                .0660s     .0380s      31100        6.0
+xterm             .0520s     .0200s      11512        7.6
+alacritty         .1440s     .1200s     161500        2.7
+ghostty          1.1120s     .6020s     302976         .3
+

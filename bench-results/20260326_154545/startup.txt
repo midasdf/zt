@@ -1,0 +1,31 @@
+Benchmark 1: zt
+  Time (mean ± σ):       5.6 ms ±   1.5 ms    [User: 1.5 ms, System: 3.4 ms]
+  Range (min … max):     2.7 ms …  14.7 ms    465 runs
+ 
+  Warning: Command took less than 5 ms to complete. Note that the results might be inaccurate because hyperfine can not calibrate the shell startup time much more precise than this limit. You can try to use the `-N`/`--shell=none` option to disable the shell completely.
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs. It might help to use the '--warmup' or '--prepare' options.
+ 
+Benchmark 2: st
+  Time (mean ± σ):      52.4 ms ±   4.1 ms    [User: 36.9 ms, System: 8.3 ms]
+  Range (min … max):    48.6 ms …  69.0 ms    51 runs
+ 
+  Warning: Ignoring non-zero exit code.
+ 
+Benchmark 3: xterm
+  Time (mean ± σ):      26.1 ms ±   2.8 ms    [User: 12.1 ms, System: 4.4 ms]
+  Range (min … max):    20.7 ms …  34.6 ms    126 runs
+ 
+Benchmark 4: alacritty
+  Time (mean ± σ):     136.0 ms ±   6.7 ms    [User: 74.0 ms, System: 29.3 ms]
+  Range (min … max):   130.7 ms … 166.5 ms    30 runs
+ 
+Benchmark 5: ghostty
+  Time (mean ± σ):     492.1 ms ±  21.4 ms    [User: 406.4 ms, System: 54.6 ms]
+  Range (min … max):   451.6 ms … 531.5 ms    30 runs
+ 
+Summary
+  zt ran
+    4.63 ± 1.30 times faster than xterm
+    9.27 ± 2.51 times faster than st
+   24.09 ± 6.36 times faster than alacritty
+   87.15 ± 22.92 times faster than ghostty

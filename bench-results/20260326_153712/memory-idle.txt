@@ -1,0 +1,7 @@
+zt                 4852       2623
+foot              24020      10753
+kitty            185468     104579
+st                28744      14725
+xterm             11204       4483
+alacritty        157968      87811
+ghostty            DIED          -

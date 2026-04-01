@@ -1,0 +1,7 @@
+zt                .0800s       6184
+foot              .1420s      26404
+kitty             .3860s     196708
+st                .1900s      31100
+xterm             .2080s      13684
+alacritty         .2740s     185956
+ghostty          1.0980s     311696

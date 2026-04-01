@@ -1,0 +1,53 @@
+FROM archlinux:latest
+
+# Install zt build deps + benchmark targets + tools
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+    zig \
+    xorg-server-xvfb \
+    xorg-xdpyinfo \
+    libxcb \
+    xcb-util \
+    xcb-util-keysyms \
+    xcb-imdkit \
+    libxkbcommon \
+    libxkbcommon-x11 \
+    xterm \
+    kitty \
+    alacritty \
+    ghostty \
+    hyperfine \
+    time \
+    python \
+    coreutils \
+    procps-ng \
+    util-linux \
+    bc \
+    mesa \
+    && pacman -Scc --noconfirm
+
+# Build st from source (not in official repos)
+RUN pacman -S --noconfirm base-devel libxft git && \
+    git clone https://git.suckless.org/st /tmp/st && \
+    cd /tmp/st && make clean install && \
+    rm -rf /tmp/st && \
+    pacman -Scc --noconfirm
+
+WORKDIR /zt
+COPY . /zt/
+
+# Build zt release
+RUN zig build -Dbackend=x11 -Doptimize=ReleaseFast && \
+    cp zig-out/bin/zt /usr/local/bin/zt
+
+# Generate benchmark workloads
+RUN python -c "\
+import random, string; \
+[print(''.join(random.choices(string.ascii_letters + string.digits, k=80))) for _ in range(60000)]" \
+    > /tmp/bench-dense.txt
+
+# Benchmark script
+COPY bench.sh /bench.sh
+RUN chmod +x /bench.sh
+
+CMD ["/bench.sh"]

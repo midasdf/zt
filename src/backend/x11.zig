@@ -800,6 +800,11 @@ pub const X11Backend = struct {
                     }
                 }
 
+                // Suppress IME toggle keys (Shift+Space) — don't produce text
+                if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt) {
+                    return null;
+                }
+
                 // Special keys (Enter, Backspace, arrows, Fn...) → KeyEvent for escape sequence handling
                 if (isSpecialKey(evdev_keycode)) {
                     return .{ .key = .{
