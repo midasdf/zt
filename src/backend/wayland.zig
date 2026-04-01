@@ -61,6 +61,24 @@ pub const ResizeEvent = struct {
 // ============================================================================
 
 const EPOLL_TAG_WAYLAND: u32 = 0;
+
+/// Block until the Wayland socket has data available for reading.
+/// Used during init where we must wait for compositor responses on
+/// a non-blocking socket.  Timeout of 5 seconds prevents hanging forever.
+fn waitForSocket(epoll_fd: posix.fd_t) !void {
+    var events: [1]linux.epoll_event = undefined;
+    while (true) {
+        const rc = linux.epoll_wait(epoll_fd, &events, 1, 5000);
+        const n: isize = @bitCast(rc);
+        if (n < 0) {
+            const err: u32 = @intCast(-n);
+            if (err == @intFromEnum(posix.E.INTR)) continue;
+            return error.EpollWaitFailed;
+        }
+        if (n == 0) return error.InitTimeout;
+        return; // data available
+    }
+}
 const EPOLL_TAG_REPEAT: u32 = 1;
 const EPOLL_TAG_CLIPBOARD: u32 = 2;
 
@@ -120,6 +138,9 @@ pub const WaylandBackend = struct {
     // Clipboard
     clipboard: clipboard_mod.ClipboardState = .{},
 
+    // Seat capabilities captured during init (processed in postInit)
+    init_seat_caps: u32 = 0,
+
     pub fn init() !Self {
         // 1. Connect to Wayland compositor
         var conn = try wire.Connection.connect();
@@ -151,7 +172,11 @@ pub const WaylandBackend = struct {
 
         // Event loop to receive registry globals
         while (true) {
-            _ = try conn.recvEvents();
+            try waitForSocket(internal_epoll_fd);
+            _ = conn.recvEvents() catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
             while (conn.nextEvent()) |header| {
                 const payload = conn.consumeEvent(header.size);
                 if (header.object_id == 1) {
@@ -180,12 +205,16 @@ pub const WaylandBackend = struct {
 
         var sync_done = false;
         while (!sync_done) {
-            _ = try conn.recvEvents();
+            try waitForSocket(internal_epoll_fd);
+            _ = conn.recvEvents() catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
             while (conn.nextEvent()) |header| {
                 const payload = conn.consumeEvent(header.size);
                 if (header.object_id == sync_callback_id and header.opcode == core.WL_CALLBACK_EVENT_DONE) {
                     sync_done = true;
-                    conn.id_alloc.release(sync_callback_id);
+                    // Don't release during init — reused IDs can race with compositor's delete_id
                 } else if (header.object_id == registry_id) {
                     if (header.opcode == core.WL_REGISTRY_EVENT_GLOBAL) {
                         core.handleRegistryGlobal(&globals, payload);
@@ -215,24 +244,33 @@ pub const WaylandBackend = struct {
             try conn.flush();
         }
 
+        // Track input devices acquired during init
         // 8. Receive wl_shm.format events and verify ARGB8888 support
+        // Also capture seat capabilities (sent once after bind, must not be missed)
+        var seat_caps: u32 = 0;
         sync_callback_id = try core.sync(&conn);
         try conn.flush();
 
         sync_done = false;
         while (!sync_done) {
-            _ = try conn.recvEvents();
+            try waitForSocket(internal_epoll_fd);
+            _ = conn.recvEvents() catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
             while (conn.nextEvent()) |header| {
                 const payload = conn.consumeEvent(header.size);
                 if (header.object_id == sync_callback_id and header.opcode == core.WL_CALLBACK_EVENT_DONE) {
                     sync_done = true;
-                    conn.id_alloc.release(sync_callback_id);
                 } else if (header.object_id == globals.shm and header.opcode == core.WL_SHM_EVENT_FORMAT) {
                     var pos: usize = 0;
                     const format = wire.getUint(payload, &pos);
                     if (format == core.SHM_FORMAT_ARGB8888) {
                         globals.argb8888_supported = true;
                     }
+                } else if (globals.seat != 0 and header.object_id == globals.seat and header.opcode == seat_mod.WL_SEAT_EVENT_CAPABILITIES) {
+                    var pos: usize = 0;
+                    seat_caps = wire.getUint(payload, &pos);
                 } else if (header.object_id == 1) {
                     if (header.opcode == core.WL_DISPLAY_EVENT_ERROR) {
                         return core.handleDisplayError(payload);
@@ -276,7 +314,11 @@ pub const WaylandBackend = struct {
         var focused = false;
 
         while (!got_configure) {
-            _ = try conn.recvEvents();
+            try waitForSocket(internal_epoll_fd);
+            _ = conn.recvEvents() catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
             while (conn.nextEvent()) |header| {
                 const payload = conn.consumeEvent(header.size);
                 if (header.object_id == toplevel_id and header.opcode == xdg_shell.XDG_TOPLEVEL_EVENT_CONFIGURE) {
@@ -294,6 +336,9 @@ pub const WaylandBackend = struct {
                     var pos: usize = 0;
                     const serial = wire.getUint(payload, &pos);
                     try xdg_shell.pong(&conn, globals.xdg_wm_base, serial);
+                } else if (globals.seat != 0 and header.object_id == globals.seat and header.opcode == seat_mod.WL_SEAT_EVENT_CAPABILITIES) {
+                    var pos: usize = 0;
+                    seat_caps = wire.getUint(payload, &pos);
                 } else if (header.object_id == 1) {
                     if (header.opcode == core.WL_DISPLAY_EVENT_ERROR) {
                         return core.handleDisplayError(payload);
@@ -310,6 +355,20 @@ pub const WaylandBackend = struct {
 
         // 15. Create SHM buffers with final dimensions
         var shm_buffers = try core.createShmBuffers(&conn, &globals, conf_width, conf_height);
+
+        // 15b. Fill both SHM buffers with opaque background (ARGB 0xFF000000)
+        //      mmap returns zeroed memory → alpha=0 → transparent on Wayland compositors
+        {
+            const render = @import("../render.zig");
+            const default_bg = render.palette[config.default_bg];
+            const bg_packed = [4]u8{ default_bg.b, default_bg.g, default_bg.r, 0xFF };
+            const total_pixels = @as(usize, conf_width) * @as(usize, conf_height);
+            for (0..2) |page| {
+                const offset = page * shm_buffers.page_size;
+                const page_buf: [*][4]u8 = @ptrCast(shm_buffers.data.ptr + offset);
+                @memset(page_buf[0..total_pixels], bg_packed);
+            }
+        }
 
         // 16. Set buffer scale
         try core.surfaceSetBufferScale(&conn, surface_id, @intCast(config.scale));
@@ -341,6 +400,7 @@ pub const WaylandBackend = struct {
             .focused = focused,
             .was_focused = focused,
             .clipboard = clipboard,
+            .init_seat_caps = seat_caps,
         };
     }
 
@@ -361,6 +421,94 @@ pub const WaylandBackend = struct {
     pub fn postInit(self: *Self) void {
         // Initialize xkbcommon context for keyboard input
         self.keyboard = seat_mod.KeyboardState.init();
+
+        // Use seat capabilities captured during init to bind keyboard/pointer.
+        // The capabilities event is sent once after wl_seat.bind and was consumed
+        // (but saved) during init's sync loops.
+        const caps = self.init_seat_caps;
+        if (self.globals.seat == 0 or caps == 0) return;
+
+        if (caps & seat_mod.CAPABILITY_KEYBOARD != 0) {
+            self.keyboard_id = seat_mod.getKeyboard(&self.conn, self.globals.seat) catch 0;
+        }
+        if (caps & seat_mod.CAPABILITY_POINTER != 0) {
+            self.pointer_id = seat_mod.getPointer(&self.conn, self.globals.seat) catch 0;
+            if (self.pointer_id != 0 and self.globals.cursor_shape_manager != 0) {
+                self.cursor_shape_device_id = seat_mod.getCursorShapeDevice(&self.conn, self.globals.cursor_shape_manager, self.pointer_id) catch 0;
+            }
+        }
+        if (self.globals.text_input_manager != 0) {
+            self.text_input.id = text_input_mod.getTextInput(&self.conn, self.globals.text_input_manager, self.globals.seat) catch 0;
+        }
+        self.conn.flush() catch return;
+
+        // Sync round-trip to drain keyboard events (keymap fd, repeat_info)
+        if (self.keyboard_id == 0) return;
+
+        const sync_id = core.sync(&self.conn) catch return;
+        self.conn.flush() catch return;
+
+        var done = false;
+        while (!done) {
+            waitForSocket(self.internal_epoll_fd) catch return;
+            _ = self.conn.recvEvents() catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return,
+            };
+            while (self.conn.nextEvent()) |header| {
+                const payload = self.conn.consumeEvent(header.size);
+                if (header.object_id == sync_id and header.opcode == core.WL_CALLBACK_EVENT_DONE) {
+                    done = true;
+                    self.conn.id_alloc.release(sync_id);
+                } else if (header.object_id == self.keyboard_id) {
+                    if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_KEYMAP) {
+                        var pos: usize = 0;
+                        _ = wire.getUint(payload, &pos);
+                        const size = wire.getUint(payload, &pos);
+                        const fd = self.conn.consumeFd() orelse continue;
+                        self.keyboard.handleKeymap(fd, size);
+                    } else if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_REPEAT_INFO) {
+                        var pos: usize = 0;
+                        const rate = wire.getInt(payload, &pos);
+                        const delay = wire.getInt(payload, &pos);
+                        self.keyboard.repeat_rate = rate;
+                        self.keyboard.repeat_delay = delay;
+                    } else if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_ENTER) {
+                        var pos: usize = 0;
+                        const serial = wire.getUint(payload, &pos);
+                        _ = wire.getUint(payload, &pos); // surface
+                        _ = wire.getArray(payload, &pos); // keys
+                        self.keyboard.focused = true;
+                        self.keyboard.last_serial = serial;
+                        self.focused = true;
+                        // Enable text input if available
+                        if (self.text_input.id != 0) {
+                            text_input_mod.enable(&self.conn, self.text_input.id) catch {};
+                            text_input_mod.setContentType(&self.conn, self.text_input.id, 0, 0) catch {};
+                            text_input_mod.commit(&self.conn, self.text_input.id) catch {};
+                            self.text_input.enabled = true;
+                            self.conn.flush() catch {};
+                        }
+                    } else if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_MODIFIERS) {
+                        var pos: usize = 0;
+                        _ = wire.getUint(payload, &pos); // serial
+                        const depressed = wire.getUint(payload, &pos);
+                        const latched = wire.getUint(payload, &pos);
+                        const locked = wire.getUint(payload, &pos);
+                        const group = wire.getUint(payload, &pos);
+                        self.keyboard.handleModifiers(depressed, latched, locked, group);
+                    }
+                } else if (self.text_input.id != 0 and header.object_id == self.text_input.id) {
+                    // Handle text_input events during postInit sync
+                    self.dispatchTextInputEvent(header.opcode, payload);
+                } else if (header.object_id == 1) {
+                    if (header.opcode == core.WL_DISPLAY_EVENT_ERROR) {
+                        core.handleDisplayError(payload) catch {};
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     // ========================================================================
@@ -480,7 +628,7 @@ pub const WaylandBackend = struct {
     // ========================================================================
 
     pub fn getFd(self: *Self) ?posix.fd_t {
-        return self.internal_epoll_fd;
+        return self.conn.fd;
     }
 
     // ========================================================================
@@ -930,6 +1078,8 @@ pub const WaylandBackend = struct {
     /// Handle zwp_text_input_v3 events.
     fn dispatchTextInputEvent(self: *Self, opcode: u16, payload: []const u8) void {
         switch (opcode) {
+            text_input_mod.ZWP_TEXT_INPUT_EVENT_ENTER => {},
+            text_input_mod.ZWP_TEXT_INPUT_EVENT_LEAVE => {},
             text_input_mod.ZWP_TEXT_INPUT_EVENT_PREEDIT_STRING => {
                 text_input_mod.handlePreeditString(&self.text_input, payload);
             },

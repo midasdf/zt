@@ -385,7 +385,7 @@ pub fn createShmBuffers(
     };
     for (buf_ids, 0..) |buf_id, i| {
         const offset: i32 = @intCast(@as(usize, i) * page_size);
-        var payload: [20]u8 = undefined;
+        var payload: [24]u8 = undefined;
         var pos: usize = 0;
         wire.putUint(&payload, &pos, buf_id);
         wire.putInt(&payload, &pos, offset);

@@ -11,13 +11,18 @@ const wire = @import("wire.zig");
 // ============================================================================
 
 // zwp_text_input_manager_v3 requests
-pub const ZWP_TEXT_INPUT_MANAGER_GET_TEXT_INPUT: u16 = 0;
+pub const ZWP_TEXT_INPUT_MANAGER_DESTROY: u16 = 0;
+pub const ZWP_TEXT_INPUT_MANAGER_GET_TEXT_INPUT: u16 = 1;
 
 // zwp_text_input_v3 requests
-pub const ZWP_TEXT_INPUT_ENABLE: u16 = 0;
-pub const ZWP_TEXT_INPUT_DISABLE: u16 = 1;
-pub const ZWP_TEXT_INPUT_SET_CONTENT_TYPE: u16 = 4;
-pub const ZWP_TEXT_INPUT_COMMIT: u16 = 6;
+pub const ZWP_TEXT_INPUT_DESTROY: u16 = 0;
+pub const ZWP_TEXT_INPUT_ENABLE: u16 = 1;
+pub const ZWP_TEXT_INPUT_DISABLE: u16 = 2;
+pub const ZWP_TEXT_INPUT_SET_SURROUNDING_TEXT: u16 = 3;
+pub const ZWP_TEXT_INPUT_SET_TEXT_CHANGE_CAUSE: u16 = 4;
+pub const ZWP_TEXT_INPUT_SET_CONTENT_TYPE: u16 = 5;
+pub const ZWP_TEXT_INPUT_SET_CURSOR_RECTANGLE: u16 = 6;
+pub const ZWP_TEXT_INPUT_COMMIT: u16 = 7;
 
 // zwp_text_input_v3 events
 pub const ZWP_TEXT_INPUT_EVENT_ENTER: u16 = 0;
