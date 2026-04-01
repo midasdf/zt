@@ -179,10 +179,11 @@ fn kqueueAddTimer(kq: i32, ident: usize, interval_ms: isize) !void {
 }
 
 fn kqueueSetPtyWrite(kq: i32, pty_fd: std.posix.fd_t, enable: bool) void {
+    const flags: u16 = std.c.EV.ADD | if (enable) @as(u16, std.c.EV.ENABLE) else @as(u16, std.c.EV.DISABLE);
     const changelist = [1]std.posix.Kevent{.{
         .ident = @intCast(pty_fd),
         .filter = std.c.EVFILT.WRITE,
-        .flags = std.c.EV.ADD | if (enable) std.c.EV.ENABLE else std.c.EV.DISABLE,
+        .flags = flags,
         .fflags = 0,
         .data = 0,
         .udata = @intFromEnum(KqueueTag.pty),
@@ -285,7 +286,8 @@ const SIG_USR1 = if (is_linux) linux.SIG.USR1 else std.c.SIG.USR1;
 const SIG_USR2 = if (is_linux) linux.SIG.USR2 else std.c.SIG.USR2;
 
 fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend) bool {
-    const signo: u32 = if (signo_override) |s| s else blk: {
+    const signo: u32 = signo_override orelse blk: {
+        if (!is_linux) return true; // macOS always provides signo_override via kqueue
         var siginfo: linux.signalfd_siginfo = undefined;
         _ = std.posix.read(sig_fd, std.mem.asBytes(&siginfo)) catch return true;
         break :blk siginfo.signo;
@@ -641,10 +643,11 @@ pub fn main() !void {
             }
         } else {
             // ---- macOS kqueue dispatch ----
-            const timeout_spec: ?std.posix.timespec = if (event_timeout < 0) null else .{
+            var timeout_buf: std.posix.timespec = .{
                 .sec = @divFloor(@as(isize, event_timeout), 1000),
                 .nsec = @rem(@as(isize, event_timeout), 1000) * 1_000_000,
             };
+            const timeout_spec: ?*const std.posix.timespec = if (event_timeout < 0) null else &timeout_buf;
             var kevents: [16]std.posix.Kevent = undefined;
             const n = std.posix.kevent(evloop_fd, &.{}, &kevents, timeout_spec) catch 0;
 

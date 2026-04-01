@@ -122,6 +122,12 @@ fn msgSend_void_id(target: id, _sel: SEL, arg: id) void {
     f(target, _sel, arg);
 }
 
+// id, ?id → void (for methods that accept nil, e.g. makeKeyAndOrderFront:)
+fn msgSend_void_optid(target: id, _sel: SEL, arg: ?id) void {
+    const f: *const fn (id, SEL, ?id) callconv(.c) void = @ptrCast(&objc_msgSend);
+    f(target, _sel, arg);
+}
+
 // id, id → id
 fn msgSend_id_id(target: id, _sel: SEL, arg: id) id {
     const f: *const fn (id, SEL, id) callconv(.c) id = @ptrCast(&objc_msgSend);
@@ -378,7 +384,7 @@ pub const MacosBackend = struct {
         msgSend_void_id(window, sel("setTitle:"), title_str);
 
         // 10. Show window
-        msgSend_void_id(window, sel("makeKeyAndOrderFront:"), @as(id, @ptrFromInt(0)));
+        msgSend_void_optid(window, sel("makeKeyAndOrderFront:"), null);
         msgSend_void_bool(app, sel("activateIgnoringOtherApps:"), YES);
 
         // NOTE: The backend pointer ivar is set in postInit() after the struct
@@ -581,35 +587,35 @@ fn registerZTViewClass() ?id {
     }
 
     // --- NSView overrides ---
-    _ = class_addMethod(new_class, sel("drawRect:"), @ptrCast(&ztDrawRect), "v@:{CGRect=dddd}");
-    _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @ptrCast(&ztAcceptsFirstResponder), "c@:");
-    _ = class_addMethod(new_class, sel("canBecomeKeyView"), @ptrCast(&ztCanBecomeKeyView), "c@:");
+    _ = class_addMethod(new_class, sel("drawRect:"), @constCast(@ptrCast(&ztDrawRect)), "v@:{CGRect=dddd}");
+    _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @constCast(@ptrCast(&ztAcceptsFirstResponder)), "c@:");
+    _ = class_addMethod(new_class, sel("canBecomeKeyView"), @constCast(@ptrCast(&ztCanBecomeKeyView)), "c@:");
 
     // --- Keyboard ---
-    _ = class_addMethod(new_class, sel("keyDown:"), @ptrCast(&ztKeyDown), "v@:@");
-    _ = class_addMethod(new_class, sel("flagsChanged:"), @ptrCast(&ztFlagsChanged), "v@:@");
+    _ = class_addMethod(new_class, sel("keyDown:"), @constCast(@ptrCast(&ztKeyDown)), "v@:@");
+    _ = class_addMethod(new_class, sel("flagsChanged:"), @constCast(@ptrCast(&ztFlagsChanged)), "v@:@");
 
     // --- NSTextInputClient ---
-    _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @ptrCast(&ztInsertText), "v@:@{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("hasMarkedText"), @ptrCast(&ztHasMarkedText), "c@:");
-    _ = class_addMethod(new_class, sel("setMarkedText:selectedRange:replacementRange:"), @ptrCast(&ztSetMarkedText), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("unmarkText"), @ptrCast(&ztUnmarkText), "v@:");
-    _ = class_addMethod(new_class, sel("validAttributesForMarkedText"), @ptrCast(&ztValidAttributes), "@@:");
-    _ = class_addMethod(new_class, sel("firstRectForCharacterRange:actualRange:"), @ptrCast(&ztFirstRect), "{CGRect=dddd}@:{_NSRange=QQ}^{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("characterIndexForPoint:"), @ptrCast(&ztCharacterIndex), "Q@:{CGPoint=dd}");
-    _ = class_addMethod(new_class, sel("attributedSubstringForProposedRange:actualRange:"), @ptrCast(&ztAttributedSubstring), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("markedRange"), @ptrCast(&ztMarkedRange), "{_NSRange=QQ}@:");
-    _ = class_addMethod(new_class, sel("selectedRange"), @ptrCast(&ztSelectedRange), "{_NSRange=QQ}@:");
+    _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @constCast(@ptrCast(&ztInsertText)), "v@:@{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("hasMarkedText"), @constCast(@ptrCast(&ztHasMarkedText)), "c@:");
+    _ = class_addMethod(new_class, sel("setMarkedText:selectedRange:replacementRange:"), @constCast(@ptrCast(&ztSetMarkedText)), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("unmarkText"), @constCast(@ptrCast(&ztUnmarkText)), "v@:");
+    _ = class_addMethod(new_class, sel("validAttributesForMarkedText"), @constCast(@ptrCast(&ztValidAttributes)), "@@:");
+    _ = class_addMethod(new_class, sel("firstRectForCharacterRange:actualRange:"), @constCast(@ptrCast(&ztFirstRect)), "{CGRect=dddd}@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("characterIndexForPoint:"), @constCast(@ptrCast(&ztCharacterIndex)), "Q@:{CGPoint=dd}");
+    _ = class_addMethod(new_class, sel("attributedSubstringForProposedRange:actualRange:"), @constCast(@ptrCast(&ztAttributedSubstring)), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("markedRange"), @constCast(@ptrCast(&ztMarkedRange)), "{_NSRange=QQ}@:");
+    _ = class_addMethod(new_class, sel("selectedRange"), @constCast(@ptrCast(&ztSelectedRange)), "{_NSRange=QQ}@:");
 
     // --- NSWindowDelegate ---
-    _ = class_addMethod(new_class, sel("windowShouldClose:"), @ptrCast(&ztWindowShouldClose), "c@:@");
-    _ = class_addMethod(new_class, sel("windowDidBecomeKey:"), @ptrCast(&ztWindowDidBecomeKey), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidResignKey:"), @ptrCast(&ztWindowDidResignKey), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidResize:"), @ptrCast(&ztWindowDidResize), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidChangeOcclusionState:"), @ptrCast(&ztWindowDidChangeOcclusion), "v@:@");
+    _ = class_addMethod(new_class, sel("windowShouldClose:"), @constCast(@ptrCast(&ztWindowShouldClose)), "c@:@");
+    _ = class_addMethod(new_class, sel("windowDidBecomeKey:"), @constCast(@ptrCast(&ztWindowDidBecomeKey)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidResignKey:"), @constCast(@ptrCast(&ztWindowDidResignKey)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidResize:"), @constCast(@ptrCast(&ztWindowDidResize)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidChangeOcclusionState:"), @constCast(@ptrCast(&ztWindowDidChangeOcclusion)), "v@:@");
 
     // --- NSView backing properties ---
-    _ = class_addMethod(new_class, sel("viewDidChangeBackingProperties"), @ptrCast(&ztViewDidChangeBackingProperties), "v@:");
+    _ = class_addMethod(new_class, sel("viewDidChangeBackingProperties"), @constCast(@ptrCast(&ztViewDidChangeBackingProperties)), "v@:");
 
     objc_registerClassPair(new_class);
     zt_view_class_registered = new_class;
