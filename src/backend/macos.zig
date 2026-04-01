@@ -597,6 +597,11 @@ fn registerZTViewClass() ?id {
     // --- Keyboard ---
     _ = class_addMethod(new_class, sel("keyDown:"), @constCast(@ptrCast(&ztKeyDown)), "v@:@");
     _ = class_addMethod(new_class, sel("flagsChanged:"), @constCast(@ptrCast(&ztFlagsChanged)), "v@:@");
+    // doCommandBySelector: is called by interpretKeyEvents: for non-text
+    // keys (Enter, Tab, arrows, Escape, etc.). Without this, the default
+    // NSView implementation calls NSBeep() for every unhandled command.
+    // We handle all keys through the evdev key event path, so this is a no-op.
+    _ = class_addMethod(new_class, sel("doCommandBySelector:"), @constCast(@ptrCast(&ztDoCommandBySelector)), "v@::");
 
     // --- NSTextInputClient ---
     _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @constCast(@ptrCast(&ztInsertText)), "v@:@{_NSRange=QQ}");
@@ -653,6 +658,12 @@ fn ztAcceptsFirstResponder(_: id, _: SEL) callconv(.c) BOOL {
 
 fn ztCanBecomeKeyView(_: id, _: SEL) callconv(.c) BOOL {
     return YES;
+}
+
+fn ztDoCommandBySelector(_: id, _: SEL, _: SEL) callconv(.c) void {
+    // No-op: all keys are handled through the evdev key event path.
+    // Without this, NSView's default calls NSBeep() for every
+    // unhandled command selector (insertNewline:, insertTab:, etc.).
 }
 
 fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
@@ -742,9 +753,12 @@ fn ztInsertText(self_view: id, _: SEL, text_obj: id, _: NSRange) callconv(.c) vo
     const len = std.mem.len(cstr);
     if (len == 0) return;
 
-    // If single ASCII character that would be handled by keyDown, skip
-    // to avoid duplicates (interpretKeyEvents already pushed a key event).
-    if (len == 1 and cstr[0] >= 0x20 and cstr[0] < 0x7F) return;
+    // Skip all single-byte ASCII — these are already handled by the key
+    // event path (macosToEvdev → translateKey). Without this guard, keys
+    // like Enter (0x0D) and Tab (0x09) produce duplicates: one from the
+    // key event and one from insertText. Only let through multi-byte
+    // sequences (IME-composed text, dead key output, etc.).
+    if (len == 1 and cstr[0] < 0x80) return;
 
     var text_event: TextEvent = .{};
     const copy_len = @min(len, text_event.data.len);
