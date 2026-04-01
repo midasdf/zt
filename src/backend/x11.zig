@@ -728,6 +728,11 @@ pub const X11Backend = struct {
     }
 
     pub fn pollEvents(self: *Self) ?Event {
+        // Check for X connection errors (embedded parent destroyed, etc.)
+        if (c.xcb_connection_has_error(self.connection) != 0) {
+            return .close;
+        }
+
         // First, check if XIM callbacks produced events
         if (self.has_committed) {
             self.has_committed = false;
@@ -979,10 +984,36 @@ pub const X11Backend = struct {
             },
             c.XCB_CLIENT_MESSAGE => {
                 const msg: *c.xcb_client_message_event_t = @ptrCast(@alignCast(event));
+                // XEmbed messages: type == _XEMBED, code in data32[1]
+                if (self.xembed_atom != 0 and msg.*.@"type" == self.xembed_atom) {
+                    const xembed_msg = msg.*.data.data32[1];
+                    switch (xembed_msg) {
+                        0 => { // XEMBED_EMBEDDED_NOTIFY
+                            self.embedder_window = msg.*.data.data32[3];
+                            self.xembed_version = 0;
+                        },
+                        1 => { // XEMBED_WINDOW_ACTIVATE
+                            self.xembed_active = true;
+                        },
+                        2 => { // XEMBED_WINDOW_DEACTIVATE
+                            self.xembed_active = false;
+                        },
+                        4 => { // XEMBED_FOCUS_IN
+                            return .focus_in;
+                        },
+                        5 => { // XEMBED_FOCUS_OUT
+                            return .focus_out;
+                        },
+                        10, 11 => {}, // MODALITY_ON/OFF — no-op
+                        else => {},
+                    }
+                    continue;
+                }
+                // WM_DELETE_WINDOW (top-level mode)
                 if (msg.*.data.data32[0] == self.wm_delete_atom) {
                     return .close;
                 }
-                continue; // Non-delete client message — skip
+                continue;
             },
             c.XCB_DESTROY_NOTIFY => return .close,
             c.XCB_FOCUS_IN => return .focus_in,
