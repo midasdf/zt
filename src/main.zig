@@ -326,12 +326,25 @@ pub fn main() !void {
 
     // 0. Parse command-line arguments
     var exec_argv: ?[]const [:0]const u8 = null;
+    var embed_window: u32 = 0;
     const args = std.process.argsAlloc(allocator) catch null;
     defer if (args) |a| std.process.argsFree(allocator, a);
     if (args) |argv| {
         var i: usize = 1; // skip argv[0]
         while (i < argv.len) : (i += 1) {
-            if (std.mem.eql(u8, argv[i], "-e")) {
+            if (std.mem.eql(u8, argv[i], "-w")) {
+                if (i + 1 >= argv.len) {
+                    const stderr_msg = "zt: -w requires a window id\n";
+                    _ = std.posix.write(2, stderr_msg) catch {};
+                    std.process.exit(1);
+                }
+                i += 1;
+                embed_window = std.fmt.parseInt(u32, argv[i], 10) catch {
+                    const stderr_msg = "zt: -w requires a numeric window id\n";
+                    _ = std.posix.write(2, stderr_msg) catch {};
+                    std.process.exit(1);
+                };
+            } else if (std.mem.eql(u8, argv[i], "-e")) {
                 if (i + 1 >= argv.len) {
                     const stderr_msg = "zt: -e requires a command\n";
                     _ = std.posix.write(2, stderr_msg) catch {};
@@ -347,7 +360,8 @@ pub fn main() !void {
     // 1. Init backend
     var backend = switch (config.backend) {
         .fbdev => try Backend.init(allocator),
-        .x11, .wayland, .macos => try Backend.init(),
+        .x11 => try Backend.init(embed_window),
+        .wayland, .macos => try Backend.init(),
     };
     defer backend.deinit();
 
