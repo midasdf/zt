@@ -643,11 +643,15 @@ pub fn main() !void {
             }
         } else {
             // ---- macOS kqueue dispatch ----
+            // On macOS, we must pump the Cocoa run loop regularly for window
+            // display and event delivery. Never block indefinitely — cap at
+            // 16ms (~60hz) so the UI stays responsive even when idle.
+            const macos_timeout: i32 = if (event_timeout < 0) 16 else @min(event_timeout, 16);
             var timeout_buf: std.posix.timespec = .{
-                .sec = @divFloor(@as(isize, event_timeout), 1000),
-                .nsec = @rem(@as(isize, event_timeout), 1000) * 1_000_000,
+                .sec = @divFloor(@as(isize, macos_timeout), 1000),
+                .nsec = @rem(@as(isize, macos_timeout), 1000) * 1_000_000,
             };
-            const timeout_spec: ?*const std.posix.timespec = if (event_timeout < 0) null else &timeout_buf;
+            const timeout_spec: ?*const std.posix.timespec = &timeout_buf;
             var kevents: [16]std.posix.Kevent = undefined;
             const n = std.posix.kevent(evloop_fd, &.{}, &kevents, timeout_spec) catch 0;
 
@@ -758,6 +762,85 @@ pub fn main() !void {
                 } else if (kev.filter == std.c.EVFILT.TIMER) {
                     cursor_visible_blink = !cursor_visible_blink;
                     term.markDirty(term.cursor_x, term.cursor_y);
+                }
+            }
+
+            // Always pump Cocoa events, even if kqueue returned nothing.
+            // The Cocoa run loop must be serviced for window display, input
+            // delivery, and system event handling. Without this, the window
+            // never appears because Cocoa callbacks never fire.
+            if (config.backend == .macos) {
+                while (backend.pollEvents()) |event| {
+                    switch (event) {
+                        .key => |key_ev| {
+                            if (key_ev.pressed) {
+                                const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
+                                if (bytes.len > 0) {
+                                    if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
+                                        running = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        },
+                        .text => |text_ev| {
+                            const text = text_ev.slice();
+                            if (text.len > 0) {
+                                if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
+                                    running = false;
+                                    break;
+                                }
+                            }
+                        },
+                        .paste => |paste_ev| {
+                            const text = paste_ev.slice();
+                            if (text.len > 0) {
+                                if (!ptyBufferedWrite(&pty, text, &write_buf, &write_pending, evloop_fd)) {
+                                    running = false;
+                                    break;
+                                }
+                            }
+                        },
+                        .resize => |rsz| {
+                            const new_cols = rsz.width / config.cell_width;
+                            const new_rows = rsz.height / config.cell_height;
+                            if (new_cols > 0 and new_rows > 0) {
+                                term.resize(new_cols, new_rows) catch |err| {
+                                    std.log.err("term resize: {}", .{err});
+                                };
+                                pty.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
+                                    std.log.err("pty resize: {}", .{err});
+                                };
+                                backend.resize(rsz.width, rsz.height) catch |err| {
+                                    std.log.err("backend resize: {}", .{err});
+                                };
+                            }
+                        },
+                        .expose => {
+                            const total = @as(usize, term.cols) * @as(usize, term.rows);
+                            term.markDirtyRange(.{ .start = 0, .end = total });
+                            term.all_dirty = true;
+                        },
+                        .focus_in => {
+                            if (term.focus_events) {
+                                if (!ptyBufferedWrite(&pty, "\x1b[I", &write_buf, &write_pending, evloop_fd)) {
+                                    running = false;
+                                    break;
+                                }
+                            }
+                        },
+                        .focus_out => {
+                            if (term.focus_events) {
+                                if (!ptyBufferedWrite(&pty, "\x1b[O", &write_buf, &write_pending, evloop_fd)) {
+                                    running = false;
+                                    break;
+                                }
+                            }
+                        },
+                        .close => {
+                            running = false;
+                        },
+                    }
                 }
             }
         }

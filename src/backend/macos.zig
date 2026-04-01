@@ -383,8 +383,11 @@ pub const MacosBackend = struct {
         const title_str = createNSString("zt");
         msgSend_void_id(window, sel("setTitle:"), title_str);
 
-        // 10. Show window
+        // 10. Show window and activate app
         msgSend_void_optid(window, sel("makeKeyAndOrderFront:"), null);
+        // finishLaunching is required for non-bundle apps to properly
+        // initialize the window server connection and menu bar.
+        msgSend_void(app, sel("finishLaunching"));
         msgSend_void_bool(app, sel("activateIgnoringOtherApps:"), YES);
 
         // NOTE: The backend pointer ivar is set in postInit() after the struct
