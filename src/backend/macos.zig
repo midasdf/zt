@@ -123,7 +123,7 @@ fn msgSend_void_id(target: id, _sel: SEL, arg: id) void {
 }
 
 // id, ?id → void (for methods that accept nil, e.g. makeKeyAndOrderFront:)
-fn msgSend_void_optid(target: id, _sel: SEL, arg: ?id) void { macos
+fn msgSend_void_optid(target: id, _sel: SEL, arg: ?id) void {
     const f: *const fn (id, SEL, ?id) callconv(.c) void = @ptrCast(&objc_msgSend);
     f(target, _sel, arg);
 }
@@ -387,7 +387,7 @@ pub const MacosBackend = struct {
         msgSend_void_optid(window, sel("makeKeyAndOrderFront:"), null);
         // finishLaunching is required for non-bundle apps to properly
         // initialize the window server connection and menu bar.
-        msgSend_void(app, sel("finishLaunching")); macos
+        msgSend_void(app, sel("finishLaunching"));
         msgSend_void_bool(app, sel("activateIgnoringOtherApps:"), YES);
 
         // NOTE: The backend pointer ivar is set in postInit() after the struct
