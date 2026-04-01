@@ -10,7 +10,7 @@ const input_mod = @import("../input.zig");
 const id = *anyopaque;
 const SEL = *anyopaque;
 const Class = *anyopaque;
-const IMP = *anyopaque;
+const IMP = *const anyopaque;
 const BOOL = i8;
 const YES: BOOL = 1;
 const NO: BOOL = 0;
@@ -119,6 +119,12 @@ fn msgSend_void_i64(target: id, _sel: SEL, val: i64) void {
 // id, id → void
 fn msgSend_void_id(target: id, _sel: SEL, arg: id) void {
     const f: *const fn (id, SEL, id) callconv(.c) void = @ptrCast(&objc_msgSend);
+    f(target, _sel, arg);
+}
+
+// id, ?id → void (for passing nil/null sender)
+fn msgSend_void_opt_id(target: id, _sel: SEL, arg: ?id) void {
+    const f: *const fn (id, SEL, ?id) callconv(.c) void = @ptrCast(&objc_msgSend);
     f(target, _sel, arg);
 }
 
@@ -378,7 +384,7 @@ pub const MacosBackend = struct {
         msgSend_void_id(window, sel("setTitle:"), title_str);
 
         // 10. Show window
-        msgSend_void_id(window, sel("makeKeyAndOrderFront:"), @as(id, @ptrFromInt(0)));
+        msgSend_void_opt_id(window, sel("makeKeyAndOrderFront:"), null);
         msgSend_void_bool(app, sel("activateIgnoringOtherApps:"), YES);
 
         // NOTE: The backend pointer ivar is set in postInit() after the struct
