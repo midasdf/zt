@@ -195,6 +195,8 @@ pub const X11Backend = struct {
         const clipboard_cookie = c.xcb_intern_atom(connection, 0, 9, "CLIPBOARD");
         const utf8_cookie = c.xcb_intern_atom(connection, 0, 11, "UTF8_STRING");
         const paste_cookie = c.xcb_intern_atom(connection, 0, 8, "ZT_PASTE");
+        const xembed_cookie = c.xcb_intern_atom(connection, 0, 7, "_XEMBED");
+        const xembed_info_cookie = c.xcb_intern_atom(connection, 0, 12, "_XEMBED_INFO");
 
         const protocols_reply = c.xcb_intern_atom_reply(connection, protocols_cookie, null);
         defer if (protocols_reply) |r| std.c.free(r);
@@ -237,6 +239,16 @@ pub const X11Backend = struct {
         if (utf8_reply) |r| utf8_string_atom = r.*.atom;
         if (paste_reply) |r| zt_paste_atom = r.*.atom;
 
+        const xembed_reply = c.xcb_intern_atom_reply(connection, xembed_cookie, null);
+        defer if (xembed_reply) |r| std.c.free(r);
+        const xembed_info_reply = c.xcb_intern_atom_reply(connection, xembed_info_cookie, null);
+        defer if (xembed_info_reply) |r| std.c.free(r);
+
+        var xembed_atom: c.xcb_atom_t = 0;
+        var xembed_info_atom: c.xcb_atom_t = 0;
+        if (xembed_reply) |r| xembed_atom = r.*.atom;
+        if (xembed_info_reply) |r| xembed_info_atom = r.*.atom;
+
         // 7. Set up SHM (second buffer created lazily on first present)
         const buffer_size = stride * height;
         const shm_id = c.shmget(c.IPC_PRIVATE, buffer_size, c.IPC_CREAT | 0o600);
@@ -262,7 +274,25 @@ pub const X11Backend = struct {
         const gc = c.xcb_generate_id(connection);
         _ = c.xcb_create_gc(connection, gc, window, 0, null);
 
-        // 9. Map window and flush
+        // 9. Set _XEMBED_INFO property in embedded mode
+        if (embed_window != 0 and xembed_info_atom != 0) {
+            const xembed_info = [2]u32{
+                0, // version
+                1, // flags: XEMBED_MAPPED
+            };
+            _ = c.xcb_change_property(
+                connection,
+                c.XCB_PROP_MODE_REPLACE,
+                window,
+                xembed_info_atom,
+                xembed_info_atom, // type = _XEMBED_INFO (per spec)
+                32,
+                2,
+                @ptrCast(&xembed_info),
+            );
+        }
+
+        // 10. Map window and flush
         _ = c.xcb_map_window(connection, window);
         _ = c.xcb_flush(connection);
 
@@ -283,6 +313,8 @@ pub const X11Backend = struct {
             .zt_paste_atom = zt_paste_atom,
             .screen_id = screen_num,
             .embed_parent = embed_window,
+            .xembed_atom = xembed_atom,
+            .xembed_info_atom = xembed_info_atom,
         };
 
         // NOTE: XKB and XIM are initialized via postInit() after the struct
