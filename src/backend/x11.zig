@@ -554,6 +554,15 @@ pub const X11Backend = struct {
         return 4;
     }
 
+    /// Update IME candidate window position to follow the terminal cursor.
+    pub fn updateImeCursorPos(self: *Self, pixel_x: u32, pixel_y: u32) void {
+        if (self.xim) |xim| {
+            if (self.xim_connected and self.xic != 0) {
+                _ = c.xcb_xim_ext_move(xim, self.xic, @intCast(pixel_x), @intCast(pixel_y));
+            }
+        }
+    }
+
     pub fn markDirtyRows(self: *Self, y_start: u32, y_end: u32) void {
         if (y_start < self.dirty_y_min) self.dirty_y_min = y_start;
         if (y_end > self.dirty_y_max) self.dirty_y_max = y_end;

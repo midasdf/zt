@@ -868,6 +868,14 @@ pub fn main() !void {
         last_render_ns = loop_now;
         bytes_since_render = 0;
 
+        // Update IME cursor position (X11 only)
+        if (@hasDecl(Backend, "updateImeCursorPos")) {
+            backend.updateImeCursorPos(
+                term.cursor_x * config.cell_width,
+                (term.cursor_y + 1) * config.cell_height,
+            );
+        }
+
         backend.present();
         backend.flush();
     }
