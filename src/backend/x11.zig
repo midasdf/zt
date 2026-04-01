@@ -97,8 +97,15 @@ pub const X11Backend = struct {
     keyboard_initialized: bool = false, // XKB + XIM lazy init on first key
     paste_buf: PasteEvent = .{},
     screen_id: c_int = 0,
+    // XEmbed state (embedding into another window via -w)
+    embed_parent: u32 = 0,
+    xembed_atom: c.xcb_atom_t = 0,
+    xembed_info_atom: c.xcb_atom_t = 0,
+    embedder_window: u32 = 0,
+    xembed_version: u32 = 0,
+    xembed_active: bool = false,
 
-    pub fn init() !Self {
+    pub fn init(embed_window: u32) !Self {
         // 1. Connect to X server
         var screen_num: c_int = 0;
         const connection = c.xcb_connect(null, &screen_num) orelse return error.XcbConnectFailed;
@@ -118,9 +125,18 @@ pub const X11Backend = struct {
         }
         const screen = iter.data orelse return error.NoScreen;
 
-        // 3. Dimensions: 80x24 cells (standard terminal size)
-        const width: u32 = 80 * config.cell_width;
-        const height: u32 = 24 * config.cell_height;
+        // 3. Dimensions: use parent geometry if embedded, else 80x24 cells
+        var width: u32 = 80 * config.cell_width;
+        var height: u32 = 24 * config.cell_height;
+        if (embed_window != 0) {
+            const geo_cookie = c.xcb_get_geometry(connection, embed_window);
+            const geo_reply = c.xcb_get_geometry_reply(connection, geo_cookie, null);
+            if (geo_reply) |r| {
+                defer std.c.free(r);
+                width = r.*.width;
+                height = r.*.height;
+            }
+        }
         const stride: u32 = width * 4;
 
         // 4. Create window
@@ -128,13 +144,15 @@ pub const X11Backend = struct {
         const event_mask: u32 = c.XCB_EVENT_MASK_KEY_PRESS |
             c.XCB_EVENT_MASK_KEY_RELEASE |
             c.XCB_EVENT_MASK_STRUCTURE_NOTIFY |
-            c.XCB_EVENT_MASK_EXPOSURE;
+            c.XCB_EVENT_MASK_EXPOSURE |
+            c.XCB_EVENT_MASK_FOCUS_CHANGE;
+        const parent = if (embed_window != 0) embed_window else screen.*.root;
         const values = [_]u32{ 0, event_mask }; // back_pixel=black, event_mask
         _ = c.xcb_create_window(
             connection,
             c.XCB_COPY_FROM_PARENT, // depth
             window,
-            screen.*.root,
+            parent,
             0,
             0, // x, y
             @intCast(width),
@@ -146,28 +164,30 @@ pub const X11Backend = struct {
             &values,
         );
 
-        // 5. Set WM_CLASS and WM_NAME
-        _ = c.xcb_change_property(
-            connection,
-            c.XCB_PROP_MODE_REPLACE,
-            window,
-            c.XCB_ATOM_WM_NAME,
-            c.XCB_ATOM_STRING,
-            8,
-            2,
-            "zt",
-        );
-        // WM_CLASS: "zt\0zt\0" (instance\0class\0)
-        _ = c.xcb_change_property(
-            connection,
-            c.XCB_PROP_MODE_REPLACE,
-            window,
-            c.XCB_ATOM_WM_CLASS,
-            c.XCB_ATOM_STRING,
-            8,
-            6,
-            "zt\x00zt\x00",
-        );
+        // 5. Set WM_CLASS and WM_NAME (skip in embedded mode)
+        if (embed_window == 0) {
+            _ = c.xcb_change_property(
+                connection,
+                c.XCB_PROP_MODE_REPLACE,
+                window,
+                c.XCB_ATOM_WM_NAME,
+                c.XCB_ATOM_STRING,
+                8,
+                2,
+                "zt",
+            );
+            // WM_CLASS: "zt\0zt\0" (instance\0class\0)
+            _ = c.xcb_change_property(
+                connection,
+                c.XCB_PROP_MODE_REPLACE,
+                window,
+                c.XCB_ATOM_WM_CLASS,
+                c.XCB_ATOM_STRING,
+                8,
+                6,
+                "zt\x00zt\x00",
+            );
+        }
 
         // 6. Intern atoms
         const protocols_cookie = c.xcb_intern_atom(connection, 0, 12, "WM_PROTOCOLS");
@@ -186,16 +206,19 @@ pub const X11Backend = struct {
         if (protocols_reply) |pr| {
             if (delete_reply) |dr| {
                 wm_delete_atom = dr.*.atom;
-                _ = c.xcb_change_property(
-                    connection,
-                    c.XCB_PROP_MODE_REPLACE,
-                    window,
-                    pr.*.atom,
-                    c.XCB_ATOM_ATOM,
-                    32,
-                    1,
-                    @ptrCast(&dr.*.atom),
-                );
+                // Only set WM_PROTOCOLS property in top-level mode
+                if (embed_window == 0) {
+                    _ = c.xcb_change_property(
+                        connection,
+                        c.XCB_PROP_MODE_REPLACE,
+                        window,
+                        pr.*.atom,
+                        c.XCB_ATOM_ATOM,
+                        32,
+                        1,
+                        @ptrCast(&dr.*.atom),
+                    );
+                }
             }
         }
 
@@ -259,6 +282,7 @@ pub const X11Backend = struct {
             .utf8_string_atom = utf8_string_atom,
             .zt_paste_atom = zt_paste_atom,
             .screen_id = screen_num,
+            .embed_parent = embed_window,
         };
 
         // NOTE: XKB and XIM are initialized via postInit() after the struct
