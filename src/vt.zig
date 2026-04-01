@@ -184,6 +184,7 @@ pub const Parser = struct {
             return .none;
         } else if (byte == 'P') {
             // DCS — Device Control String
+            self.osc_len = 0;
             self.state = .dcs_entry;
             return .none;
         } else if (byte >= 0x20 and byte <= 0x2F) {
@@ -339,10 +340,6 @@ pub const Parser = struct {
             // BEL terminates OSC
             self.state = .ground;
             return Action{ .osc_dispatch = self.osc_buf[0..self.osc_len] };
-        } else if (byte == 0x9C) {
-            // ST (8-bit)
-            self.state = .ground;
-            return Action{ .osc_dispatch = self.osc_buf[0..self.osc_len] };
         } else if (byte == 0x1B) {
             // Could be start of ST (ESC \)
             self.esc_in_osc = true;
@@ -357,12 +354,10 @@ pub const Parser = struct {
     }
 
     fn handleDcs(self: *Parser, byte: u8) Action {
-        if (byte == 0x9C) {
-            const payload = self.osc_buf[0..self.osc_len];
-            self.osc_len = 0;
-            self.state = .ground;
-            return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
-        } else if (byte == 0x1B) {
+        // Note: 0x9C (8-bit ST) is NOT handled here because it conflicts
+        // with UTF-8 multi-byte sequences (e.g. U+2733 ✳ = E2 9C B3).
+        // Only ESC \ (7-bit ST) and BEL are used as terminators.
+        if (byte == 0x1B) {
             const payload = self.osc_buf[0..self.osc_len];
             self.osc_len = 0;
             self.state = .escape;
@@ -1417,7 +1412,7 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             69 => {},
             // Silently ignored DEC modes
             2 => { if (!set) term.vt52_mode = true; }, // DECANM reset → VT52 mode
-            0, 3, 4, 5, 8, 12, 18, 19, 38, 42, 45, 66 => {},
+            0, 3, 4, 5, 8, 12, 18, 19, 38, 42, 45, 66, 2031 => {},
             else => {
                 std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });
             },
@@ -1559,6 +1554,7 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
         'o' => term.charset = 3, // LS3 — Locking Shift 3 (activate G3)
         '=' => term.deckpam = true, // DECPAM — application keypad
         '>' => term.deckpam = false, // DECPNM — normal keypad
+        '\\' => {}, // ST — String Terminator (no-op outside string context)
         else => {
             std.log.warn("unhandled ESC: intermediate={c} final={c}", .{
                 if (esc.intermediate != 0) esc.intermediate else @as(u8, '-'),

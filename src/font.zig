@@ -351,3 +351,36 @@ test "FontBlob: repeated non-ASCII lookup returns same glyph" {
     try std.testing.expectEqual(g1.?.height, g2.?.height);
     try std.testing.expectEqual(g1.?.bitmap.len, g2.?.bitmap.len);
 }
+
+test "FontBlob: rounded corners exist and have non-zero bitmaps" {
+    const BlobFont = FontBlob(@embedFile("fonts/ufo-nf.bin"));
+
+    const corners = [_]u21{ 0x256D, 0x256E, 0x256F, 0x2570 }; // ╭ ╮ ╯ ╰
+    for (corners) |cp| {
+        const g = BlobFont.getGlyph(cp);
+        try std.testing.expect(g != null);
+        try std.testing.expectEqual(@as(u32, 8), g.?.width);
+        try std.testing.expectEqual(@as(u32, 16), g.?.height);
+        // Bitmap should not be all zeros
+        var has_nonzero = false;
+        for (g.?.bitmap) |b| {
+            if (b != 0) has_nonzero = true;
+        }
+        try std.testing.expect(has_nonzero);
+    }
+}
+
+test "FontBlob: block chars for Claude Code logo exist" {
+    const BlobFont = FontBlob(@embedFile("fonts/ufo-nf.bin"));
+
+    const blocks = [_]u21{ 0x2590, 0x259B, 0x2588, 0x259C, 0x258C, 0x2598, 0x259D, 0x2733 };
+    for (blocks) |cp| {
+        const g = BlobFont.getGlyph(cp);
+        try std.testing.expect(g != null);
+        var has_nonzero = false;
+        for (g.?.bitmap) |b| {
+            if (b != 0) has_nonzero = true;
+        }
+        try std.testing.expect(has_nonzero);
+    }
+}
