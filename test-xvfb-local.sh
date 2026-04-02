@@ -20,9 +20,9 @@ xdo() {
 }
 
 cleanup_zt() {
-    if [ -n "$ZT_PID" ] && kill -0 $ZT_PID 2>/dev/null; then
-        kill $ZT_PID 2>/dev/null
-        wait $ZT_PID 2>/dev/null || true
+    if [ -n "$ZT_PID" ] && kill -0 "$ZT_PID" 2>/dev/null; then
+        kill "$ZT_PID" 2>/dev/null
+        wait "$ZT_PID" 2>/dev/null || true
     fi
     ZT_PID=""
     WINDOW_ID=""
@@ -30,7 +30,7 @@ cleanup_zt() {
 
 launch_zt() {
     local binary="$1"
-    $binary &
+    "$binary" &
     ZT_PID=$!
     sleep 2
     WINDOW_ID=$(xdo search --name "zt" | head -1)
@@ -81,6 +81,7 @@ if (cd /home/midasdf/zt && zig build test 2>&1 >/dev/null); then
 else
     fail "zig build test" "failed"
 fi
+
 # ── 2. Binary Sanity ──
 section "2. Binary Sanity"
 RELEASE_SIZE=$(stat -c%s "$ZT_RELEASE")

@@ -18,16 +18,16 @@ section() { echo ""; echo "=== $1 ==="; }
 xdo() { command xdotool "$@" 2>/dev/null || true; }
 
 cleanup_zt() {
-    if [ -n "$ZT_PID" ] && kill -0 $ZT_PID 2>/dev/null; then
-        kill $ZT_PID 2>/dev/null
-        wait $ZT_PID 2>/dev/null || true
+    if [ -n "$ZT_PID" ] && kill -0 "$ZT_PID" 2>/dev/null; then
+        kill "$ZT_PID" 2>/dev/null
+        wait "$ZT_PID" 2>/dev/null || true
     fi
     ZT_PID=""
     WINDOW_ID=""
 }
 
 launch_zt() {
-    $ZT &
+    "$ZT" &
     ZT_PID=$!
     sleep 2
     WINDOW_ID=$(xdo search --name "zt" | head -1)
@@ -38,7 +38,6 @@ launch_zt() {
     fi
     return 0
 }
-
 
 type_cmd() {
     xdo type --window "$WINDOW_ID" --clearmodifiers --delay 8 "$1"
