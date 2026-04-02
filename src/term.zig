@@ -354,11 +354,33 @@ pub const Term = struct {
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
         const new_total = @as(usize, new_cols) * @as(usize, new_rows);
+
+        // Allocate all new buffers before modifying any state.
+        // On OOM, errdefer frees everything so self remains consistent.
         const new_cells = try self.allocator.alloc(Cell, new_total);
+        errdefer self.allocator.free(new_cells);
         @memset(new_cells, Cell{});
 
         const new_row_map = try self.allocator.alloc(u32, new_rows);
+        errdefer self.allocator.free(new_row_map);
         for (0..new_rows) |i| new_row_map[i] = @intCast(i);
+
+        const new_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_fg_rgb);
+        @memset(new_fg_rgb, null);
+
+        const new_bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_bg_rgb);
+        @memset(new_bg_rgb, null);
+
+        const new_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
+        errdefer @constCast(&new_dirty).deinit();
+
+        const new_tabs = try self.allocator.alloc(bool, new_cols);
+        errdefer self.allocator.free(new_tabs);
+        for (0..new_cols) |c| {
+            new_tabs[c] = (c % 8 == 0) and c > 0;
+        }
 
         // Copy existing content (logical row order → identity physical order)
         const copy_cols: usize = @min(self.cols, new_cols);
@@ -368,48 +390,35 @@ pub const Term = struct {
             const old_start = old_phys * @as(usize, self.cols);
             const new_start = y * @as(usize, new_cols);
             @memcpy(new_cells[new_start .. new_start + copy_cols], self.cells[old_start .. old_start + copy_cols]);
+            @memcpy(new_fg_rgb[new_start .. new_start + copy_cols], self.fg_rgb[old_start .. old_start + copy_cols]);
+            @memcpy(new_bg_rgb[new_start .. new_start + copy_cols], self.bg_rgb[old_start .. old_start + copy_cols]);
         }
 
+        // All allocations succeeded — now swap state (no errors possible below)
         self.allocator.free(self.cells);
         self.allocator.free(self.row_map);
+        self.allocator.free(self.fg_rgb);
+        self.allocator.free(self.bg_rgb);
+        if (self.tabs.len > 0) self.allocator.free(self.tabs);
+        self.dirty.deinit();
+
         self.cells = new_cells;
         self.row_map = new_row_map;
-
-        // Resize dirty bitmap
-        self.dirty.deinit();
-        self.dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
+        self.fg_rgb = new_fg_rgb;
+        self.bg_rgb = new_bg_rgb;
+        self.dirty = new_dirty;
         self.dirty_flag = true;
         self.all_dirty = true;
+        self.tabs = new_tabs;
 
         self.cols = new_cols;
         self.rows = new_rows;
         self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
 
-        // Resize tab stops
-        if (self.tabs.len > 0) self.allocator.free(self.tabs);
-        self.tabs = try self.allocator.alloc(bool, new_cols);
-        for (0..new_cols) |c| {
-            self.tabs[c] = (c % 8 == 0) and c > 0;
-        }
-
         // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
-
-        // Resize TrueColor arrays (physical indices invalidated)
-        // Allocate both before freeing to avoid dangling pointers on OOM
-        const new_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
-        const new_bg_rgb = self.allocator.alloc(?[3]u8, new_total) catch |e| {
-            self.allocator.free(new_fg_rgb);
-            return e;
-        };
-        self.allocator.free(self.fg_rgb);
-        self.allocator.free(self.bg_rgb);
-        self.fg_rgb = new_fg_rgb;
-        self.bg_rgb = new_bg_rgb;
-        @memset(self.fg_rgb, null);
-        @memset(self.bg_rgb, null);
 
         // Resize alt buffer if allocated
         if (self.alt_cells) |alt| {
