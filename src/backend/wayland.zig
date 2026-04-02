@@ -61,10 +61,12 @@ pub const ResizeEvent = struct {
 // ============================================================================
 
 const EPOLL_TAG_WAYLAND: u32 = 0;
+const EPOLL_TAG_REPEAT: u32 = 1;
+const EPOLL_TAG_CLIPBOARD: u32 = 2;
 
 /// Block until the Wayland socket has data available for reading.
-/// Used during init where we must wait for compositor responses on
-/// a non-blocking socket.  Timeout of 5 seconds prevents hanging forever.
+/// Used during init/postInit where we must wait for compositor responses
+/// on a non-blocking socket.  Timeout of 5 seconds prevents hanging forever.
 fn waitForSocket(epoll_fd: posix.fd_t) !void {
     var events: [1]linux.epoll_event = undefined;
     while (true) {
@@ -79,8 +81,6 @@ fn waitForSocket(epoll_fd: posix.fd_t) !void {
         return; // data available
     }
 }
-const EPOLL_TAG_REPEAT: u32 = 1;
-const EPOLL_TAG_CLIPBOARD: u32 = 2;
 
 // ============================================================================
 // WaylandBackend
@@ -440,20 +440,36 @@ pub const WaylandBackend = struct {
         if (self.globals.text_input_manager != 0) {
             self.text_input.id = text_input_mod.getTextInput(&self.conn, self.globals.text_input_manager, self.globals.seat) catch 0;
         }
-        self.conn.flush() catch return;
+        self.conn.flush() catch {
+            std.log.err("wayland postInit: failed to flush seat bind requests", .{});
+            return;
+        };
 
-        // Sync round-trip to drain keyboard events (keymap fd, repeat_info)
-        if (self.keyboard_id == 0) return;
+        if (self.keyboard_id == 0) {
+            std.log.warn("wayland postInit: no keyboard capability", .{});
+            return;
+        }
 
+        // Sync round-trip to drain keyboard events (keymap fd, repeat_info, enter, modifiers).
+        // Safe to release sync_id here because all prior requests (getKeyboard etc.) have been
+        // flushed and processed — the compositor has already freed any earlier IDs by this point.
+        // (During init we do NOT release sync IDs because the compositor may not have sent
+        // delete_id yet when we immediately reuse them for subsequent object bindings.)
         const sync_id = core.sync(&self.conn) catch return;
         self.conn.flush() catch return;
 
         var done = false;
         while (!done) {
-            waitForSocket(self.internal_epoll_fd) catch return;
+            waitForSocket(self.internal_epoll_fd) catch {
+                std.log.err("wayland postInit: timeout waiting for keyboard events", .{});
+                return;
+            };
             _ = self.conn.recvEvents() catch |err| switch (err) {
                 error.WouldBlock => continue,
-                else => return,
+                else => {
+                    std.log.err("wayland postInit: socket error during sync", .{});
+                    return;
+                },
             };
             while (self.conn.nextEvent()) |header| {
                 const payload = self.conn.consumeEvent(header.size);
@@ -461,45 +477,8 @@ pub const WaylandBackend = struct {
                     done = true;
                     self.conn.id_alloc.release(sync_id);
                 } else if (header.object_id == self.keyboard_id) {
-                    if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_KEYMAP) {
-                        var pos: usize = 0;
-                        _ = wire.getUint(payload, &pos);
-                        const size = wire.getUint(payload, &pos);
-                        const fd = self.conn.consumeFd() orelse continue;
-                        self.keyboard.handleKeymap(fd, size);
-                    } else if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_REPEAT_INFO) {
-                        var pos: usize = 0;
-                        const rate = wire.getInt(payload, &pos);
-                        const delay = wire.getInt(payload, &pos);
-                        self.keyboard.repeat_rate = rate;
-                        self.keyboard.repeat_delay = delay;
-                    } else if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_ENTER) {
-                        var pos: usize = 0;
-                        const serial = wire.getUint(payload, &pos);
-                        _ = wire.getUint(payload, &pos); // surface
-                        _ = wire.getArray(payload, &pos); // keys
-                        self.keyboard.focused = true;
-                        self.keyboard.last_serial = serial;
-                        self.focused = true;
-                        // Enable text input if available
-                        if (self.text_input.id != 0) {
-                            text_input_mod.enable(&self.conn, self.text_input.id) catch {};
-                            text_input_mod.setContentType(&self.conn, self.text_input.id, 0, 0) catch {};
-                            text_input_mod.commit(&self.conn, self.text_input.id) catch {};
-                            self.text_input.enabled = true;
-                            self.conn.flush() catch {};
-                        }
-                    } else if (header.opcode == seat_mod.WL_KEYBOARD_EVENT_MODIFIERS) {
-                        var pos: usize = 0;
-                        _ = wire.getUint(payload, &pos); // serial
-                        const depressed = wire.getUint(payload, &pos);
-                        const latched = wire.getUint(payload, &pos);
-                        const locked = wire.getUint(payload, &pos);
-                        const group = wire.getUint(payload, &pos);
-                        self.keyboard.handleModifiers(depressed, latched, locked, group);
-                    }
+                    self.handlePostInitKeyboardEvent(header.opcode, payload);
                 } else if (self.text_input.id != 0 and header.object_id == self.text_input.id) {
-                    // Handle text_input events during postInit sync
                     self.dispatchTextInputEvent(header.opcode, payload);
                 } else if (header.object_id == 1) {
                     if (header.opcode == core.WL_DISPLAY_EVENT_ERROR) {
@@ -508,6 +487,57 @@ pub const WaylandBackend = struct {
                     }
                 }
             }
+        }
+
+        if (self.keyboard.xkb_keymap == null) {
+            std.log.warn("wayland postInit: no keymap received from compositor", .{});
+        }
+    }
+
+    /// Handle keyboard events during postInit sync loop.
+    /// Subset of dispatchKeyboardEvent — only events expected before main loop.
+    fn handlePostInitKeyboardEvent(self: *Self, opcode: u16, payload: []const u8) void {
+        switch (opcode) {
+            seat_mod.WL_KEYBOARD_EVENT_KEYMAP => {
+                var pos: usize = 0;
+                _ = wire.getUint(payload, &pos);
+                const size = wire.getUint(payload, &pos);
+                const fd = self.conn.consumeFd() orelse return;
+                self.keyboard.handleKeymap(fd, size);
+            },
+            seat_mod.WL_KEYBOARD_EVENT_REPEAT_INFO => {
+                var pos: usize = 0;
+                const rate = wire.getInt(payload, &pos);
+                const delay = wire.getInt(payload, &pos);
+                self.keyboard.repeat_rate = rate;
+                self.keyboard.repeat_delay = delay;
+            },
+            seat_mod.WL_KEYBOARD_EVENT_ENTER => {
+                var pos: usize = 0;
+                const serial = wire.getUint(payload, &pos);
+                _ = wire.getUint(payload, &pos); // surface
+                _ = wire.getArray(payload, &pos); // keys
+                self.keyboard.focused = true;
+                self.keyboard.last_serial = serial;
+                self.focused = true;
+                if (self.text_input.id != 0) {
+                    text_input_mod.enable(&self.conn, self.text_input.id) catch {};
+                    text_input_mod.setContentType(&self.conn, self.text_input.id, 0, 0) catch {};
+                    text_input_mod.commit(&self.conn, self.text_input.id) catch {};
+                    self.text_input.enabled = true;
+                    self.conn.flush() catch {};
+                }
+            },
+            seat_mod.WL_KEYBOARD_EVENT_MODIFIERS => {
+                var pos: usize = 0;
+                _ = wire.getUint(payload, &pos); // serial
+                const depressed = wire.getUint(payload, &pos);
+                const latched = wire.getUint(payload, &pos);
+                const locked = wire.getUint(payload, &pos);
+                const group = wire.getUint(payload, &pos);
+                self.keyboard.handleModifiers(depressed, latched, locked, group);
+            },
+            else => {},
         }
     }
 
@@ -1078,6 +1108,8 @@ pub const WaylandBackend = struct {
     /// Handle zwp_text_input_v3 events.
     fn dispatchTextInputEvent(self: *Self, opcode: u16, payload: []const u8) void {
         switch (opcode) {
+            // enter/leave are informational — we enable/disable text input based
+            // on wl_keyboard focus instead, so these are intentionally no-ops.
             text_input_mod.ZWP_TEXT_INPUT_EVENT_ENTER => {},
             text_input_mod.ZWP_TEXT_INPUT_EVENT_LEAVE => {},
             text_input_mod.ZWP_TEXT_INPUT_EVENT_PREEDIT_STRING => {
