@@ -669,7 +669,7 @@ if kill -0 $ZT_PID 2>/dev/null; then
     wait $ZT_PID 2>/dev/null || true
 fi
 
-zt-release -e /bin/bash -c 'echo $DISPLAY > /tmp/zt_env_test.txt' &
+zt-release -e /bin/bash -c "echo $DISPLAY > /tmp/zt_env_test.txt" &
 ENV_PID=$!
 sleep 3
 wait $ENV_PID 2>/dev/null || true
