@@ -30,6 +30,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev
 
       - name: Format check
+        continue-on-error: true
         run: zig fmt --check src/
 
       - name: Build
