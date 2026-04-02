@@ -255,9 +255,24 @@ pub const Connection = struct {
                 .flags = 0,
             };
 
-            const rc = linux.sendmsg(self.fd, &msghdr, linux.MSG.NOSIGNAL);
-            const rc_isize: isize = @bitCast(rc);
-            if (rc_isize < 0) return error.SendFailed;
+            while (true) {
+                const rc = linux.sendmsg(self.fd, &msghdr, linux.MSG.NOSIGNAL);
+                const rc_isize: isize = @bitCast(rc);
+                if (rc_isize < 0) {
+                    const err: u32 = @intCast(-@as(i32, @intCast(rc_isize)));
+                    if (err == @intFromEnum(posix.E.AGAIN)) {
+                        var pfd = [1]linux.pollfd{.{
+                            .fd = self.fd,
+                            .events = linux.POLL.OUT,
+                            .revents = 0,
+                        }};
+                        _ = linux.poll(&pfd, 1, 100);
+                        continue;
+                    }
+                    return error.SendFailed;
+                }
+                break;
+            }
         }
     }
 
@@ -379,6 +394,7 @@ pub const Connection = struct {
     }
 
     /// Flush the send buffer to the socket.
+    /// Handles EAGAIN from non-blocking socket by polling for writability.
     pub fn flush(self: *Connection) !void {
         if (self.send_len == 0) return;
         var sent: usize = 0;
@@ -397,7 +413,20 @@ pub const Connection = struct {
             };
             const rc = linux.sendmsg(self.fd, &msghdr, linux.MSG.NOSIGNAL);
             const rc_isize: isize = @bitCast(rc);
-            if (rc_isize < 0) return error.SendFailed;
+            if (rc_isize < 0) {
+                const err: u32 = @intCast(-@as(i32, @intCast(rc_isize)));
+                if (err == @intFromEnum(posix.E.AGAIN)) {
+                    // Socket buffer full — poll for writability (up to 100ms)
+                    var pfd = [1]linux.pollfd{.{
+                        .fd = self.fd,
+                        .events = linux.POLL.OUT,
+                        .revents = 0,
+                    }};
+                    _ = linux.poll(&pfd, 1, 100);
+                    continue;
+                }
+                return error.SendFailed;
+            }
             sent += @intCast(rc_isize);
         }
         self.send_len = 0;

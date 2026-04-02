@@ -39,7 +39,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 |---------|--------|
 | fbdev | Stable |
 | X11 | Stable |
-| Wayland | Stable |
+| Wayland | WIP — resize crash on window drag-to-edge |
 | macOS | Experimental |
 
 ## Numbers

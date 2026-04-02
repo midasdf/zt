@@ -378,6 +378,8 @@ pub const Term = struct {
         // Resize dirty bitmap
         self.dirty.deinit();
         self.dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
+        self.dirty_flag = true;
+        self.all_dirty = true;
 
         self.cols = new_cols;
         self.rows = new_rows;

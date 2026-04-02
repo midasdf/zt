@@ -43,7 +43,8 @@ pub const WL_SHM_EVENT_FORMAT: u16 = 0;
 
 // wl_shm_pool
 pub const WL_SHM_POOL_CREATE_BUFFER: u16 = 0;
-pub const WL_SHM_POOL_DESTROY: u16 = 2;
+pub const WL_SHM_POOL_DESTROY: u16 = 1;
+pub const WL_SHM_POOL_RESIZE: u16 = 2;
 
 // wl_buffer
 pub const WL_BUFFER_EVENT_RELEASE: u16 = 0;
@@ -296,6 +297,7 @@ pub const ShmBuffer = struct {
     height: u32,
     stride: u32,
     page_size: usize,
+    pool_capacity: usize,
     current: u1 = 0,
     released: [2]bool = .{ true, true },
 
@@ -310,16 +312,76 @@ pub const ShmBuffer = struct {
         posix.close(self.fd);
     }
 
-    /// Destroy server-side resources (buffers + pool) and release object IDs.
+    /// Destroy server-side resources (buffers + pool).
+    /// Object IDs are NOT released here — they are recycled when the
+    /// compositor sends wl_display.delete_id, handled in dispatchEvent.
     pub fn destroyRemote(self: *ShmBuffer, conn: *wire.Connection) void {
-        // Destroy both wl_buffer objects (opcode 0 = destroy)
         for (self.buffer_ids) |buf_id| {
             conn.sendMessage(buf_id, 0, &.{}, &.{}) catch {};
-            conn.id_alloc.release(buf_id);
         }
-        // Destroy wl_shm_pool (opcode 2 = destroy)
         conn.sendMessage(self.pool_id, WL_SHM_POOL_DESTROY, &.{}, &.{}) catch {};
-        conn.id_alloc.release(self.pool_id);
+    }
+
+    /// Resize buffers in-place, reusing the existing SHM pool.
+    /// Only grows the pool (via wl_shm_pool.resize) — never shrinks.
+    /// This avoids pool ID churn and fd-based sendMessage (which forces
+    /// a mid-resize flush that can cause protocol ordering issues).
+    pub fn resizeBuffers(self: *ShmBuffer, conn: *wire.Connection, width: u32, height: u32) !void {
+        const new_stride = width * 4;
+        const raw_size = @as(usize, new_stride) * @as(usize, height);
+        const page_sz = std.heap.pageSize();
+        const new_page_size = std.mem.alignForward(usize, raw_size, page_sz);
+        const new_total_size = new_page_size * 2;
+
+        // 1. Destroy old wl_buffer objects
+        for (self.buffer_ids) |buf_id| {
+            conn.sendMessage(buf_id, 0, &.{}, &.{}) catch {};
+        }
+
+        // 2. Grow pool if needed
+        if (new_total_size > self.pool_capacity) {
+            try posix.ftruncate(self.fd, @intCast(new_total_size));
+            posix.munmap(self.data);
+            self.data = try posix.mmap(
+                null,
+                new_total_size,
+                posix.PROT.READ | posix.PROT.WRITE,
+                .{ .TYPE = .SHARED },
+                self.fd,
+                0,
+            );
+            var payload: [4]u8 = undefined;
+            var pos: usize = 0;
+            wire.putInt(&payload, &pos, @intCast(new_total_size));
+            try conn.sendMessage(self.pool_id, WL_SHM_POOL_RESIZE, payload[0..pos], &.{});
+            self.pool_capacity = new_total_size;
+        }
+
+        // 3. Create new buffers in the same pool
+        self.buffer_ids = [2]u32{
+            conn.id_alloc.next(),
+            conn.id_alloc.next(),
+        };
+        for (self.buffer_ids, 0..) |buf_id, i| {
+            const offset: i32 = @intCast(@as(usize, i) * new_page_size);
+            var payload: [24]u8 = undefined;
+            var pos: usize = 0;
+            wire.putUint(&payload, &pos, buf_id);
+            wire.putInt(&payload, &pos, offset);
+            wire.putInt(&payload, &pos, @intCast(width));
+            wire.putInt(&payload, &pos, @intCast(height));
+            wire.putInt(&payload, &pos, @intCast(new_stride));
+            wire.putUint(&payload, &pos, SHM_FORMAT_ARGB8888);
+            try conn.sendMessage(self.pool_id, WL_SHM_POOL_CREATE_BUFFER, payload[0..pos], &.{});
+        }
+
+        // 4. Update state
+        self.width = width;
+        self.height = height;
+        self.stride = new_stride;
+        self.page_size = new_page_size;
+        self.current = 0;
+        self.released = .{ true, true };
     }
 };
 
@@ -405,6 +467,7 @@ pub fn createShmBuffers(
         .height = height,
         .stride = stride,
         .page_size = page_size,
+        .pool_capacity = total_size,
     };
 }
 

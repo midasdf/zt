@@ -475,7 +475,10 @@ pub const WaylandBackend = struct {
                 const payload = self.conn.consumeEvent(header.size);
                 if (header.object_id == sync_id and header.opcode == core.WL_CALLBACK_EVENT_DONE) {
                     done = true;
-                    self.conn.id_alloc.release(sync_id);
+                    // Do NOT release sync_id here — the compositor will send
+                    // wl_display.delete_id later, and dispatchEvent handles it.
+                    // Releasing here causes double-free on the ID free list,
+                    // leading to two objects sharing the same ID → protocol error.
                 } else if (header.object_id == self.globals.xdg_wm_base and header.opcode == xdg_shell.XDG_WM_BASE_EVENT_PING) {
                     var pos: usize = 0;
                     const serial = wire.getUint(payload, &pos);
@@ -637,15 +640,13 @@ pub const WaylandBackend = struct {
         if (w == self.width and h == self.height) return;
         if (w == 0 or h == 0) return;
 
-        // Destroy old SHM buffers (server-side objects + local mmap)
         if (self.shm_buffers) |*bufs| {
-            bufs.destroyRemote(&self.conn);
-            bufs.deinit();
-            self.shm_buffers = null;
+            // Reuse existing pool — avoids pool ID churn and fd-based
+            // sendMessage that forces mid-resize flush
+            try bufs.resizeBuffers(&self.conn, w, h);
+        } else {
+            self.shm_buffers = try core.createShmBuffers(&self.conn, &self.globals, w, h);
         }
-
-        // Create new SHM buffers with new dimensions
-        self.shm_buffers = try core.createShmBuffers(&self.conn, &self.globals, w, h);
         self.width = w;
         self.height = h;
     }
@@ -754,12 +755,30 @@ pub const WaylandBackend = struct {
                 const result = xdg_shell.parseToplevelConfigure(payload);
                 const new_focused = result.state.activated;
 
-                // Queue resize if dimensions changed and are non-zero
+                // Queue resize if dimensions changed and are non-zero.
+                // Coalesce: replace any existing pending resize event rather than
+                // accumulating multiple resizes. Rapid configure events (e.g. window
+                // dragged to screen edge) would otherwise cause repeated destroy/create
+                // buffer cycles, increasing the chance of protocol errors.
                 if (result.event.width > 0 and result.event.height > 0) {
                     const new_w: u32 = @intCast(result.event.width);
                     const new_h: u32 = @intCast(result.event.height);
                     if (new_w != self.width or new_h != self.height) {
-                        self.queueEvent(.{ .resize = .{ .width = new_w, .height = new_h } });
+                        var replaced = false;
+                        var i: usize = self.pending_read;
+                        while (i < self.pending_count) : (i += 1) {
+                            switch (self.pending_events[i]) {
+                                .resize => {
+                                    self.pending_events[i] = .{ .resize = .{ .width = new_w, .height = new_h } };
+                                    replaced = true;
+                                    break;
+                                },
+                                else => {},
+                            }
+                        }
+                        if (!replaced) {
+                            self.queueEvent(.{ .resize = .{ .width = new_w, .height = new_h } });
+                        }
                     }
                 }
 
