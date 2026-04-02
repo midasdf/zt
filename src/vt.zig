@@ -1308,6 +1308,7 @@ fn parseExtendedColor(p: [16]u16, pc: u8, start: u8, term: *Term, is_fg: bool) u
         const sub = p[i + 1];
         if (sub == 5 and i + 2 < pc) {
             // 256-color: 38;5;n or 48;5;n
+            if (p[i + 2] > 255) return i + 2;
             const color: u8 = @intCast(p[i + 2]);
             if (is_fg) {
                 term.current_fg = color;
@@ -1319,6 +1320,7 @@ fn parseExtendedColor(p: [16]u16, pc: u8, start: u8, term: *Term, is_fg: bool) u
             return i + 2;
         } else if (sub == 2 and i + 4 < pc) {
             // TrueColor: 38;2;r;g;b or 48;2;r;g;b
+            if (p[i + 2] > 255 or p[i + 3] > 255 or p[i + 4] > 255) return i + 4;
             const r: u8 = @intCast(p[i + 2]);
             const g: u8 = @intCast(p[i + 3]);
             const b: u8 = @intCast(p[i + 4]);
@@ -1902,4 +1904,33 @@ test "OSC: title set via OSC 2 with ST terminator" {
         executeAction(action, &term);
     }
     try testing.expectEqualSlices(u8, "World", term.title[0..term.title_len]);
+}
+
+test "Executor: malformed SGR 38;5;999 does not panic" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+    // Set a known fg color first
+    term.current_fg = 7;
+    // Feed \e[38;5;999m — color index > 255, should be silently ignored
+    for ("\x1b[38;5;999m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // fg should remain unchanged
+    try testing.expectEqual(@as(u8, 7), term.current_fg);
+}
+
+test "Executor: malformed SGR 48;2;256;0;0 does not panic" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+    term.current_bg_rgb = null;
+    // Feed \e[48;2;256;0;0m — r > 255, should be silently ignored
+    for ("\x1b[48;2;256;0;0m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // bg_rgb should remain null (not set)
+    try testing.expectEqual(@as(?[3]u8, null), term.current_bg_rgb);
 }

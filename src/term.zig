@@ -354,11 +354,33 @@ pub const Term = struct {
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
         const new_total = @as(usize, new_cols) * @as(usize, new_rows);
+
+        // Allocate all new buffers before modifying any state.
+        // On OOM, errdefer frees everything so self remains consistent.
         const new_cells = try self.allocator.alloc(Cell, new_total);
+        errdefer self.allocator.free(new_cells);
         @memset(new_cells, Cell{});
 
         const new_row_map = try self.allocator.alloc(u32, new_rows);
+        errdefer self.allocator.free(new_row_map);
         for (0..new_rows) |i| new_row_map[i] = @intCast(i);
+
+        const new_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_fg_rgb);
+        @memset(new_fg_rgb, null);
+
+        const new_bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_bg_rgb);
+        @memset(new_bg_rgb, null);
+
+        const new_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
+        errdefer @constCast(&new_dirty).deinit();
+
+        const new_tabs = try self.allocator.alloc(bool, new_cols);
+        errdefer self.allocator.free(new_tabs);
+        for (0..new_cols) |c| {
+            new_tabs[c] = (c % 8 == 0) and c > 0;
+        }
 
         // Copy existing content (logical row order → identity physical order)
         const copy_cols: usize = @min(self.cols, new_cols);
@@ -368,42 +390,35 @@ pub const Term = struct {
             const old_start = old_phys * @as(usize, self.cols);
             const new_start = y * @as(usize, new_cols);
             @memcpy(new_cells[new_start .. new_start + copy_cols], self.cells[old_start .. old_start + copy_cols]);
+            @memcpy(new_fg_rgb[new_start .. new_start + copy_cols], self.fg_rgb[old_start .. old_start + copy_cols]);
+            @memcpy(new_bg_rgb[new_start .. new_start + copy_cols], self.bg_rgb[old_start .. old_start + copy_cols]);
         }
 
+        // All allocations succeeded — now swap state (no errors possible below)
         self.allocator.free(self.cells);
         self.allocator.free(self.row_map);
+        self.allocator.free(self.fg_rgb);
+        self.allocator.free(self.bg_rgb);
+        if (self.tabs.len > 0) self.allocator.free(self.tabs);
+        self.dirty.deinit();
+
         self.cells = new_cells;
         self.row_map = new_row_map;
-
-        // Resize dirty bitmap
-        self.dirty.deinit();
-        self.dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
+        self.fg_rgb = new_fg_rgb;
+        self.bg_rgb = new_bg_rgb;
+        self.dirty = new_dirty;
         self.dirty_flag = true;
         self.all_dirty = true;
+        self.tabs = new_tabs;
 
         self.cols = new_cols;
         self.rows = new_rows;
         self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
 
-        // Resize tab stops
-        if (self.tabs.len > 0) self.allocator.free(self.tabs);
-        self.tabs = try self.allocator.alloc(bool, new_cols);
-        for (0..new_cols) |c| {
-            self.tabs[c] = (c % 8 == 0) and c > 0;
-        }
-
         // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
-
-        // Resize TrueColor arrays (physical indices invalidated)
-        self.allocator.free(self.fg_rgb);
-        self.allocator.free(self.bg_rgb);
-        self.fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
-        @memset(self.fg_rgb, null);
-        self.bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
-        @memset(self.bg_rgb, null);
 
         // Resize alt buffer if allocated
         if (self.alt_cells) |alt| {
@@ -421,14 +436,16 @@ pub const Term = struct {
             self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
         }
         if (self.alt_fg_rgb) |a| {
+            const new_alt_fg = try self.allocator.alloc(?[3]u8, new_total);
+            @memset(new_alt_fg, null);
             self.allocator.free(a);
-            self.alt_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
-            @memset(self.alt_fg_rgb.?, null);
+            self.alt_fg_rgb = new_alt_fg;
         }
         if (self.alt_bg_rgb) |a| {
+            const new_alt_bg = try self.allocator.alloc(?[3]u8, new_total);
+            @memset(new_alt_bg, null);
             self.allocator.free(a);
-            self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
-            @memset(self.alt_bg_rgb.?, null);
+            self.alt_bg_rgb = new_alt_bg;
         }
     }
 
@@ -731,10 +748,12 @@ pub const Term = struct {
         // Fix wide boundaries using logical coords
         self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
 
-        // Shift characters left (physical)
+        // Shift characters left (physical) — cells + TrueColor arrays
         const copy_len = remaining - count;
         if (copy_len > 0) {
             std.mem.copyForwards(Cell, self.cells[row_base + cx .. row_base + cx + copy_len], self.cells[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(?[3]u8, self.fg_rgb[row_base + cx .. row_base + cx + copy_len], self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(?[3]u8, self.bg_rgb[row_base + cx .. row_base + cx + copy_len], self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
         }
 
         // Clear rightmost characters with BCE
@@ -758,6 +777,8 @@ pub const Term = struct {
         const copy_len = remaining - count;
         if (copy_len > 0) {
             std.mem.copyBackwards(Cell, self.cells[row_base + cx + count .. row_base + cx + count + copy_len], self.cells[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(?[3]u8, self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.fg_rgb[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(?[3]u8, self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.bg_rgb[row_base + cx .. row_base + cx + copy_len]);
         }
 
         // Clear inserted characters with BCE
@@ -1055,4 +1076,83 @@ test "switchScreen preserves main screen cells" {
     try std.testing.expectEqual(@as(u21, 'A'), t.getCell(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'B'), t.getCell(1, 0).char);
     try std.testing.expectEqual(@as(u21, 'C'), t.getCell(2, 0).char);
+}
+
+test "Term: deleteChars shifts TrueColor RGB alongside cells" {
+    var term = try Term.init(testing.allocator, 10, 4);
+    defer term.deinit();
+
+    // Place cells with distinct TrueColor at columns 0..4
+    for (0..5) |i| {
+        term.cursor_x = @intCast(i);
+        term.cursor_y = 0;
+        const c: u8 = @intCast(i);
+        term.setCell(@intCast(i), 0, .{ .char = @as(u21, 'A') + c });
+        const phys = term.row_map[0];
+        const idx = phys * @as(usize, term.cols) + i;
+        term.fg_rgb[idx] = .{ c * 10, c * 20, c * 30 };
+        term.bg_rgb[idx] = .{ c + 100, c + 110, c + 120 };
+    }
+
+    // Delete 2 chars at column 1 → cols 3,4 shift left to 1,2
+    term.cursor_x = 1;
+    term.cursor_y = 0;
+    term.deleteChars(2);
+
+    const phys = term.row_map[0];
+    const base = phys * @as(usize, term.cols);
+
+    // Column 0 unchanged
+    try testing.expectEqual(@as(u21, 'A'), term.cells[base + 0].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 0, 0, 0 }), term.fg_rgb[base + 0]);
+
+    // Old col 3 → now col 1
+    try testing.expectEqual(@as(u21, 'D'), term.cells[base + 1].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 30, 60, 90 }), term.fg_rgb[base + 1]);
+
+    // Old col 4 → now col 2
+    try testing.expectEqual(@as(u21, 'E'), term.cells[base + 2].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 40, 80, 120 }), term.fg_rgb[base + 2]);
+
+    // Cleared cols at end should have null RGB
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 8]);
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 9]);
+}
+
+test "Term: insertChars shifts TrueColor RGB alongside cells" {
+    var term = try Term.init(testing.allocator, 10, 4);
+    defer term.deinit();
+
+    // Place cells with TrueColor at columns 0..4
+    for (0..5) |i| {
+        const c: u8 = @intCast(i);
+        term.setCell(@intCast(i), 0, .{ .char = @as(u21, 'A') + c });
+        const phys = term.row_map[0];
+        const idx = phys * @as(usize, term.cols) + i;
+        term.fg_rgb[idx] = .{ c * 10, c * 20, c * 30 };
+    }
+
+    // Insert 2 chars at column 1 → cols 1..7 shift right to 3..9
+    term.cursor_x = 1;
+    term.cursor_y = 0;
+    term.insertChars(2);
+
+    const phys = term.row_map[0];
+    const base = phys * @as(usize, term.cols);
+
+    // Column 0 unchanged
+    try testing.expectEqual(@as(u21, 'A'), term.cells[base + 0].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 0, 0, 0 }), term.fg_rgb[base + 0]);
+
+    // Inserted cols 1,2 should be blank with null RGB
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 1]);
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 2]);
+
+    // Old col 1 → now col 3
+    try testing.expectEqual(@as(u21, 'B'), term.cells[base + 3].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 10, 20, 30 }), term.fg_rgb[base + 3]);
+
+    // Old col 2 → now col 4
+    try testing.expectEqual(@as(u21, 'C'), term.cells[base + 4].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 20, 40, 60 }), term.fg_rgb[base + 4]);
 }
