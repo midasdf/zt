@@ -209,7 +209,7 @@ if kill -0 $ZT_PID 2>/dev/null; then
 
     if [ -n "$WINDOW_ID" ]; then
         # Rapid keystrokes (simulate fast typing)
-        for i in $(seq 1 50); do
+        for _ in $(seq 1 50); do
             xdo key --window "$WINDOW_ID" --delay 5 a
         done
         xdo key --window "$WINDOW_ID" Return

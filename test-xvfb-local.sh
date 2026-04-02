@@ -135,7 +135,7 @@ cleanup_zt
 section "6. Rapid Input (100 keys)"
 launch_zt "$ZT_RELEASE"
 if [ -n "$WINDOW_ID" ]; then
-    for i in $(seq 1 100); do
+    for _ in $(seq 1 100); do
         xdo key --window "$WINDOW_ID" --clearmodifiers --delay 2 a
     done
     xdo key --window "$WINDOW_ID" --clearmodifiers Return
@@ -150,7 +150,7 @@ cleanup_zt
 section "7. TrueColor Gradient (256 values)"
 launch_zt "$ZT_RELEASE"
 if [ -n "$WINDOW_ID" ]; then
-    type_cmd "bash -c 'for i in \$(seq 0 255); do printf \"\\e[38;2;\$i;0;0m#\"; done; printf \"\\e[0m\\n\"'"
+    type_cmd "bash -c 'for i in \$(seq 0 255); do printf "\\e[38;2;\$i;0;0m#"; done; printf "\\e[0m\\n"'"
     sleep 3
     if alive; then pass "survived TrueColor gradient"; else fail "TrueColor" "died"; fi
 else
