@@ -260,28 +260,6 @@ pub fn renderCell(
     }
 }
 
-pub fn renderCursor(
-    buffer: []u8,
-    stride: u32,
-    cell_x: u32,
-    cell_y: u32,
-    cell: Cell,
-    fg_rgb_override: ?[3]u8,
-    bg_rgb_override: ?[3]u8,
-    glyph: ?GlyphView,
-    comptime font_w: u32,
-    comptime font_h: u32,
-    comptime pixel_format: PixelFormat,
-    comptime wide: bool,
-    comptime scale: u32,
-) void {
-    var inverted = cell;
-    const tmp = inverted.fg;
-    inverted.fg = inverted.bg;
-    inverted.bg = tmp;
-    renderCell(buffer, stride, cell_x, cell_y, inverted, bg_rgb_override, fg_rgb_override, glyph, font_w, font_h, pixel_format, wide, scale, false);
-}
-
 // --- Tests ---
 
 test "Render: palette color 0 is black" {

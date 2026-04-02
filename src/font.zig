@@ -88,7 +88,10 @@ pub fn FontBlob(comptime blob: []const u8) type {
                 var valid: [CACHE_SIZE]bool = [_]bool{false} ** CACHE_SIZE;
             };
 
-            const idx = codepoint % S.CACHE_SIZE;
+            // XOR folding: mix high bits into low bits to reduce collisions
+            // for CJK ranges where codepoints differ only in upper bits
+            const folded = codepoint ^ (codepoint >> 8);
+            const idx = folded % S.CACHE_SIZE;
             if (S.valid[idx] and S.keys[idx] == codepoint) {
                 return S.vals[idx];
             }

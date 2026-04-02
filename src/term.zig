@@ -435,61 +435,39 @@ pub const Term = struct {
 
         const total = @as(usize, self.cols) * @as(usize, self.rows);
 
-        if (alt) {
-            // Lazy-allocate alt buffer
-            if (self.alt_cells == null) {
-                self.alt_cells = try self.allocator.alloc(Cell, total);
-                @memset(self.alt_cells.?, Cell{});
-                self.alt_row_map = try self.allocator.alloc(u32, self.rows);
-                for (0..self.rows) |i| self.alt_row_map.?[i] = @intCast(i);
-                self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, total);
-                self.alt_fg_rgb = try self.allocator.alloc(?[3]u8, total);
-                @memset(self.alt_fg_rgb.?, null);
-                self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, total);
-                @memset(self.alt_bg_rgb.?, null);
-            }
-            // Swap main <-> alt (cells, row_map, dirty, TrueColor)
-            const tmp_cells = self.cells;
-            self.cells = self.alt_cells.?;
-            self.alt_cells = tmp_cells;
-
-            const tmp_rm = self.row_map;
-            self.row_map = self.alt_row_map.?;
-            self.alt_row_map = tmp_rm;
-
-            const tmp_dirty = self.dirty;
-            self.dirty = self.alt_dirty.?;
-            self.alt_dirty = tmp_dirty;
-
-            const tmp_fg = self.fg_rgb;
-            self.fg_rgb = self.alt_fg_rgb.?;
-            self.alt_fg_rgb = tmp_fg;
-
-            const tmp_bg = self.bg_rgb;
-            self.bg_rgb = self.alt_bg_rgb.?;
-            self.alt_bg_rgb = tmp_bg;
-        } else {
-            // Swap back
-            const tmp_cells = self.cells;
-            self.cells = self.alt_cells.?;
-            self.alt_cells = tmp_cells;
-
-            const tmp_rm = self.row_map;
-            self.row_map = self.alt_row_map.?;
-            self.alt_row_map = tmp_rm;
-
-            const tmp_dirty = self.dirty;
-            self.dirty = self.alt_dirty.?;
-            self.alt_dirty = tmp_dirty;
-
-            const tmp_fg = self.fg_rgb;
-            self.fg_rgb = self.alt_fg_rgb.?;
-            self.alt_fg_rgb = tmp_fg;
-
-            const tmp_bg = self.bg_rgb;
-            self.bg_rgb = self.alt_bg_rgb.?;
-            self.alt_bg_rgb = tmp_bg;
+        // Lazy-allocate alt buffer on first switch to alt screen
+        if (alt and self.alt_cells == null) {
+            self.alt_cells = try self.allocator.alloc(Cell, total);
+            @memset(self.alt_cells.?, Cell{});
+            self.alt_row_map = try self.allocator.alloc(u32, self.rows);
+            for (0..self.rows) |i| self.alt_row_map.?[i] = @intCast(i);
+            self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, total);
+            self.alt_fg_rgb = try self.allocator.alloc(?[3]u8, total);
+            @memset(self.alt_fg_rgb.?, null);
+            self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, total);
+            @memset(self.alt_bg_rgb.?, null);
         }
+
+        // Swap main <-> alt (cells, row_map, dirty, TrueColor)
+        const tmp_cells = self.cells;
+        self.cells = self.alt_cells.?;
+        self.alt_cells = tmp_cells;
+
+        const tmp_rm = self.row_map;
+        self.row_map = self.alt_row_map.?;
+        self.alt_row_map = tmp_rm;
+
+        const tmp_dirty = self.dirty;
+        self.dirty = self.alt_dirty.?;
+        self.alt_dirty = tmp_dirty;
+
+        const tmp_fg = self.fg_rgb;
+        self.fg_rgb = self.alt_fg_rgb.?;
+        self.alt_fg_rgb = tmp_fg;
+
+        const tmp_bg = self.bg_rgb;
+        self.bg_rgb = self.alt_bg_rgb.?;
+        self.alt_bg_rgb = tmp_bg;
 
         self.is_alt_screen = alt;
         self.markDirtyRange(.{ .start = 0, .end = total });
@@ -806,14 +784,19 @@ pub const Term = struct {
     pub fn selectiveEraseDisplay(self: *Self, mode: u8) void {
         const cols: usize = self.cols;
         const blank = self.blankCell();
+        const bg_rgb_val: ?[3]u8 = self.current_bg_rgb;
         switch (mode) {
             0 => {
                 for (self.cursor_y..self.rows) |y| {
                     const phys = self.row_map[y];
                     const from: usize = if (y == self.cursor_y) self.cursor_x else 0;
                     for (from..cols) |x| {
-                        if (!self.cells[phys * cols + x].attrs.protected)
-                            self.cells[phys * cols + x] = blank;
+                        const idx = phys * cols + x;
+                        if (!self.cells[idx].attrs.protected) {
+                            self.cells[idx] = blank;
+                            self.fg_rgb[idx] = null;
+                            self.bg_rgb[idx] = bg_rgb_val;
+                        }
                     }
                 }
                 self.markDirtyRange(.{ .start = @as(usize, self.cursor_y) * cols + self.cursor_x, .end = @as(usize, self.rows) * cols });
@@ -823,8 +806,12 @@ pub const Term = struct {
                     const phys = self.row_map[y];
                     const to: usize = if (y == self.cursor_y) self.cursor_x + 1 else cols;
                     for (0..to) |x| {
-                        if (!self.cells[phys * cols + x].attrs.protected)
-                            self.cells[phys * cols + x] = blank;
+                        const idx = phys * cols + x;
+                        if (!self.cells[idx].attrs.protected) {
+                            self.cells[idx] = blank;
+                            self.fg_rgb[idx] = null;
+                            self.bg_rgb[idx] = bg_rgb_val;
+                        }
                     }
                 }
                 self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cursor_y) * cols + self.cursor_x + 1 });
@@ -833,8 +820,12 @@ pub const Term = struct {
                 for (0..self.rows) |y| {
                     const phys = self.row_map[y];
                     for (0..cols) |x| {
-                        if (!self.cells[phys * cols + x].attrs.protected)
-                            self.cells[phys * cols + x] = blank;
+                        const idx = phys * cols + x;
+                        if (!self.cells[idx].attrs.protected) {
+                            self.cells[idx] = blank;
+                            self.fg_rgb[idx] = null;
+                            self.bg_rgb[idx] = bg_rgb_val;
+                        }
                     }
                 }
                 self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cols) * @as(usize, self.rows) });
@@ -848,62 +839,44 @@ pub const Term = struct {
         const cols: usize = self.cols;
         const phys = self.row_map[self.cursor_y];
         const blank = self.blankCell();
+        const bg_rgb_val: ?[3]u8 = self.current_bg_rgb;
         const row_start = @as(usize, self.cursor_y) * cols;
         switch (mode) {
             0 => {
                 for (self.cursor_x..self.cols) |x| {
-                    if (!self.cells[phys * cols + x].attrs.protected)
-                        self.cells[phys * cols + x] = blank;
+                    const idx = phys * cols + x;
+                    if (!self.cells[idx].attrs.protected) {
+                        self.cells[idx] = blank;
+                        self.fg_rgb[idx] = null;
+                        self.bg_rgb[idx] = bg_rgb_val;
+                    }
                 }
                 self.markDirtyRange(.{ .start = row_start + self.cursor_x, .end = row_start + cols });
             },
             1 => {
                 for (0..self.cursor_x + 1) |x| {
-                    if (!self.cells[phys * cols + x].attrs.protected)
-                        self.cells[phys * cols + x] = blank;
+                    const idx = phys * cols + x;
+                    if (!self.cells[idx].attrs.protected) {
+                        self.cells[idx] = blank;
+                        self.fg_rgb[idx] = null;
+                        self.bg_rgb[idx] = bg_rgb_val;
+                    }
                 }
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + self.cursor_x + 1 });
             },
             2 => {
                 for (0..cols) |x| {
-                    if (!self.cells[phys * cols + x].attrs.protected)
-                        self.cells[phys * cols + x] = blank;
+                    const idx = phys * cols + x;
+                    if (!self.cells[idx].attrs.protected) {
+                        self.cells[idx] = blank;
+                        self.fg_rgb[idx] = null;
+                        self.bg_rgb[idx] = bg_rgb_val;
+                    }
                 }
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + cols });
             },
             else => {},
         }
-    }
-
-    /// Clear RGB entries for a physical row (O(1) memset)
-    fn clearRgbRow(self: *Self, phys_row: usize) void {
-        const cols: usize = self.cols;
-        const start = phys_row * cols;
-        @memset(self.fg_rgb[start .. start + cols], null);
-        @memset(self.bg_rgb[start .. start + cols], null);
-    }
-
-    /// Clear RGB entries for a physical index range (O(1) memset)
-    fn clearRgbPhysRange(self: *Self, start: usize, end: usize) void {
-        @memset(self.fg_rgb[start..end], null);
-        @memset(self.bg_rgb[start..end], null);
-    }
-
-    /// Clear RGB entries for logical rows [y_start, y_end)
-    fn clearRgbRange(self: *Self, y_start: usize, y_end: usize, _: usize) void {
-        const cols: usize = self.cols;
-        for (y_start..y_end) |y| {
-            const phys = self.row_map[y];
-            const start = phys * cols;
-            @memset(self.fg_rgb[start .. start + cols], null);
-            @memset(self.bg_rgb[start .. start + cols], null);
-        }
-    }
-
-    /// Clear all TrueColor entries.
-    fn clearAllRgb(self: *Self) void {
-        @memset(self.fg_rgb, null);
-        @memset(self.bg_rgb, null);
     }
 
     // TrueColor helpers (indexed by physical cell position)
