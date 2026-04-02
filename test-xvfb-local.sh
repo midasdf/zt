@@ -76,7 +76,7 @@ fi
 
 # ── 1. Unit Tests ──
 section "1. Unit Tests"
-if (cd /home/midasdf/zt && zig build test 2>&1 >/dev/null); then
+if (cd /home/midasdf/zt && zig build test >/dev/null 2>&1); then
     pass "zig build test"
 else
     fail "zig build test" "failed"
