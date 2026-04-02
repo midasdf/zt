@@ -310,15 +310,15 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
 /// Handle a single backend event (key, text, paste, resize, etc.).
 /// Returns false if the event loop should stop (close event or write failure).
 fn handleBackendEvent(
-    event: BackendEvent,
-    term: *@import("term.zig").Term,
+    event: *const BackendEvent,
+    term: *Term,
     pty_ptr: *Pty,
     backend: *Backend,
     write_buf: *[4096]u8,
     write_pending: *usize,
     evloop_fd: i32,
 ) bool {
-    switch (event) {
+    switch (event.*) {
         .key => |key_ev| {
             if (key_ev.pressed) {
                 const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
@@ -622,7 +622,7 @@ pub fn main() !void {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
-                                if (!handleBackendEvent(event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                                     running = false;
                                     break;
                                 }
@@ -702,7 +702,7 @@ pub fn main() !void {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
-                                if (!handleBackendEvent(event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                                     running = false;
                                     break;
                                 }
@@ -729,7 +729,7 @@ pub fn main() !void {
             // never appears because Cocoa callbacks never fire.
             if (config.backend == .macos) {
                 while (backend.pollEvents()) |event| {
-                    if (!handleBackendEvent(event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                    if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                         running = false;
                         break;
                     }

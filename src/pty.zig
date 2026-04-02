@@ -249,11 +249,9 @@ pub const Pty = struct {
         // === Parent process ===
         // Set master_fd nonblocking
         {
-            const F_GETFL = 3;
-            const F_SETFL = 4;
-            const O_NONBLOCK: u32 = @bitCast(std.posix.O{ .NONBLOCK = true });
-            const cur_flags = try posix.fcntl(master_fd, F_GETFL, 0);
-            _ = try posix.fcntl(master_fd, F_SETFL, cur_flags | O_NONBLOCK);
+            const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
+            const O_NONBLOCK: usize = @intCast(@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
+            _ = try posix.fcntl(master_fd, posix.F.SETFL, cur_flags | O_NONBLOCK);
         }
 
         return Pty{
