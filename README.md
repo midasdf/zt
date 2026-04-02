@@ -33,6 +33,15 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 - **No libc** (fbdev) — pure `std.posix` syscalls, single static binary
 - **73 unit tests** across 7 modules
 
+## Status
+
+| Backend | Status |
+|---------|--------|
+| fbdev | Stable |
+| X11 | Stable |
+| Wayland | Stable |
+| macOS | Experimental |
+
 ## Numbers
 
 |  | fbdev | X11 | Wayland |

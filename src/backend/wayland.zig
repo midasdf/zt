@@ -476,6 +476,10 @@ pub const WaylandBackend = struct {
                 if (header.object_id == sync_id and header.opcode == core.WL_CALLBACK_EVENT_DONE) {
                     done = true;
                     self.conn.id_alloc.release(sync_id);
+                } else if (header.object_id == self.globals.xdg_wm_base and header.opcode == xdg_shell.XDG_WM_BASE_EVENT_PING) {
+                    var pos: usize = 0;
+                    const serial = wire.getUint(payload, &pos);
+                    xdg_shell.pong(&self.conn, self.globals.xdg_wm_base, serial) catch {};
                 } else if (header.object_id == self.keyboard_id) {
                     self.handlePostInitKeyboardEvent(header.opcode, payload);
                 } else if (self.text_input.id != 0 and header.object_id == self.text_input.id) {
@@ -487,6 +491,7 @@ pub const WaylandBackend = struct {
                     }
                 }
             }
+            self.conn.flush() catch {};
         }
 
         if (self.keyboard.xkb_keymap == null) {
@@ -733,10 +738,10 @@ pub const WaylandBackend = struct {
             }
         } else if (header.object_id == self.globals.xdg_wm_base) {
             if (header.opcode == xdg_shell.XDG_WM_BASE_EVENT_PING) {
-                // Must respond immediately or compositor kills us
                 var pos: usize = 0;
                 const serial = wire.getUint(payload, &pos);
                 xdg_shell.pong(&self.conn, self.globals.xdg_wm_base, serial) catch {};
+                self.conn.flush() catch {};
             }
         } else if (header.object_id == self.xdg_surface_id) {
             if (header.opcode == xdg_shell.XDG_SURFACE_EVENT_CONFIGURE) {
@@ -1178,6 +1183,10 @@ pub const WaylandBackend = struct {
                     const payload = self.conn.consumeEvent(header.size);
                     self.dispatchEvent(header, payload);
                 }
+
+                // Flush immediately so pong/ack_configure reach the compositor
+                // without waiting for the next render cycle
+                self.conn.flush() catch {};
             }
             if (tag == EPOLL_TAG_REPEAT) {
                 // Key repeat timer fired -- read to acknowledge

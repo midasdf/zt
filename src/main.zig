@@ -758,6 +758,11 @@ pub fn main() !void {
         prev_cursor_x = term.cursor_x;
         prev_cursor_y = term.cursor_y;
 
+        // Flush Wayland protocol responses (pong, ack_configure) every iteration,
+        // even when we skip rendering. Without this, the compositor marks us
+        // "not responding" because pong sits in the send buffer.
+        if (config.backend == .wayland) backend.flush();
+
         // Render dirty cells — skip entirely if nothing changed
         if (!term.hasDirty()) continue;
 
