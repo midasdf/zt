@@ -398,11 +398,17 @@ pub const Term = struct {
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
         // Resize TrueColor arrays (physical indices invalidated)
+        // Allocate both before freeing to avoid dangling pointers on OOM
+        const new_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        const new_bg_rgb = self.allocator.alloc(?[3]u8, new_total) catch |e| {
+            self.allocator.free(new_fg_rgb);
+            return e;
+        };
         self.allocator.free(self.fg_rgb);
         self.allocator.free(self.bg_rgb);
-        self.fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        self.fg_rgb = new_fg_rgb;
+        self.bg_rgb = new_bg_rgb;
         @memset(self.fg_rgb, null);
-        self.bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
         @memset(self.bg_rgb, null);
 
         // Resize alt buffer if allocated
@@ -731,10 +737,12 @@ pub const Term = struct {
         // Fix wide boundaries using logical coords
         self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
 
-        // Shift characters left (physical)
+        // Shift characters left (physical) — cells + TrueColor arrays
         const copy_len = remaining - count;
         if (copy_len > 0) {
             std.mem.copyForwards(Cell, self.cells[row_base + cx .. row_base + cx + copy_len], self.cells[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(?[3]u8, self.fg_rgb[row_base + cx .. row_base + cx + copy_len], self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(?[3]u8, self.bg_rgb[row_base + cx .. row_base + cx + copy_len], self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
         }
 
         // Clear rightmost characters with BCE
@@ -758,6 +766,8 @@ pub const Term = struct {
         const copy_len = remaining - count;
         if (copy_len > 0) {
             std.mem.copyBackwards(Cell, self.cells[row_base + cx + count .. row_base + cx + count + copy_len], self.cells[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(?[3]u8, self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.fg_rgb[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(?[3]u8, self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.bg_rgb[row_base + cx .. row_base + cx + copy_len]);
         }
 
         // Clear inserted characters with BCE

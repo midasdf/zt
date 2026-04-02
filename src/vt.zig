@@ -1308,6 +1308,7 @@ fn parseExtendedColor(p: [16]u16, pc: u8, start: u8, term: *Term, is_fg: bool) u
         const sub = p[i + 1];
         if (sub == 5 and i + 2 < pc) {
             // 256-color: 38;5;n or 48;5;n
+            if (p[i + 2] > 255) return i + 2;
             const color: u8 = @intCast(p[i + 2]);
             if (is_fg) {
                 term.current_fg = color;
@@ -1319,6 +1320,7 @@ fn parseExtendedColor(p: [16]u16, pc: u8, start: u8, term: *Term, is_fg: bool) u
             return i + 2;
         } else if (sub == 2 and i + 4 < pc) {
             // TrueColor: 38;2;r;g;b or 48;2;r;g;b
+            if (p[i + 2] > 255 or p[i + 3] > 255 or p[i + 4] > 255) return i + 4;
             const r: u8 = @intCast(p[i + 2]);
             const g: u8 = @intCast(p[i + 3]);
             const b: u8 = @intCast(p[i + 4]);
