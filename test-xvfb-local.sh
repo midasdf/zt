@@ -51,12 +51,12 @@ send_keys() {
 }
 
 alive() {
-    kill -0 $ZT_PID 2>/dev/null
+    kill -0 "$ZT_PID" 2>/dev/null
 }
 
 cleanup_all() {
     cleanup_zt
-    [ -n "$XVFB_PID" ] && kill $XVFB_PID 2>/dev/null
+    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null
     rm -f /tmp/zt-bigfile.txt
 }
 trap cleanup_all EXIT
@@ -81,7 +81,6 @@ if (cd /home/midasdf/zt && zig build test 2>&1 >/dev/null); then
 else
     fail "zig build test" "failed"
 fi
-
 # ── 2. Binary Sanity ──
 section "2. Binary Sanity"
 RELEASE_SIZE=$(stat -c%s "$ZT_RELEASE")
