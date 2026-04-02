@@ -1905,3 +1905,32 @@ test "OSC: title set via OSC 2 with ST terminator" {
     }
     try testing.expectEqualSlices(u8, "World", term.title[0..term.title_len]);
 }
+
+test "Executor: malformed SGR 38;5;999 does not panic" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+    // Set a known fg color first
+    term.current_fg = 7;
+    // Feed \e[38;5;999m — color index > 255, should be silently ignored
+    for ("\x1b[38;5;999m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // fg should remain unchanged
+    try testing.expectEqual(@as(u8, 7), term.current_fg);
+}
+
+test "Executor: malformed SGR 48;2;256;0;0 does not panic" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+    term.current_bg_rgb = null;
+    // Feed \e[48;2;256;0;0m — r > 255, should be silently ignored
+    for ("\x1b[48;2;256;0;0m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // bg_rgb should remain null (not set)
+    try testing.expectEqual(@as(?[3]u8, null), term.current_bg_rgb);
+}

@@ -436,14 +436,16 @@ pub const Term = struct {
             self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
         }
         if (self.alt_fg_rgb) |a| {
+            const new_alt_fg = try self.allocator.alloc(?[3]u8, new_total);
+            @memset(new_alt_fg, null);
             self.allocator.free(a);
-            self.alt_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
-            @memset(self.alt_fg_rgb.?, null);
+            self.alt_fg_rgb = new_alt_fg;
         }
         if (self.alt_bg_rgb) |a| {
+            const new_alt_bg = try self.allocator.alloc(?[3]u8, new_total);
+            @memset(new_alt_bg, null);
             self.allocator.free(a);
-            self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
-            @memset(self.alt_bg_rgb.?, null);
+            self.alt_bg_rgb = new_alt_bg;
         }
     }
 
@@ -1074,4 +1076,83 @@ test "switchScreen preserves main screen cells" {
     try std.testing.expectEqual(@as(u21, 'A'), t.getCell(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'B'), t.getCell(1, 0).char);
     try std.testing.expectEqual(@as(u21, 'C'), t.getCell(2, 0).char);
+}
+
+test "Term: deleteChars shifts TrueColor RGB alongside cells" {
+    var term = try Term.init(testing.allocator, 10, 4);
+    defer term.deinit();
+
+    // Place cells with distinct TrueColor at columns 0..4
+    for (0..5) |i| {
+        term.cursor_x = @intCast(i);
+        term.cursor_y = 0;
+        const c: u8 = @intCast(i);
+        term.setCell(@intCast(i), 0, .{ .char = @as(u21, 'A') + c });
+        const phys = term.row_map[0];
+        const idx = phys * @as(usize, term.cols) + i;
+        term.fg_rgb[idx] = .{ c * 10, c * 20, c * 30 };
+        term.bg_rgb[idx] = .{ c + 100, c + 110, c + 120 };
+    }
+
+    // Delete 2 chars at column 1 → cols 3,4 shift left to 1,2
+    term.cursor_x = 1;
+    term.cursor_y = 0;
+    term.deleteChars(2);
+
+    const phys = term.row_map[0];
+    const base = phys * @as(usize, term.cols);
+
+    // Column 0 unchanged
+    try testing.expectEqual(@as(u21, 'A'), term.cells[base + 0].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 0, 0, 0 }), term.fg_rgb[base + 0]);
+
+    // Old col 3 → now col 1
+    try testing.expectEqual(@as(u21, 'D'), term.cells[base + 1].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 30, 60, 90 }), term.fg_rgb[base + 1]);
+
+    // Old col 4 → now col 2
+    try testing.expectEqual(@as(u21, 'E'), term.cells[base + 2].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 40, 80, 120 }), term.fg_rgb[base + 2]);
+
+    // Cleared cols at end should have null RGB
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 8]);
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 9]);
+}
+
+test "Term: insertChars shifts TrueColor RGB alongside cells" {
+    var term = try Term.init(testing.allocator, 10, 4);
+    defer term.deinit();
+
+    // Place cells with TrueColor at columns 0..4
+    for (0..5) |i| {
+        const c: u8 = @intCast(i);
+        term.setCell(@intCast(i), 0, .{ .char = @as(u21, 'A') + c });
+        const phys = term.row_map[0];
+        const idx = phys * @as(usize, term.cols) + i;
+        term.fg_rgb[idx] = .{ c * 10, c * 20, c * 30 };
+    }
+
+    // Insert 2 chars at column 1 → cols 1..7 shift right to 3..9
+    term.cursor_x = 1;
+    term.cursor_y = 0;
+    term.insertChars(2);
+
+    const phys = term.row_map[0];
+    const base = phys * @as(usize, term.cols);
+
+    // Column 0 unchanged
+    try testing.expectEqual(@as(u21, 'A'), term.cells[base + 0].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 0, 0, 0 }), term.fg_rgb[base + 0]);
+
+    // Inserted cols 1,2 should be blank with null RGB
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 1]);
+    try testing.expectEqual(@as(?[3]u8, null), term.fg_rgb[base + 2]);
+
+    // Old col 1 → now col 3
+    try testing.expectEqual(@as(u21, 'B'), term.cells[base + 3].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 10, 20, 30 }), term.fg_rgb[base + 3]);
+
+    // Old col 2 → now col 4
+    try testing.expectEqual(@as(u21, 'C'), term.cells[base + 4].char);
+    try testing.expectEqual(@as(?[3]u8, .{ 20, 40, 60 }), term.fg_rgb[base + 4]);
 }
