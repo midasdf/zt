@@ -20,9 +20,9 @@ xdo() {
 }
 
 cleanup_zt() {
-    if [ -n "$ZT_PID" ] && kill -0 $ZT_PID 2>/dev/null; then
-        kill $ZT_PID 2>/dev/null
-        wait $ZT_PID 2>/dev/null || true
+    if [ -n "$ZT_PID" ] && kill -0 "$ZT_PID" 2>/dev/null; then
+        kill "$ZT_PID" 2>/dev/null
+        wait "$ZT_PID" 2>/dev/null || true
     fi
     ZT_PID=""
     WINDOW_ID=""
@@ -30,7 +30,7 @@ cleanup_zt() {
 
 launch_zt() {
     local binary="$1"
-    $binary &
+    "$binary" &
     ZT_PID=$!
     sleep 2
     WINDOW_ID=$(xdo search --name "zt" | head -1)
@@ -51,12 +51,12 @@ send_keys() {
 }
 
 alive() {
-    kill -0 $ZT_PID 2>/dev/null
+    kill -0 "$ZT_PID" 2>/dev/null
 }
 
 cleanup_all() {
     cleanup_zt
-    [ -n "$XVFB_PID" ] && kill $XVFB_PID 2>/dev/null
+    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null
     rm -f /tmp/zt-bigfile.txt
 }
 trap cleanup_all EXIT
