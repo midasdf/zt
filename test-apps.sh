@@ -39,28 +39,6 @@ launch_zt() {
     return 0
 }
 
-type_cmd() {
-    xdo type --window "$WINDOW_ID" --clearmodifiers --delay 8 "$1"
-    xdo key --window "$WINDOW_ID" --clearmodifiers Return
-}
-
-send_keys() {
-    xdo key --window "$WINDOW_ID" --clearmodifiers "$@"
-}
-
-alive() { kill -0 $ZT_PID 2>/dev/null; }
-
-wait_and_check() {
-    local label="$1"
-    local wait_sec="${2:-3}"
-    sleep "$wait_sec"
-    if alive; then
-        pass "$label"
-    else
-        fail "$label" "zt process died"
-    fi
-}
-
 cleanup_all() {
     cleanup_zt
     [ -n "$XVFB_PID" ] && kill $XVFB_PID 2>/dev/null

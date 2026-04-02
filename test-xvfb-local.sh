@@ -37,23 +37,6 @@ launch_zt() {
     [ -z "$WINDOW_ID" ] && WINDOW_ID=$(xdo search --class "zt" | head -1)
 }
 
-type_cmd() {
-    if [ -n "$WINDOW_ID" ]; then
-        xdo type --window "$WINDOW_ID" --clearmodifiers --delay 10 "$1"
-        xdo key --window "$WINDOW_ID" --clearmodifiers Return
-    fi
-}
-
-send_keys() {
-    if [ -n "$WINDOW_ID" ]; then
-        xdo key --window "$WINDOW_ID" --clearmodifiers --delay "$@"
-    fi
-}
-
-alive() {
-    kill -0 $ZT_PID 2>/dev/null
-}
-
 cleanup_all() {
     cleanup_zt
     [ -n "$XVFB_PID" ] && kill $XVFB_PID 2>/dev/null
