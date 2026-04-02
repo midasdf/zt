@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 0 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          curl -sL "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxcb-shm0-dev libxcb-xkb-dev \
+            libxcb-imdkit-dev libxcb-util-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Format check
+        run: zig fmt --check src/
+
+      - name: Build
+        run: zig build -Dbackend=x11
+
+      - name: Test
+        run: zig build test -Dbackend=x11
+
+  security-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Zig Security Audit
+        env:
+          GH_EVENT: ${{ github.event_name }}
+          GH_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          echo "## Zig Security Audit" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Pattern | Count | Level |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---------|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+
+          total=0
+
+          audit() {
+            local pattern="$1" level="$2" label="$3"
+            local count
+            count=$(grep -rn --include='*.zig' -e "$pattern" src/ 2>/dev/null | wc -l)
+            if [ "$count" -gt 0 ]; then
+              echo "| \`$label\` | $count | $level |" >> "$GITHUB_STEP_SUMMARY"
+              total=$((total + count))
+            fi
+            if [ "$GH_EVENT" = "pull_request" ] && [ -n "$GH_BASE_REF" ]; then
+              git diff --name-only "origin/$GH_BASE_REF" -- '*.zig' 2>/dev/null | while read -r file; do
+                [ -f "$file" ] || continue
+                grep -n "$pattern" "$file" 2>/dev/null | while IFS=: read -r line content; do
+                  echo "::warning file=$file,line=$line::[$level] $label: $content"
+                done
+              done
+            fi
+          }
+
+          audit '@setRuntimeSafety\(false\)' 'Critical' '@setRuntimeSafety(false)'
+          audit '@ptrCast' 'Tracked' '@ptrCast'
+          audit '@ptrFromInt' 'Tracked' '@ptrFromInt'
+          audit '@intFromPtr' 'Tracked' '@intFromPtr'
+          audit '@alignCast' 'Tracked' '@alignCast'
+          audit 'catch unreachable' 'Review' 'catch unreachable'
+          audit 'orelse unreachable' 'Review' 'orelse unreachable'
+          audit '@cImport' 'Info' '@cImport'
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Total: $total** patterns tracked" >> "$GITHUB_STEP_SUMMARY"
+          echo "_Not bugs — areas requiring careful review during changes._" >> "$GITHUB_STEP_SUMMARY"
