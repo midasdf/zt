@@ -222,23 +222,21 @@ fn ptyBufferedWrite(
             }
             write_pending.* = remaining;
         }
-        // Append as much as possible after flush
+        // Append after flush — reject if buffer still can't fit all data
         const space2 = write_buf.len - write_pending.*;
-        const to_copy = @min(data.len, space2);
-        if (to_copy > 0) {
-            @memcpy(write_buf[write_pending.* .. write_pending.* + to_copy], data[0..to_copy]);
-            write_pending.* += to_copy;
-        }
+        if (data.len > space2) return false; // buffer full, cannot accept
+        @memcpy(write_buf[write_pending.* .. write_pending.* + data.len], data);
+        write_pending.* += data.len;
         return true;
     }
 
     // Try direct write
     const written = pty_ptr.write(data) catch |err| switch (err) {
         error.WouldBlock => {
-            // Buffer everything (up to buffer capacity)
-            const to_copy = @min(data.len, write_buf.len);
-            @memcpy(write_buf[0..to_copy], data[0..to_copy]);
-            write_pending.* = to_copy;
+            // Buffer everything — reject if data exceeds buffer capacity
+            if (data.len > write_buf.len) return false;
+            @memcpy(write_buf[0..data.len], data);
+            write_pending.* = data.len;
             if (is_linux) {
                 epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
             } else {
@@ -249,12 +247,12 @@ fn ptyBufferedWrite(
         else => return false,
     };
 
-    // Partial write — buffer the rest
+    // Partial write — buffer the rest (reject if remainder exceeds buffer)
     if (written < data.len) {
         const remaining = data.len - written;
-        const to_copy = @min(remaining, write_buf.len);
-        @memcpy(write_buf[0..to_copy], data[written .. written + to_copy]);
-        write_pending.* = to_copy;
+        if (remaining > write_buf.len) return false;
+        @memcpy(write_buf[0..remaining], data[written .. written + remaining]);
+        write_pending.* = remaining;
         if (is_linux) {
             epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
         } else {

@@ -545,6 +545,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     const b1 = data[i + 1];
                     if (b1 & 0xC0 != 0x80) break;
                     cp = (@as(u21, first & 0x1F) << 6) | @as(u21, b1 & 0x3F);
+                    if (cp < 0x80) cp = 0xFFFD; // reject overlong
                     seq_len = 2;
                 } else if (first < 0xF0) {
                     if (i + 2 >= data.len) break;
@@ -552,15 +553,21 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     const b2 = data[i + 2];
                     if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80) break;
                     cp = (@as(u21, first & 0x0F) << 12) | (@as(u21, b1 & 0x3F) << 6) | @as(u21, b2 & 0x3F);
+                    if (cp < 0x800 or (cp >= 0xD800 and cp <= 0xDFFF)) cp = 0xFFFD; // reject overlong/surrogate
                     seq_len = 3;
-                } else {
+                } else if (first < 0xF5) {
                     if (i + 3 >= data.len) break;
                     const b1 = data[i + 1];
                     const b2 = data[i + 2];
                     const b3 = data[i + 3];
                     if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80 or b3 & 0xC0 != 0x80) break;
                     cp = (@as(u21, first & 0x07) << 18) | (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) | @as(u21, b3 & 0x3F);
+                    if (cp < 0x10000 or cp > 0x10FFFF) cp = 0xFFFD; // reject overlong/>U+10FFFF
                     seq_len = 4;
+                } else {
+                    // 0xF5..0xFD: invalid lead byte, skip
+                    i += 1;
+                    continue;
                 }
                 // Wide chars need handlePrint for dummy cell logic
                 if (isWide(cp)) {
