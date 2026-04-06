@@ -516,10 +516,28 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 // Inline control character handling — stay in fast path loop
                 if (i < data.len) {
                     switch (data[i]) {
-                        0x0A, 0x0B, 0x0C => { term.wrap_next = false; term.insertNewline(); i += 1; continue; },
-                        0x0D => { term.carriageReturn(); i += 1; continue; },
-                        0x08 => { term.wrap_next = false; if (term.cursor_x > 0) term.cursor_x -= 1; i += 1; continue; },
-                        0x09 => { term.tputtab(1); i += 1; continue; },
+                        0x0A, 0x0B, 0x0C => {
+                            term.wrap_next = false;
+                            term.insertNewline();
+                            i += 1;
+                            continue;
+                        },
+                        0x0D => {
+                            term.carriageReturn();
+                            i += 1;
+                            continue;
+                        },
+                        0x08 => {
+                            term.wrap_next = false;
+                            if (term.cursor_x > 0) term.cursor_x -= 1;
+                            i += 1;
+                            continue;
+                        },
+                        0x09 => {
+                            term.tputtab(1);
+                            i += 1;
+                            continue;
+                        },
                         else => {},
                     }
                 }
@@ -599,6 +617,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     term.cells[wide_phys] = term.blankCell();
                     term.fg_rgb[wide_phys] = null;
                     term.bg_rgb[wide_phys] = term.current_bg_rgb;
+                    if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
                     term.markDirty(term.cursor_x - 1, term.cursor_y);
                 } else if (term.cells[phys_idx].attrs.wide and term.cursor_x + 1 < cols) {
                     // Overwriting a wide cell (left half): clear the dummy to its right
@@ -606,6 +625,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     term.cells[dummy_phys] = term.blankCell();
                     term.fg_rgb[dummy_phys] = null;
                     term.bg_rgb[dummy_phys] = term.current_bg_rgb;
+                    if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
                     term.markDirty(term.cursor_x + 1, term.cursor_y);
                 }
                 term.cells[phys_idx] = .{
@@ -813,25 +833,46 @@ fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser, writer_fd: ?std.posix.
     if (parser.state == .escape) {
         parser.state = .ground;
         switch (byte) {
-            'A' => { term.wrap_next = false; if (term.cursor_y > 0) term.cursor_y -= 1; },
-            'B' => { term.wrap_next = false; if (term.cursor_y < term.rows - 1) term.cursor_y += 1; },
-            'C' => { term.wrap_next = false; if (term.cursor_x < term.cols - 1) term.cursor_x += 1; },
-            'D' => { term.wrap_next = false; if (term.cursor_x > 0) term.cursor_x -= 1; },
+            'A' => {
+                term.wrap_next = false;
+                if (term.cursor_y > 0) term.cursor_y -= 1;
+            },
+            'B' => {
+                term.wrap_next = false;
+                if (term.cursor_y < term.rows - 1) term.cursor_y += 1;
+            },
+            'C' => {
+                term.wrap_next = false;
+                if (term.cursor_x < term.cols - 1) term.cursor_x += 1;
+            },
+            'D' => {
+                term.wrap_next = false;
+                if (term.cursor_x > 0) term.cursor_x -= 1;
+            },
             'F' => term.charsets[0] = .dec_graphics,
             'G' => term.charsets[0] = .us_ascii,
-            'H' => { term.cursor_x = 0; term.cursor_y = 0; term.wrap_next = false; },
+            'H' => {
+                term.cursor_x = 0;
+                term.cursor_y = 0;
+                term.wrap_next = false;
+            },
             'I' => { // Reverse LF
                 term.wrap_next = false;
-                if (term.cursor_y == term.scroll_top) term.scrollDown(1)
-                else if (term.cursor_y > 0) term.cursor_y -= 1;
+                if (term.cursor_y == term.scroll_top) term.scrollDown(1) else if (term.cursor_y > 0) term.cursor_y -= 1;
             },
             'J' => term.eraseDisplay(0),
             'K' => term.eraseLine(0),
-            'Y' => { parser.utf8_buf[0] = 'Y'; return; }, // Begin cursor addressing
+            'Y' => {
+                parser.utf8_buf[0] = 'Y';
+                return;
+            }, // Begin cursor addressing
             'Z' => { // Identify
                 if (writer_fd) |fd| _ = std.posix.write(fd, "\x1b/Z") catch {};
             },
-            '<' => { term.vt52_mode = false; parser.utf8_buf[0] = 0; }, // Exit VT52 → VT100
+            '<' => {
+                term.vt52_mode = false;
+                parser.utf8_buf[0] = 0;
+            }, // Exit VT52 → VT100
             '=' => term.deckpam = true,
             '>' => term.deckpam = false,
             else => {},
@@ -885,7 +926,8 @@ fn isWide(cp: u21) bool {
         0x1B100...0x1B12F, // Kana Extended-A
         0x1B130...0x1B16F, // Small Kana Extension
         0x1B170...0x1B2FF, // Nushu
-        0x1F004, 0x1F0CF, // Mahjong, Playing Cards
+        0x1F004,
+        0x1F0CF, // Mahjong, Playing Cards
         0x1F18E, // Negative Squared AB
         0x1F191...0x1F19A, // Squared symbols
         0x1F1E0...0x1F1FF, // Regional Indicators (flags)
@@ -1488,7 +1530,9 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             // Left/right margin mode
             69 => {},
             // Silently ignored DEC modes
-            2 => { if (!set) term.vt52_mode = true; }, // DECANM reset → VT52 mode
+            2 => {
+                if (!set) term.vt52_mode = true;
+            }, // DECANM reset → VT52 mode
             0, 3, 4, 5, 8, 12, 18, 19, 38, 42, 45, 66, 2031 => {},
             else => {
                 std.log.warn("unhandled DEC mode: {d} set={}", .{ p[i], set });

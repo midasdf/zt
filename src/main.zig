@@ -761,7 +761,10 @@ pub fn main() !void {
             var extra_total: usize = 0;
             while (extra_total < config.pty_buf_size * 4) {
                 const extra = pty.read(&pty_buf) catch break;
-                if (extra == 0) { running = false; break; }
+                if (extra == 0) {
+                    running = false;
+                    break;
+                }
                 bytes_since_render += extra;
                 extra_total += extra;
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
@@ -806,28 +809,6 @@ pub fn main() !void {
             const pixel_buf: [*][4]u8 = @ptrCast(buf.ptr);
             @memset(pixel_buf[0..total_pixels], bg_packed);
             backend.markDirtyRows(0, backend.getHeight() - 1);
-        }
-
-        // Pre-pass: propagate dirty from wide_dummy to its wide cell neighbor.
-        // The render loop skips wide_dummy cells (the wide cell draws both halves),
-        // so a dirty dummy with a non-dirty wide cell would leave stale pixels.
-        if (!all_dirty) {
-            var py: u32 = 0;
-            while (py < term.rows) : (py += 1) {
-                if (!term.isRowDirty(py)) continue;
-                const p_phys = term.row_map[py];
-                const p_base = @as(usize, p_phys) * @as(usize, term.cols);
-                const p_cells = term.cells[p_base..][0..term.cols];
-                const p_dirty_base = @as(usize, py) * @as(usize, term.cols);
-                var px: u32 = 1;
-                while (px < term.cols) : (px += 1) {
-                    if (term.dirty.isSet(p_dirty_base + px) and p_cells[px].attrs.wide_dummy and
-                        !term.dirty.isSet(p_dirty_base + px - 1))
-                    {
-                        term.dirty.set(p_dirty_base + px - 1);
-                    }
-                }
-            }
         }
 
         var y: u32 = 0;
