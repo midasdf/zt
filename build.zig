@@ -60,6 +60,8 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("xcb-util");
         exe.linkSystemLibrary("xkbcommon");
         exe.linkSystemLibrary("xkbcommon-x11");
+        // Allow cross-compilation against shared libs with newer glibc
+        exe.linker_allow_shlib_undefined = true;
         exe.linkLibC();
     } else if (is_wayland) {
         exe.linkSystemLibrary("xkbcommon");
