@@ -234,13 +234,13 @@ pub const Pty = struct {
                     _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
             } else {
-                // Default: login shell
+                // Default: login shell (execvpeZ searches PATH for bare names like "fish")
                 const argv: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{
                     shell_path,
                     "--login",
                 };
-                _ = posix.execveZ(shell_path, argv, env) catch {
-                    _ = posix.write(2, "zt: execve failed\n") catch {};
+                _ = posix.execvpeZ(shell_path, argv, env) catch {
+                    _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
             }
             std.posix.exit(1);
