@@ -194,28 +194,48 @@ fn kqueueSetPtyWrite(kq: i32, pty_fd: std.posix.fd_t, enable: bool) void {
 }
 
 /// Write to PTY with buffering on WouldBlock.
+/// Uses a 64KB buffer to avoid truncation on large pastes or IME commits.
 fn ptyBufferedWrite(
     pty_ptr: *Pty,
     data: []const u8,
-    write_buf: *[4096]u8,
+    write_buf: *[65536]u8,
     write_pending: *usize,
     epoll_fd: i32,
 ) bool {
-    // If there's pending data, just append to buffer
+    // If there's pending data, append to buffer (retry-write remaining on overflow)
     if (write_pending.* > 0) {
         const space = write_buf.len - write_pending.*;
-        const to_copy = @min(data.len, space);
+        if (data.len <= space) {
+            @memcpy(write_buf[write_pending.* .. write_pending.* + data.len], data);
+            write_pending.* += data.len;
+            return true;
+        }
+        // Buffer full — try flushing pending data first to make room
+        const flushed = pty_ptr.write(write_buf[0..write_pending.*]) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return false,
+        };
+        if (flushed > 0) {
+            const remaining = write_pending.* - flushed;
+            if (remaining > 0) {
+                std.mem.copyForwards(u8, write_buf[0..remaining], write_buf[flushed .. flushed + remaining]);
+            }
+            write_pending.* = remaining;
+        }
+        // Append as much as possible after flush
+        const space2 = write_buf.len - write_pending.*;
+        const to_copy = @min(data.len, space2);
         if (to_copy > 0) {
             @memcpy(write_buf[write_pending.* .. write_pending.* + to_copy], data[0..to_copy]);
             write_pending.* += to_copy;
         }
-        return true; // still running
+        return true;
     }
 
     // Try direct write
     const written = pty_ptr.write(data) catch |err| switch (err) {
         error.WouldBlock => {
-            // Buffer everything
+            // Buffer everything (up to buffer capacity)
             const to_copy = @min(data.len, write_buf.len);
             @memcpy(write_buf[0..to_copy], data[0..to_copy]);
             write_pending.* = to_copy;
@@ -247,7 +267,7 @@ fn ptyBufferedWrite(
 /// Flush pending write buffer.
 fn ptyFlushPending(
     pty_ptr: *Pty,
-    write_buf: *[4096]u8,
+    write_buf: *[65536]u8,
     write_pending: *usize,
     epoll_fd: i32,
 ) bool {
@@ -314,14 +334,14 @@ fn handleBackendEvent(
     term: *Term,
     pty_ptr: *Pty,
     backend: *Backend,
-    write_buf: *[4096]u8,
+    write_buf: *[65536]u8,
     write_pending: *usize,
     evloop_fd: i32,
 ) bool {
     switch (event.*) {
         .key => |key_ev| {
             if (key_ev.pressed) {
-                const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm);
+                const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm, term.decbkm);
                 if (bytes.len > 0) {
                     if (!ptyBufferedWrite(pty_ptr, bytes, write_buf, write_pending, evloop_fd)) {
                         return false;
@@ -539,7 +559,7 @@ pub fn main() !void {
     var cursor_visible_blink = true;
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
-    var write_buf: [4096]u8 = undefined;
+    var write_buf: [65536]u8 = undefined;
     var write_pending: usize = 0;
     var last_render_ns: i128 = 0;
     var bytes_since_render: usize = 0;
@@ -650,7 +670,7 @@ pub fn main() !void {
                                     },
                                     else => {
                                         if (input_event.pressed or input_event.repeat) {
-                                            const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm);
+                                            const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm, term.decbkm);
                                             if (bytes.len > 0) {
                                                 if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
                                                     running = false;

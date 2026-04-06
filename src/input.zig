@@ -360,7 +360,7 @@ fn getSpecialKey(kc: u16) ?SpecialKey {
 /// Translate a Linux evdev keycode + modifiers into bytes to write to the PTY.
 /// Returns a slice into a static buffer — valid only until the next call.
 /// NOT thread-safe: uses function-level static storage.
-pub fn translateKey(keycode: u16, mods: Modifiers, decckm: bool) []const u8 {
+pub fn translateKey(keycode: u16, mods: Modifiers, decckm: bool, decbkm: bool) []const u8 {
     const S = struct {
         var buf: [32]u8 = undefined;
     };
@@ -377,12 +377,14 @@ pub fn translateKey(keycode: u16, mods: Modifiers, decckm: bool) []const u8 {
             return S.buf[0..1];
         },
         KEY.BACKSPACE => {
+            // DECBKM (?67): true = BS (0x08), false = DEL (0x7F)
+            const bs_byte: u8 = if (decbkm) 0x08 else 0x7f;
             if (mods.alt) {
                 S.buf[0] = 0x1b;
-                S.buf[1] = 0x7f;
+                S.buf[1] = bs_byte;
                 return S.buf[0..2];
             }
-            S.buf[0] = 0x7f;
+            S.buf[0] = bs_byte;
             return S.buf[0..1];
         },
         KEY.TAB => {
@@ -500,133 +502,133 @@ fn writeU8(buf: []u8, val: u8) usize {
 // ============================================================
 
 test "Input: KEY_A with no mods produces 'a'" {
-    const result = translateKey(KEY.A, .{}, false);
+    const result = translateKey(KEY.A, .{}, false, false);
     try testing.expectEqualSlices(u8, "a", result);
 }
 
 test "Input: KEY_A with shift produces 'A'" {
-    const result = translateKey(KEY.A, .{ .shift = true }, false);
+    const result = translateKey(KEY.A, .{ .shift = true }, false, false);
     try testing.expectEqualSlices(u8, "A", result);
 }
 
 test "Input: KEY_A with ctrl produces 0x01" {
-    const result = translateKey(KEY.A, .{ .ctrl = true }, false);
+    const result = translateKey(KEY.A, .{ .ctrl = true }, false, false);
     try testing.expectEqualSlices(u8, &[_]u8{0x01}, result);
 }
 
 test "Input: KEY_A with alt produces ESC + 'a'" {
-    const result = translateKey(KEY.A, .{ .alt = true }, false);
+    const result = translateKey(KEY.A, .{ .alt = true }, false, false);
     try testing.expectEqualSlices(u8, "\x1ba", result);
 }
 
 test "Input: KEY_UP with DECCKM off produces CSI A" {
-    const result = translateKey(KEY.UP, .{}, false);
+    const result = translateKey(KEY.UP, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x1b[A", result);
 }
 
 test "Input: KEY_UP with DECCKM on produces SS3 A" {
-    const result = translateKey(KEY.UP, .{}, true);
+    const result = translateKey(KEY.UP, .{}, true, false);
     try testing.expectEqualSlices(u8, "\x1bOA", result);
 }
 
 test "Input: KEY_ENTER produces CR" {
-    const result = translateKey(KEY.ENTER, .{}, false);
+    const result = translateKey(KEY.ENTER, .{}, false, false);
     try testing.expectEqualSlices(u8, "\r", result);
 }
 
 test "Input: KEY_F1 produces SS3 P" {
-    const result = translateKey(KEY.F1, .{}, false);
+    const result = translateKey(KEY.F1, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x1bOP", result);
 }
 
 test "Input: KEY_BACKSPACE produces DEL" {
-    const result = translateKey(KEY.BACKSPACE, .{}, false);
+    const result = translateKey(KEY.BACKSPACE, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x7f", result);
 }
 
 test "Input: KEY_HOME produces CSI H" {
-    const result = translateKey(KEY.HOME, .{}, false);
+    const result = translateKey(KEY.HOME, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x1b[H", result);
 }
 
 test "Input: KEY_DELETE produces CSI 3~" {
-    const result = translateKey(KEY.DELETE, .{}, false);
+    const result = translateKey(KEY.DELETE, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x1b[3~", result);
 }
 
 test "Input: number key 1 produces '1'" {
-    const result = translateKey(KEY.@"1", .{}, false);
+    const result = translateKey(KEY.@"1", .{}, false, false);
     try testing.expectEqualSlices(u8, "1", result);
 }
 
 test "Input: number key 1 with shift produces '!'" {
-    const result = translateKey(KEY.@"1", .{ .shift = true }, false);
+    const result = translateKey(KEY.@"1", .{ .shift = true }, false, false);
     try testing.expectEqualSlices(u8, "!", result);
 }
 
 test "Input: Ctrl+C produces 0x03" {
-    const result = translateKey(KEY.C, .{ .ctrl = true }, false);
+    const result = translateKey(KEY.C, .{ .ctrl = true }, false, false);
     try testing.expectEqualSlices(u8, &[_]u8{0x03}, result);
 }
 
 test "Input: Ctrl+Space produces NUL" {
-    const result = translateKey(KEY.SPACE, .{ .ctrl = true }, false);
+    const result = translateKey(KEY.SPACE, .{ .ctrl = true }, false, false);
     try testing.expectEqualSlices(u8, &[_]u8{0x00}, result);
 }
 
 test "Input: Shift+Tab produces CSI Z" {
-    const result = translateKey(KEY.TAB, .{ .shift = true }, false);
+    const result = translateKey(KEY.TAB, .{ .shift = true }, false, false);
     try testing.expectEqualSlices(u8, "\x1b[Z", result);
 }
 
 test "Input: Ctrl+Up produces modified arrow" {
-    const result = translateKey(KEY.UP, .{ .ctrl = true }, false);
+    const result = translateKey(KEY.UP, .{ .ctrl = true }, false, false);
     try testing.expectEqualSlices(u8, "\x1b[1;5A", result);
 }
 
 test "Input: Shift+Delete produces modified tilde" {
-    const result = translateKey(KEY.DELETE, .{ .shift = true }, false);
+    const result = translateKey(KEY.DELETE, .{ .shift = true }, false, false);
     try testing.expectEqualSlices(u8, "\x1b[3;2~", result);
 }
 
 test "Input: KEY_PAGEUP produces CSI 5~" {
-    const result = translateKey(KEY.PAGEUP, .{}, false);
+    const result = translateKey(KEY.PAGEUP, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x1b[5~", result);
 }
 
 test "Input: KEY_END produces CSI F" {
-    const result = translateKey(KEY.END, .{}, false);
+    const result = translateKey(KEY.END, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x1b[F", result);
 }
 
 test "Input: KEY_F5 produces CSI 15~" {
-    const result = translateKey(KEY.F5, .{}, false);
+    const result = translateKey(KEY.F5, .{}, false, false);
     try testing.expectEqualSlices(u8, "\x1b[15~", result);
 }
 
 test "Input: Alt+Ctrl+A produces ESC + 0x01" {
-    const result = translateKey(KEY.A, .{ .alt = true, .ctrl = true }, false);
+    const result = translateKey(KEY.A, .{ .alt = true, .ctrl = true }, false, false);
     try testing.expectEqualSlices(u8, &[_]u8{ 0x1b, 0x01 }, result);
 }
 
 test "Input: symbol keys" {
-    try testing.expectEqualSlices(u8, "-", translateKey(KEY.MINUS, .{}, false));
-    try testing.expectEqualSlices(u8, "_", translateKey(KEY.MINUS, .{ .shift = true }, false));
-    try testing.expectEqualSlices(u8, "=", translateKey(KEY.EQUAL, .{}, false));
-    try testing.expectEqualSlices(u8, "+", translateKey(KEY.EQUAL, .{ .shift = true }, false));
-    try testing.expectEqualSlices(u8, "[", translateKey(KEY.LEFTBRACE, .{}, false));
-    try testing.expectEqualSlices(u8, "{", translateKey(KEY.LEFTBRACE, .{ .shift = true }, false));
-    try testing.expectEqualSlices(u8, ";", translateKey(KEY.SEMICOLON, .{}, false));
-    try testing.expectEqualSlices(u8, ":", translateKey(KEY.SEMICOLON, .{ .shift = true }, false));
+    try testing.expectEqualSlices(u8, "-", translateKey(KEY.MINUS, .{}, false, false));
+    try testing.expectEqualSlices(u8, "_", translateKey(KEY.MINUS, .{ .shift = true }, false, false));
+    try testing.expectEqualSlices(u8, "=", translateKey(KEY.EQUAL, .{}, false, false));
+    try testing.expectEqualSlices(u8, "+", translateKey(KEY.EQUAL, .{ .shift = true }, false, false));
+    try testing.expectEqualSlices(u8, "[", translateKey(KEY.LEFTBRACE, .{}, false, false));
+    try testing.expectEqualSlices(u8, "{", translateKey(KEY.LEFTBRACE, .{ .shift = true }, false, false));
+    try testing.expectEqualSlices(u8, ";", translateKey(KEY.SEMICOLON, .{}, false, false));
+    try testing.expectEqualSlices(u8, ":", translateKey(KEY.SEMICOLON, .{ .shift = true }, false, false));
 }
 
 test "Input: HOME with DECCKM on produces SS3 H" {
-    const result = translateKey(KEY.HOME, .{}, true);
+    const result = translateKey(KEY.HOME, .{}, true, false);
     try testing.expectEqualSlices(u8, "\x1bOH", result);
 }
 
 test "Input: unknown keycode returns empty" {
-    const result = translateKey(255, .{}, false);
+    const result = translateKey(255, .{}, false, false);
     try testing.expectEqualSlices(u8, "", result);
 }
 

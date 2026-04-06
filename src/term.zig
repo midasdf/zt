@@ -441,31 +441,32 @@ pub const Term = struct {
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
-        // Resize alt buffer if allocated
-        if (self.alt_cells) |alt| {
-            self.allocator.free(alt);
-            self.alt_cells = try self.allocator.alloc(Cell, new_total);
-            @memset(self.alt_cells.?, Cell{});
-        }
-        if (self.alt_row_map) |arm| {
-            self.allocator.free(arm);
-            self.alt_row_map = try self.allocator.alloc(u32, new_rows);
-            for (0..new_rows) |i| self.alt_row_map.?[i] = @intCast(i);
-        }
-        if (self.alt_dirty) |*ad| {
-            ad.deinit();
-            self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
-        }
-        if (self.alt_fg_rgb) |a| {
-            const new_alt_fg = try self.allocator.alloc(?[3]u8, new_total);
-            @memset(new_alt_fg, null);
-            self.allocator.free(a);
+        // Resize alt buffer if allocated — allocate all new buffers first,
+        // then free old ones, so OOM leaves the old buffers intact (no UAF).
+        if (self.alt_cells != null or self.alt_row_map != null or self.alt_dirty != null or self.alt_fg_rgb != null or self.alt_bg_rgb != null) {
+            const new_alt_cells = if (self.alt_cells != null) try self.allocator.alloc(Cell, new_total) else null;
+            const new_alt_row_map = if (self.alt_row_map != null) try self.allocator.alloc(u32, new_rows) else null;
+            const new_alt_dirty = if (self.alt_dirty != null) try std.DynamicBitSet.initFull(self.allocator, new_total) else null;
+            const new_alt_fg = if (self.alt_fg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+            const new_alt_bg = if (self.alt_bg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+
+            // All allocations succeeded — now free old and swap
+            if (self.alt_cells) |alt| self.allocator.free(alt);
+            if (self.alt_row_map) |arm| self.allocator.free(arm);
+            if (self.alt_dirty) |*ad| ad.deinit();
+            if (self.alt_fg_rgb) |a| self.allocator.free(a);
+            if (self.alt_bg_rgb) |a| self.allocator.free(a);
+
+            if (new_alt_cells) |nac| @memset(nac, Cell{});
+            self.alt_cells = new_alt_cells;
+            if (new_alt_row_map) |narm| for (0..new_rows) |i| {
+                narm[i] = @intCast(i);
+            };
+            self.alt_row_map = new_alt_row_map;
+            self.alt_dirty = new_alt_dirty;
+            if (new_alt_fg) |nfg| @memset(nfg, null);
             self.alt_fg_rgb = new_alt_fg;
-        }
-        if (self.alt_bg_rgb) |a| {
-            const new_alt_bg = try self.allocator.alloc(?[3]u8, new_total);
-            @memset(new_alt_bg, null);
-            self.allocator.free(a);
+            if (new_alt_bg) |nbg| @memset(nbg, null);
             self.alt_bg_rgb = new_alt_bg;
         }
     }
