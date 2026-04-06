@@ -761,7 +761,10 @@ pub fn main() !void {
             var extra_total: usize = 0;
             while (extra_total < config.pty_buf_size * 4) {
                 const extra = pty.read(&pty_buf) catch break;
-                if (extra == 0) { running = false; break; }
+                if (extra == 0) {
+                    running = false;
+                    break;
+                }
                 bytes_since_render += extra;
                 extra_total += extra;
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);

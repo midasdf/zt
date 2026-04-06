@@ -237,6 +237,16 @@ pub const Term = struct {
         if (x >= self.cols or y >= self.rows) return;
         self.dirty.set(self.dirtyIndex(x, y, self.cols));
         self.dirty_flag = true;
+        // Wide-aware propagation: if marking a wide_dummy (right half),
+        // also mark its parent wide cell (left half) so the render loop
+        // redraws both halves.
+        if (x > 0) {
+            const phys_row = self.row_map[y];
+            const phys_idx = @as(usize, phys_row) * @as(usize, self.cols) + x;
+            if (self.cells[phys_idx].attrs.wide_dummy) {
+                self.dirty.set(self.dirtyIndex(x - 1, y, self.cols));
+            }
+        }
     }
 
     pub fn hasDirty(self: *const Self) bool {
