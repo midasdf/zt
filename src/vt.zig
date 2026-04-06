@@ -853,6 +853,11 @@ fn handlePrint(cp: u21, term: *Term) void {
     // Wide char needs 2 columns — wrap if only 1 column left
     if (wide and term.cursor_x + 1 >= term.cols) {
         if (term.decawm) {
+            // Clean up wide pair if cursor is on a dummy cell
+            const cur = term.getCell(term.cursor_x, term.cursor_y);
+            if (cur.attrs.wide_dummy and term.cursor_x > 0) {
+                term.setCell(term.cursor_x - 1, term.cursor_y, term.blankCell());
+            }
             term.setCell(term.cursor_x, term.cursor_y, term.blankCell());
             term.cursor_x = 0;
             term.insertNewline();
@@ -871,9 +876,9 @@ fn handlePrint(cp: u21, term: *Term) void {
     if (term.cursor_x < term.cols and term.cursor_y < term.rows) {
         const existing = term.getCell(term.cursor_x, term.cursor_y);
         if (existing.attrs.wide_dummy and term.cursor_x > 0) {
-            term.setCell(term.cursor_x - 1, term.cursor_y, Cell{});
+            term.setCell(term.cursor_x - 1, term.cursor_y, term.blankCell());
         } else if (existing.attrs.wide and term.cursor_x + 1 < term.cols) {
-            term.setCell(term.cursor_x + 1, term.cursor_y, Cell{});
+            term.setCell(term.cursor_x + 1, term.cursor_y, term.blankCell());
         }
     }
 

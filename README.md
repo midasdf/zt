@@ -136,6 +136,8 @@ zig build -Dbackend=wayland -Doptimize=ReleaseFast
 zig build -Doptimize=ReleaseSmall
 ```
 
+Add `-Dstrip=true` to remove debug info and symbols (~94MB → ~3MB for ReleaseFast).
+
 ReleaseFast enables aggressive inlining, loop unrolling, and SIMD auto-vectorization.
 ReleaseSmall minimizes binary size for constrained devices (512MB RAM).
 
@@ -282,7 +284,7 @@ epoll event loop (single-threaded, dynamic timeout)
 | `src/font.zig` | 353 | Binary blob loader, comptime ASCII cache, 256-slot runtime glyph cache |
 | `src/pty.zig` | 221 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
 | `config.zig` | 38 | Compile-time configuration (backend, keymap, font, colors, scale, max_fps) |
-| `build.zig` | 72 | Build system with backend, keymap, scale, and max_fps selection |
+| `build.zig` | 109 | Build system with backend, keymap, scale, strip, and max_fps selection |
 
 ## Supported escape sequences
 

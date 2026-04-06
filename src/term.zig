@@ -394,6 +394,27 @@ pub const Term = struct {
             @memcpy(new_bg_rgb[new_start .. new_start + copy_cols], self.bg_rgb[old_start .. old_start + copy_cols]);
         }
 
+        // Fix wide char boundaries broken by column truncation
+        if (new_cols < self.cols) {
+            const blank = Cell{};
+            for (0..copy_rows) |y| {
+                const last = y * @as(usize, new_cols) + new_cols - 1;
+                // Orphaned wide cell at last column (dummy was truncated)
+                if (new_cells[last].attrs.wide) {
+                    new_cells[last] = blank;
+                    new_fg_rgb[last] = null;
+                    new_bg_rgb[last] = null;
+                }
+                // Orphaned wide_dummy at first column (wide cell was in previous row's truncated area)
+                const first = y * @as(usize, new_cols);
+                if (new_cells[first].attrs.wide_dummy) {
+                    new_cells[first] = blank;
+                    new_fg_rgb[first] = null;
+                    new_bg_rgb[first] = null;
+                }
+            }
+        }
+
         // All allocations succeeded — now swap state (no errors possible below)
         self.allocator.free(self.cells);
         self.allocator.free(self.row_map);
@@ -810,6 +831,7 @@ pub const Term = struct {
         const bg_rgb_val: ?[3]u8 = self.current_bg_rgb;
         switch (mode) {
             0 => {
+                self.fixWideBoundaries(@as(usize, self.cursor_y) * cols + self.cursor_x, @as(usize, self.rows) * cols);
                 for (self.cursor_y..self.rows) |y| {
                     const phys = self.row_map[y];
                     const from: usize = if (y == self.cursor_y) self.cursor_x else 0;
@@ -825,6 +847,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = @as(usize, self.cursor_y) * cols + self.cursor_x, .end = @as(usize, self.rows) * cols });
             },
             1 => {
+                self.fixWideBoundaries(0, @as(usize, self.cursor_y) * cols + self.cursor_x + 1);
                 for (0..self.cursor_y + 1) |y| {
                     const phys = self.row_map[y];
                     const to: usize = if (y == self.cursor_y) self.cursor_x + 1 else cols;
@@ -840,6 +863,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cursor_y) * cols + self.cursor_x + 1 });
             },
             2 => {
+                self.fixWideBoundaries(0, @as(usize, self.cols) * @as(usize, self.rows));
                 for (0..self.rows) |y| {
                     const phys = self.row_map[y];
                     for (0..cols) |x| {
@@ -866,6 +890,7 @@ pub const Term = struct {
         const row_start = @as(usize, self.cursor_y) * cols;
         switch (mode) {
             0 => {
+                self.fixWideBoundaries(row_start + self.cursor_x, row_start + cols);
                 for (self.cursor_x..self.cols) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {
@@ -877,6 +902,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = row_start + self.cursor_x, .end = row_start + cols });
             },
             1 => {
+                self.fixWideBoundaries(row_start, row_start + self.cursor_x + 1);
                 for (0..self.cursor_x + 1) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {
@@ -888,6 +914,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + self.cursor_x + 1 });
             },
             2 => {
+                self.fixWideBoundaries(row_start, row_start + cols);
                 for (0..cols) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {

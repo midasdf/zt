@@ -35,10 +35,13 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const strip_opt = b.option(bool, "strip", "Strip debug info and symbols (default: false)") orelse false;
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = if (strip_opt) true else null,
         .imports = &.{
             .{ .name = "config", .module = config_mod },
         },
