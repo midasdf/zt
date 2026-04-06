@@ -149,27 +149,34 @@ pub const Parser = struct {
     }
 
     fn decodeUtf8(bytes: []const u8) u21 {
-        switch (bytes.len) {
-            2 => {
+        const cp: u21 = switch (bytes.len) {
+            2 => blk: {
                 const b0 = @as(u21, bytes[0] & 0x1F);
                 const b1 = @as(u21, bytes[1] & 0x3F);
-                return (b0 << 6) | b1;
+                const v = (b0 << 6) | b1;
+                // Reject overlong: 2-byte must encode >= U+0080
+                break :blk if (v < 0x80) 0xFFFD else v;
             },
-            3 => {
+            3 => blk: {
                 const b0 = @as(u21, bytes[0] & 0x0F);
                 const b1 = @as(u21, bytes[1] & 0x3F);
                 const b2 = @as(u21, bytes[2] & 0x3F);
-                return (b0 << 12) | (b1 << 6) | b2;
+                const v = (b0 << 12) | (b1 << 6) | b2;
+                // Reject overlong (must encode >= U+0800) and surrogates (U+D800..U+DFFF)
+                break :blk if (v < 0x800 or (v >= 0xD800 and v <= 0xDFFF)) 0xFFFD else v;
             },
-            4 => {
+            4 => blk: {
                 const b0 = @as(u21, bytes[0] & 0x07);
                 const b1 = @as(u21, bytes[1] & 0x3F);
                 const b2 = @as(u21, bytes[2] & 0x3F);
                 const b3 = @as(u21, bytes[3] & 0x3F);
-                return (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
+                const v = (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
+                // Reject overlong (must encode >= U+10000) and > U+10FFFF
+                break :blk if (v < 0x10000 or v > 0x10FFFF) 0xFFFD else v;
             },
-            else => return 0xFFFD,
-        }
+            else => 0xFFFD,
+        };
+        return cp;
     }
 
     fn handleEscape(self: *Parser, byte: u8) Action {
@@ -357,11 +364,27 @@ pub const Parser = struct {
         // Note: 0x9C (8-bit ST) is NOT handled here because it conflicts
         // with UTF-8 multi-byte sequences (e.g. U+2733 ✳ = E2 9C B3).
         // Only ESC \ (7-bit ST) and BEL are used as terminators.
+        if (self.esc_in_osc) {
+            self.esc_in_osc = false;
+            if (byte == '\\') {
+                // ESC \ = ST — dispatch DCS payload
+                const payload = self.osc_buf[0..self.osc_len];
+                self.osc_len = 0;
+                self.state = .ground;
+                return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
+            } else {
+                // ESC followed by non-backslash — store the ESC and reprocess byte
+                if (self.osc_len < 256) {
+                    self.osc_buf[self.osc_len] = 0x1B;
+                    self.osc_len += 1;
+                }
+                // Fall through to store the current byte
+            }
+        }
         if (byte == 0x1B) {
-            const payload = self.osc_buf[0..self.osc_len];
-            self.osc_len = 0;
-            self.state = .escape;
-            return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
+            // Could be start of ST (ESC \) — wait for next byte
+            self.esc_in_osc = true;
+            return .none;
         } else {
             if (self.osc_len < 256) {
                 self.osc_buf[self.osc_len] = byte;
@@ -522,6 +545,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     const b1 = data[i + 1];
                     if (b1 & 0xC0 != 0x80) break;
                     cp = (@as(u21, first & 0x1F) << 6) | @as(u21, b1 & 0x3F);
+                    if (cp < 0x80) cp = 0xFFFD; // reject overlong
                     seq_len = 2;
                 } else if (first < 0xF0) {
                     if (i + 2 >= data.len) break;
@@ -529,15 +553,21 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     const b2 = data[i + 2];
                     if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80) break;
                     cp = (@as(u21, first & 0x0F) << 12) | (@as(u21, b1 & 0x3F) << 6) | @as(u21, b2 & 0x3F);
+                    if (cp < 0x800 or (cp >= 0xD800 and cp <= 0xDFFF)) cp = 0xFFFD; // reject overlong/surrogate
                     seq_len = 3;
-                } else {
+                } else if (first < 0xF5) {
                     if (i + 3 >= data.len) break;
                     const b1 = data[i + 1];
                     const b2 = data[i + 2];
                     const b3 = data[i + 3];
                     if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80 or b3 & 0xC0 != 0x80) break;
                     cp = (@as(u21, first & 0x07) << 18) | (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) | @as(u21, b3 & 0x3F);
+                    if (cp < 0x10000 or cp > 0x10FFFF) cp = 0xFFFD; // reject overlong/>U+10FFFF
                     seq_len = 4;
+                } else {
+                    // 0xF5..0xFD: invalid lead byte, skip
+                    i += 1;
+                    continue;
                 }
                 // Wide chars need handlePrint for dummy cell logic
                 if (isWide(cp)) {
@@ -808,32 +838,60 @@ fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser, writer_fd: ?std.posix.
 }
 
 fn isWide(cp: u21) bool {
+    // Unicode 15.1 East Asian Width W/F — comprehensive table based on EAW.txt
     // Fast rejection: ASCII, Latin, common symbols (vast majority of chars)
     if (cp < 0x1100) return false;
     if (cp <= 0x115F) return true; // Hangul Jamo
-    // Gap: 0x1160-0x2E7F — various scripts, none wide
+    if (cp == 0x231A or cp == 0x231B) return true; // Watch, Hourglass
+    if (cp >= 0x2329 and cp <= 0x232A) return true; // Angle Brackets
+    if (cp >= 0x23E9 and cp <= 0x23F3) return true; // Various clocks/timers
+    if (cp >= 0x23F8 and cp <= 0x23FA) return true; // Playback symbols
     if (cp < 0x2E80) return false;
-    // Main CJK range: 0x2E80-0xA4CF (contiguous wide block)
-    if (cp <= 0xA4CF) return true; // CJK Radicals through Yi
-    // Gap: 0xA4D0-0xA95F
-    if (cp < 0xA960) return false;
-    if (cp <= 0xA97C) return true; // Hangul Jamo Extended-A
-    if (cp < 0xAC00) return false;
-    if (cp <= 0xD7A3) return true; // Hangul Syllables
-    // Gap: 0xD7A4-0xF8FF
-    if (cp < 0xF900) return false;
-    if (cp <= 0xFAFF) return true; // CJK Compatibility Ideographs
-    if (cp < 0xFE10) return false;
-    if (cp <= 0xFE6F) return true; // CJK Compatibility Forms, Small Forms
-    if (cp < 0xFF01) return false;
-    if (cp <= 0xFF60) return true; // Fullwidth Forms
-    if (cp < 0xFFE0) return false;
-    if (cp <= 0xFFE6) return true; // Fullwidth Signs
-    // Supplementary planes
-    if (cp < 0x1F300) return false;
-    if (cp <= 0x1F9FF) return true; // Misc Symbols, Emoticons
-    if (cp < 0x20000) return false;
-    return cp <= 0x3FFFF; // CJK Extension B-G+
+    // CJK Radicals Supplement through Yi Radicals
+    if (cp <= 0x303E) return true; // CJK Radicals, Kangxi, CJK Symbols
+    if (cp >= 0x3041 and cp <= 0x33BF) return true; // Hiragana, Katakana, Bopomofo, Hangul Compat, Kanbun, CJK Strokes
+    if (cp >= 0x33C0 and cp <= 0x33FF) return true; // CJK Compatibility
+    if (cp >= 0x3400 and cp <= 0x4DBF) return true; // CJK Unified Extension A
+    if (cp >= 0x4E00 and cp <= 0xA4CF) return true; // CJK Unified through Yi
+    if (cp >= 0xA960 and cp <= 0xA97C) return true; // Hangul Jamo Extended-A
+    if (cp >= 0xAC00 and cp <= 0xD7A3) return true; // Hangul Syllables
+    if (cp >= 0xF900 and cp <= 0xFAFF) return true; // CJK Compatibility Ideographs
+    if (cp >= 0xFE10 and cp <= 0xFE19) return true; // Vertical Forms
+    if (cp >= 0xFE30 and cp <= 0xFE6F) return true; // CJK Compatibility Forms, Small Form Variants
+    if (cp >= 0xFF01 and cp <= 0xFF60) return true; // Fullwidth Forms
+    if (cp >= 0xFFE0 and cp <= 0xFFE6) return true; // Fullwidth Signs
+    // Supplementary planes — Emoji and CJK extensions
+    return switch (cp) {
+        // Misc Symbols and Pictographs, Emoticons, Transport, etc.
+        0x16FE0...0x16FFF, // Ideographic Symbols
+        0x17000...0x187FF, // Tangut
+        0x18800...0x18AFF, // Tangut Components
+        0x18B00...0x18CFF, // Khitan Small Script
+        0x18D00...0x18D7F, // Tangut Supplement
+        0x1AFF0...0x1AFFF, // Kana Extended-B
+        0x1B000...0x1B0FF, // Kana Supplement
+        0x1B100...0x1B12F, // Kana Extended-A
+        0x1B130...0x1B16F, // Small Kana Extension
+        0x1B170...0x1B2FF, // Nushu
+        0x1F004, 0x1F0CF, // Mahjong, Playing Cards
+        0x1F18E, // Negative Squared AB
+        0x1F191...0x1F19A, // Squared symbols
+        0x1F1E0...0x1F1FF, // Regional Indicators (flags)
+        0x1F200...0x1F2FF, // Enclosed Ideographic Supplement
+        0x1F300...0x1F5FF, // Misc Symbols and Pictographs
+        0x1F600...0x1F64F, // Emoticons
+        0x1F680...0x1F6FF, // Transport and Map Symbols
+        0x1F700...0x1F77F, // Alchemical Symbols (some wide)
+        0x1F780...0x1F7FF, // Geometric Shapes Extended
+        0x1F800...0x1F8FF, // Supplemental Arrows-C
+        0x1F900...0x1F9FF, // Supplemental Symbols and Pictographs
+        0x1FA70...0x1FAFF, // Symbols and Pictographs Extended-A
+        0x1FB00...0x1FBFF, // Symbols for Legacy Computing
+        0x20000...0x2FFFF, // CJK Extensions B-G, Compatibility Supplement
+        0x30000...0x3FFFF, // CJK Extension H+
+        => true,
+        else => false,
+    };
 }
 
 fn handlePrint(cp: u21, term: *Term) void {

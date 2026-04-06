@@ -356,15 +356,26 @@ pub const X11Backend = struct {
         if (xkb_result == 0) return;
 
         const ctx = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS) orelse return;
-        self.xkb_ctx = ctx;
 
         const device_id = c.xkb_x11_get_core_keyboard_device_id(self.connection);
-        if (device_id < 0) return;
+        if (device_id < 0) {
+            c.xkb_context_unref(ctx);
+            return;
+        }
 
-        const km = c.xkb_x11_keymap_new_from_device(ctx, self.connection, device_id, c.XKB_KEYMAP_COMPILE_NO_FLAGS) orelse return;
+        const km = c.xkb_x11_keymap_new_from_device(ctx, self.connection, device_id, c.XKB_KEYMAP_COMPILE_NO_FLAGS) orelse {
+            c.xkb_context_unref(ctx);
+            return;
+        };
+
+        const state = c.xkb_x11_state_new_from_device(km, self.connection, device_id) orelse {
+            c.xkb_keymap_unref(km);
+            c.xkb_context_unref(ctx);
+            return;
+        };
+
+        self.xkb_ctx = ctx;
         self.xkb_keymap = km;
-
-        const state = c.xkb_x11_state_new_from_device(km, self.connection, device_id) orelse return;
         self.xkb_state = state;
     }
 
@@ -622,8 +633,8 @@ pub const X11Backend = struct {
     /// Uses set_ic_values with XNSpotLocation (standard XIM protocol).
     /// Only sends when position changes to avoid IME instability.
     pub fn updateImeCursorPos(self: *Self, pixel_x: u32, pixel_y: u32) void {
-        const x: i16 = @intCast(pixel_x);
-        const y: i16 = @intCast(pixel_y);
+        const x: i16 = if (pixel_x > std.math.maxInt(i16)) std.math.maxInt(i16) else @intCast(pixel_x);
+        const y: i16 = if (pixel_y > std.math.maxInt(i16)) std.math.maxInt(i16) else @intCast(pixel_y);
         if (x == self.last_ime_x and y == self.last_ime_y) return;
 
         if (self.xim) |xim| {
@@ -812,6 +823,8 @@ pub const X11Backend = struct {
         const event_type = event.*.response_type & 0x7F;
         switch (event_type) {
             c.XCB_KEY_PRESS => {
+                // Lazy-init XKB+XIM on first key press (not on non-key events,
+                // so transient XIM failures don't permanently disable IME)
                 self.ensureKeyboardInit();
                 const key: *c.xcb_key_press_event_t = @ptrCast(@alignCast(event));
                 const mods = xcbStateToMods(key.*.state);
