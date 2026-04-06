@@ -445,9 +445,13 @@ pub const Term = struct {
         // then free old ones, so OOM leaves the old buffers intact (no UAF).
         if (self.alt_cells != null or self.alt_row_map != null or self.alt_dirty != null or self.alt_fg_rgb != null or self.alt_bg_rgb != null) {
             const new_alt_cells = if (self.alt_cells != null) try self.allocator.alloc(Cell, new_total) else null;
+            errdefer if (new_alt_cells) |nac| self.allocator.free(nac);
             const new_alt_row_map = if (self.alt_row_map != null) try self.allocator.alloc(u32, new_rows) else null;
+            errdefer if (new_alt_row_map) |narm| self.allocator.free(narm);
             const new_alt_dirty = if (self.alt_dirty != null) try std.DynamicBitSet.initFull(self.allocator, new_total) else null;
+            errdefer if (new_alt_dirty) |*nad| @constCast(nad).deinit();
             const new_alt_fg = if (self.alt_fg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+            errdefer if (new_alt_fg) |nafg| self.allocator.free(nafg);
             const new_alt_bg = if (self.alt_bg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
 
             // All allocations succeeded — now free old and swap

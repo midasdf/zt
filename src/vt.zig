@@ -833,20 +833,12 @@ fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser, writer_fd: ?std.posix.
 fn isWide(cp: u21) bool {
     // Unicode 15.1 East Asian Width W/F — comprehensive table based on EAW.txt
     // Fast rejection: ASCII, Latin, common symbols (vast majority of chars)
-    if (cp < 0x1100) {
-        // Misc wide characters below 0x1100
-        return switch (cp) {
-            0x231A, 0x231B, // Watch, Hourglass
-            0x2329, 0x232A, // Angle brackets
-            0x23E9...0x23F3, // Various clocks/timers
-            0x23F8...0x23FA, // Playback symbols
-            => true,
-            else => false,
-        };
-    }
+    if (cp < 0x1100) return false;
     if (cp <= 0x115F) return true; // Hangul Jamo
-    if (cp < 0x2329) return false;
-    if (cp <= 0x232A) return true; // Angle Brackets (also in switch above but needed for range flow)
+    if (cp == 0x231A or cp == 0x231B) return true; // Watch, Hourglass
+    if (cp >= 0x2329 and cp <= 0x232A) return true; // Angle Brackets
+    if (cp >= 0x23E9 and cp <= 0x23F3) return true; // Various clocks/timers
+    if (cp >= 0x23F8 and cp <= 0x23FA) return true; // Playback symbols
     if (cp < 0x2E80) return false;
     // CJK Radicals Supplement through Yi Radicals
     if (cp <= 0x303E) return true; // CJK Radicals, Kangxi, CJK Symbols
@@ -886,7 +878,6 @@ fn isWide(cp: u21) bool {
         0x1F780...0x1F7FF, // Geometric Shapes Extended
         0x1F800...0x1F8FF, // Supplemental Arrows-C
         0x1F900...0x1F9FF, // Supplemental Symbols and Pictographs
-        0x1FA00...0x1FA6F, // Chess Symbols
         0x1FA70...0x1FAFF, // Symbols and Pictographs Extended-A
         0x1FB00...0x1FBFF, // Symbols for Legacy Computing
         0x20000...0x2FFFF, // CJK Extensions B-G, Compatibility Supplement

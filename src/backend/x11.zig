@@ -795,10 +795,6 @@ pub const X11Backend = struct {
         };
         defer std.c.free(event);
 
-        // Lazy-init keyboard before XIM filter so self.xim is available
-        // on the very first key press event
-        self.ensureKeyboardInit();
-
         // Let XIM filter the event first — MUST run even before xim_connected
         // because xcb-imdkit uses this to process the XIM protocol handshake
         if (self.xim) |xim| {
@@ -827,6 +823,9 @@ pub const X11Backend = struct {
         const event_type = event.*.response_type & 0x7F;
         switch (event_type) {
             c.XCB_KEY_PRESS => {
+                // Lazy-init XKB+XIM on first key press (not on non-key events,
+                // so transient XIM failures don't permanently disable IME)
+                self.ensureKeyboardInit();
                 const key: *c.xcb_key_press_event_t = @ptrCast(@alignCast(event));
                 const mods = xcbStateToMods(key.*.state);
                 const evdev_keycode = key.*.detail -| 8;
