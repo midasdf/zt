@@ -93,6 +93,8 @@ pub const X11Backend = struct {
     pending_xim_keycode: u8 = 0, // key sent to IM, awaiting response
     has_pending_xim: bool = false,
     suppress_xim_result: bool = false, // discard next XIM result (IME toggle key)
+    last_ime_x: i16 = -1, // last cursor position sent to IME (-1 = never set)
+    last_ime_y: i16 = -1,
     pending_event: ?*c.xcb_generic_event_t = null, // event pushed back during coalescing
     keyboard_initialized: bool = false, // XKB + XIM lazy init on first key
     paste_buf: PasteEvent = .{},
@@ -465,8 +467,12 @@ pub const X11Backend = struct {
         const self: *Self = @ptrCast(@alignCast(user_data));
         self.xim_connected = true;
 
-        // Create Input Context with XIMPreeditNothing | XIMStatusNothing
+        // PreeditNothing: IME handles preedit display in its own popup.
+        // XNSpotLocation tells the IME where to position it.
         const input_style: u32 = 0x0008 | 0x0400; // XIMPreeditNothing | XIMStatusNothing
+        var spot = c.xcb_point_t{ .x = 0, .y = 0 };
+        var nested = c.xcb_xim_create_nested_list(xim, c.XCB_XIM_XNSpotLocation, &spot, @as(?*anyopaque, null));
+        defer std.c.free(nested.data);
         _ = c.xcb_xim_create_ic(
             xim,
             ximCreateIcCallback,
@@ -477,6 +483,8 @@ pub const X11Backend = struct {
             &self.window,
             c.XCB_XIM_XNFocusWindow,
             &self.window,
+            c.XCB_XIM_XNPreeditAttributes,
+            &nested,
             @as(?*anyopaque, null),
         );
     }
@@ -611,13 +619,26 @@ pub const X11Backend = struct {
     }
 
     /// Update IME candidate window position to follow the terminal cursor.
+    /// Uses set_ic_values with XNSpotLocation (standard XIM protocol).
+    /// Only sends when position changes to avoid IME instability.
     pub fn updateImeCursorPos(self: *Self, pixel_x: u32, pixel_y: u32) void {
+        const x: i16 = @intCast(pixel_x);
+        const y: i16 = @intCast(pixel_y);
+        if (x == self.last_ime_x and y == self.last_ime_y) return;
+
         if (self.xim) |xim| {
             if (self.xim_connected and self.xic != 0) {
-                _ = c.xcb_xim_ext_move(xim, self.xic, @intCast(pixel_x), @intCast(pixel_y));
+                var spot = c.xcb_point_t{ .x = x, .y = y };
+                var nested = c.xcb_xim_create_nested_list(xim, c.XCB_XIM_XNSpotLocation, &spot, @as(?*anyopaque, null));
+                defer std.c.free(nested.data);
+                _ = c.xcb_xim_set_ic_values(xim, self.xic, setIcValuesCallback, @ptrCast(self), c.XCB_XIM_XNPreeditAttributes, &nested, @as(?*anyopaque, null));
+                self.last_ime_x = x;
+                self.last_ime_y = y;
             }
         }
     }
+
+    fn setIcValuesCallback(_: ?*c.xcb_xim_t, _: c.xcb_xic_t, _: ?*anyopaque) callconv(.c) void {}
 
     pub fn markDirtyRows(self: *Self, y_start: u32, y_end: u32) void {
         if (y_start < self.dirty_y_min) self.dirty_y_min = y_start;
