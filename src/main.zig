@@ -808,6 +808,28 @@ pub fn main() !void {
             backend.markDirtyRows(0, backend.getHeight() - 1);
         }
 
+        // Pre-pass: propagate dirty from wide_dummy to its wide cell neighbor.
+        // The render loop skips wide_dummy cells (the wide cell draws both halves),
+        // so a dirty dummy with a non-dirty wide cell would leave stale pixels.
+        if (!all_dirty) {
+            var py: u32 = 0;
+            while (py < term.rows) : (py += 1) {
+                if (!term.isRowDirty(py)) continue;
+                const p_phys = term.row_map[py];
+                const p_base = @as(usize, p_phys) * @as(usize, term.cols);
+                const p_cells = term.cells[p_base..][0..term.cols];
+                const p_dirty_base = @as(usize, py) * @as(usize, term.cols);
+                var px: u32 = 1;
+                while (px < term.cols) : (px += 1) {
+                    if (term.dirty.isSet(p_dirty_base + px) and p_cells[px].attrs.wide_dummy and
+                        !term.dirty.isSet(p_dirty_base + px - 1))
+                    {
+                        term.dirty.set(p_dirty_base + px - 1);
+                    }
+                }
+            }
+        }
+
         var y: u32 = 0;
         while (y < term.rows) : (y += 1) {
             if (!all_dirty and !term.isRowDirty(y)) continue;

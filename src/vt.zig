@@ -594,7 +594,19 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 const phys_idx = @as(usize, phys_row) * @as(usize, cols) + term.cursor_x;
                 // Fix wide char boundary if overwriting
                 if (term.cells[phys_idx].attrs.wide_dummy and term.cursor_x > 0) {
-                    term.cells[phys_idx - 1] = Cell{};
+                    // Overwriting a dummy (right half): clear the wide cell to its left
+                    const wide_phys = phys_idx - 1;
+                    term.cells[wide_phys] = term.blankCell();
+                    term.fg_rgb[wide_phys] = null;
+                    term.bg_rgb[wide_phys] = term.current_bg_rgb;
+                    term.markDirty(term.cursor_x - 1, term.cursor_y);
+                } else if (term.cells[phys_idx].attrs.wide and term.cursor_x + 1 < cols) {
+                    // Overwriting a wide cell (left half): clear the dummy to its right
+                    const dummy_phys = phys_idx + 1;
+                    term.cells[dummy_phys] = term.blankCell();
+                    term.fg_rgb[dummy_phys] = null;
+                    term.bg_rgb[dummy_phys] = term.current_bg_rgb;
+                    term.markDirty(term.cursor_x + 1, term.cursor_y);
                 }
                 term.cells[phys_idx] = .{
                     .char = cp,
