@@ -865,8 +865,9 @@ pub fn main() !void {
                     }
                 }
 
-                backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
             }
+            // Mark dirty once per row instead of per cell
+            if (!all_dirty) backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
         }
         term.clearDirty();
         last_render_ns = loop_now;

@@ -423,12 +423,14 @@ pub const Parser = struct {
 /// in ground state (bypasses Action union overhead).
 pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void {
     var i: usize = 0;
+    // Hoist charset/insert_mode checks — only change on escape sequences, not mid-ASCII-run
+    var ascii_fast_eligible = (term.charsets[term.charset] == .us_ascii and !term.insert_mode);
     while (i < data.len) {
         // Fast path: ground state + printable ASCII run (US-ASCII charset only, no insert mode)
         // Writes directly to cells[] array, bypassing setCell/handlePrint overhead.
         // Safe because ASCII is never wide and doesn't need TrueColor cleanup.
         if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E and
-            term.charsets[term.charset] == .us_ascii and !term.insert_mode)
+            ascii_fast_eligible)
         {
             const cols = term.cols;
             while (true) {
@@ -466,26 +468,28 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 if (count == 0) break;
                 // Write cells directly to physical row
                 const phys_start = phys_base + term.cursor_x;
-                // Fix wide character boundaries before overwriting
-                // If first cell is a wide_dummy, clear the wide cell to its left
-                if (term.cells[phys_start].attrs.wide_dummy and term.cursor_x > 0) {
-                    const wide_idx = phys_base + term.cursor_x - 1;
-                    term.cells[wide_idx] = term.blankCell();
-                    term.fg_rgb[wide_idx] = null;
-                    term.bg_rgb[wide_idx] = term.current_bg_rgb;
-                    const logical_wide = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x - 1;
-                    term.markDirtyRange(.{ .start = logical_wide, .end = logical_wide + 1 });
-                }
-                // If last cell in range is wide, clear its dummy to the right
-                if (count > 0 and term.cells[phys_start + count - 1].attrs.wide) {
-                    const dummy_x = term.cursor_x + count;
-                    if (dummy_x < cols) {
-                        const dummy_phys = phys_base + dummy_x;
-                        term.cells[dummy_phys] = term.blankCell();
-                        term.fg_rgb[dummy_phys] = null;
-                        term.bg_rgb[dummy_phys] = term.current_bg_rgb;
-                        const logical_dummy = @as(usize, term.cursor_y) * @as(usize, cols) + dummy_x;
-                        term.markDirtyRange(.{ .start = logical_dummy, .end = logical_dummy + 1 });
+                // Fix wide character boundaries before overwriting (skip if no wide chars ever written)
+                if (term.has_wide_chars) {
+                    // If first cell is a wide_dummy, clear the wide cell to its left
+                    if (term.cells[phys_start].attrs.wide_dummy and term.cursor_x > 0) {
+                        const wide_idx = phys_base + term.cursor_x - 1;
+                        term.cells[wide_idx] = term.blankCell();
+                        term.fg_rgb[wide_idx] = null;
+                        term.bg_rgb[wide_idx] = term.current_bg_rgb;
+                        const logical_wide = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x - 1;
+                        term.markDirtyRange(.{ .start = logical_wide, .end = logical_wide + 1 });
+                    }
+                    // If last cell in range is wide, clear its dummy to the right
+                    if (count > 0 and term.cells[phys_start + count - 1].attrs.wide) {
+                        const dummy_x = term.cursor_x + count;
+                        if (dummy_x < cols) {
+                            const dummy_phys = phys_base + dummy_x;
+                            term.cells[dummy_phys] = term.blankCell();
+                            term.fg_rgb[dummy_phys] = null;
+                            term.bg_rgb[dummy_phys] = term.current_bg_rgb;
+                            const logical_dummy = @as(usize, term.cursor_y) * @as(usize, cols) + dummy_x;
+                            term.markDirtyRange(.{ .start = logical_dummy, .end = logical_dummy + 1 });
+                        }
                     }
                 }
                 for (0..count) |j| {
@@ -496,12 +500,18 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                         .attrs = term.current_attrs,
                     };
                 }
-                // Update TrueColor arrays (flat, O(n) memset)
+                // Update TrueColor arrays — skip when palette-only (saves ~37MB writes for ASCII workloads)
                 const fg_val: ?[3]u8 = term.current_fg_rgb;
                 const bg_val: ?[3]u8 = term.current_bg_rgb;
-                @memset(term.fg_rgb[phys_start .. phys_start + count], fg_val);
-                @memset(term.bg_rgb[phys_start .. phys_start + count], bg_val);
-                if (fg_val != null or bg_val != null) term.has_truecolor_cells = true;
+                if (fg_val != null or bg_val != null) {
+                    @memset(term.fg_rgb[phys_start .. phys_start + count], fg_val);
+                    @memset(term.bg_rgb[phys_start .. phys_start + count], bg_val);
+                    term.has_truecolor_cells = true;
+                } else if (term.has_truecolor_cells) {
+                    // Must clear residual TrueColor from previous content
+                    @memset(term.fg_rgb[phys_start .. phys_start + count], null);
+                    @memset(term.bg_rgb[phys_start .. phys_start + count], null);
+                }
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 term.markDirtyRange(.{ .start = logical_start, .end = logical_start + count });
@@ -610,23 +620,23 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                 }
                 const phys_row = term.row_map[term.cursor_y];
                 const phys_idx = @as(usize, phys_row) * @as(usize, cols) + term.cursor_x;
-                // Fix wide char boundary if overwriting
-                if (term.cells[phys_idx].attrs.wide_dummy and term.cursor_x > 0) {
-                    // Overwriting a dummy (right half): clear the wide cell to its left
-                    const wide_phys = phys_idx - 1;
-                    term.cells[wide_phys] = term.blankCell();
-                    term.fg_rgb[wide_phys] = null;
-                    term.bg_rgb[wide_phys] = term.current_bg_rgb;
-                    if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
-                    term.markDirty(term.cursor_x - 1, term.cursor_y);
-                } else if (term.cells[phys_idx].attrs.wide and term.cursor_x + 1 < cols) {
-                    // Overwriting a wide cell (left half): clear the dummy to its right
-                    const dummy_phys = phys_idx + 1;
-                    term.cells[dummy_phys] = term.blankCell();
-                    term.fg_rgb[dummy_phys] = null;
-                    term.bg_rgb[dummy_phys] = term.current_bg_rgb;
-                    if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
-                    term.markDirty(term.cursor_x + 1, term.cursor_y);
+                // Fix wide char boundary if overwriting (skip if no wide chars ever written)
+                if (term.has_wide_chars) {
+                    if (term.cells[phys_idx].attrs.wide_dummy and term.cursor_x > 0) {
+                        const wide_phys = phys_idx - 1;
+                        term.cells[wide_phys] = term.blankCell();
+                        term.fg_rgb[wide_phys] = null;
+                        term.bg_rgb[wide_phys] = term.current_bg_rgb;
+                        if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
+                        term.markDirty(term.cursor_x - 1, term.cursor_y);
+                    } else if (term.cells[phys_idx].attrs.wide and term.cursor_x + 1 < cols) {
+                        const dummy_phys = phys_idx + 1;
+                        term.cells[dummy_phys] = term.blankCell();
+                        term.fg_rgb[dummy_phys] = null;
+                        term.bg_rgb[dummy_phys] = term.current_bg_rgb;
+                        if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
+                        term.markDirty(term.cursor_x + 1, term.cursor_y);
+                    }
                 }
                 term.cells[phys_idx] = .{
                     .char = cp,
@@ -634,9 +644,14 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     .bg = term.current_bg,
                     .attrs = term.current_attrs,
                 };
-                term.fg_rgb[phys_idx] = term.current_fg_rgb;
-                term.bg_rgb[phys_idx] = term.current_bg_rgb;
-                if (term.current_fg_rgb != null or term.current_bg_rgb != null) term.has_truecolor_cells = true;
+                if (term.current_fg_rgb != null or term.current_bg_rgb != null) {
+                    term.fg_rgb[phys_idx] = term.current_fg_rgb;
+                    term.bg_rgb[phys_idx] = term.current_bg_rgb;
+                    term.has_truecolor_cells = true;
+                } else if (term.has_truecolor_cells) {
+                    term.fg_rgb[phys_idx] = null;
+                    term.bg_rgb[phys_idx] = null;
+                }
                 const logical_idx = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 dirty_run_end = logical_idx + 1;
                 term.last_printed_char = cp;
@@ -663,6 +678,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         const action = parser.feed(data[i]);
         executeActionWithFd(action, term, writer_fd);
         i += 1;
+        // Refresh fast-path eligibility — escape sequences may change charset/insert_mode
+        ascii_fast_eligible = (term.charsets[term.charset] == .us_ascii and !term.insert_mode);
     }
 }
 
@@ -995,43 +1012,66 @@ fn handlePrint(cp: u21, term: *Term) void {
     }
 
     var attrs = term.current_attrs;
-    if (wide) attrs.wide = true;
+    if (wide) {
+        attrs.wide = true;
+        term.has_wide_chars = true;
+    }
 
-    const cell = Cell{
+    // Direct cell write — compute phys_idx once instead of 3-5 cellIndex calls
+    const cols: usize = term.cols;
+    const phys_row = term.row_map[term.cursor_y];
+    const phys_idx = @as(usize, phys_row) * cols + @as(usize, term.cursor_x);
+    term.cells[phys_idx] = .{
         .char = actual_cp,
         .fg = term.current_fg,
         .bg = term.current_bg,
         .attrs = attrs,
     };
-    term.setCell(term.cursor_x, term.cursor_y, cell);
-
-    // Store TrueColor RGB if set
-    if (term.current_fg_rgb) |rgb| {
-        term.setFgRgb(term.cursor_x, term.cursor_y, rgb) catch {};
+    // TrueColor: write directly, skip redundant null+rewrite from setCell
+    if (term.current_fg_rgb != null or term.current_bg_rgb != null) {
+        term.fg_rgb[phys_idx] = term.current_fg_rgb;
+        term.bg_rgb[phys_idx] = term.current_bg_rgb;
+        term.has_truecolor_cells = true;
+    } else if (term.has_truecolor_cells) {
+        term.fg_rgb[phys_idx] = null;
+        term.bg_rgb[phys_idx] = null;
     }
-    if (term.current_bg_rgb) |rgb| {
-        term.setBgRgb(term.cursor_x, term.cursor_y, rgb) catch {};
-    }
+    const dirty_idx = @as(usize, term.cursor_y) * cols + @as(usize, term.cursor_x);
+    term.dirty.set(dirty_idx);
+    term.dirty_flag = true;
 
     term.last_printed_char = actual_cp;
 
     // Advance cursor or set deferred wrap
-    const width: u32 = if (wide) 2 else 1;
-    if (term.cursor_x + width < term.cols) {
-        term.cursor_x += width;
-        // Wide char: set dummy cell for right half
+    const width_adv: u32 = if (wide) 2 else 1;
+    if (term.cursor_x + width_adv < term.cols) {
+        term.cursor_x += width_adv;
+        // Wide char: set dummy cell for right half (reuse phys_row)
         if (wide) {
+            const dummy_phys = @as(usize, phys_row) * cols + @as(usize, term.cursor_x - 1);
             var dummy = Cell{ .bg = term.current_bg };
             dummy.attrs.wide_dummy = true;
-            term.setCell(term.cursor_x - 1, term.cursor_y, dummy);
+            term.cells[dummy_phys] = dummy;
+            if (term.has_truecolor_cells) {
+                term.fg_rgb[dummy_phys] = null;
+                term.bg_rgb[dummy_phys] = null;
+            }
+            const dummy_dirty = @as(usize, term.cursor_y) * cols + @as(usize, term.cursor_x - 1);
+            term.dirty.set(dummy_dirty);
         }
     } else {
         // At right margin — set deferred wrap, don't advance
         if (wide and term.cursor_x + 1 < term.cols) {
-            // Wide char placed, set dummy at cursor_x + 1
+            const dummy_phys = @as(usize, phys_row) * cols + @as(usize, term.cursor_x + 1);
             var dummy = Cell{ .bg = term.current_bg };
             dummy.attrs.wide_dummy = true;
-            term.setCell(term.cursor_x + 1, term.cursor_y, dummy);
+            term.cells[dummy_phys] = dummy;
+            if (term.has_truecolor_cells) {
+                term.fg_rgb[dummy_phys] = null;
+                term.bg_rgb[dummy_phys] = null;
+            }
+            const dummy_dirty = @as(usize, term.cursor_y) * cols + @as(usize, term.cursor_x + 1);
+            term.dirty.set(dummy_dirty);
         }
         term.cursor_x = term.cols - 1;
         term.wrap_next = true;

@@ -97,6 +97,7 @@ pub const Term = struct {
     bracketed_paste: bool = false,
     sync_update: bool = false,
     has_truecolor_cells: bool = false,
+    has_wide_chars: bool = false,
     vt52_mode: bool = false,
 
     // Deferred wrap (VT100 CURSOR_WRAPNEXT)
@@ -318,20 +319,30 @@ pub const Term = struct {
         const bot: usize = self.scroll_bottom;
         const region_height = bot - top + 1;
         const shift: usize = @min(n, @as(u32, @intCast(region_height)));
+        const full_screen = top == 0 and bot + 1 == self.rows;
 
-        // Clear recycled rows with BCE
-        for (0..shift) |s| {
-            const phys = self.row_map[top + s];
-            self.bceMemset(phys * cols, (phys + 1) * cols);
+        // Fast path: n=1 (most common — regular newline scroll)
+        // Use memmove instead of std.mem.rotate (which does 3x reverse)
+        if (shift == 1) {
+            const recycled_phys = self.row_map[top];
+            // Shift row_map entries left by 1
+            const region = self.row_map[top .. bot + 1];
+            std.mem.copyForwards(u32, region[0 .. region.len - 1], region[1..]);
+            region[region.len - 1] = recycled_phys;
+            // Clear recycled row
+            self.bceMemset(recycled_phys * cols, (recycled_phys + 1) * cols);
+        } else {
+            // Clear recycled rows with BCE
+            for (0..shift) |s| {
+                const phys = self.row_map[top + s];
+                self.bceMemset(phys * cols, (phys + 1) * cols);
+            }
+            // General case: rotate row_map
+            std.mem.rotate(u32, self.row_map[top .. bot + 1], shift);
         }
 
-        // Rotate row_map: moves top rows to bottom in one pass
-        std.mem.rotate(u32, self.row_map[top .. bot + 1], shift);
-
-        // Mark entire scroll region dirty — row_map pointers rotated but
-        // the pixel buffer still has old content at old positions
-        if (top == 0 and bot + 1 == self.rows) {
-            // Full-screen scroll: set all_dirty flag to skip future markDirtyRange calls
+        // Mark dirty — skip if already all_dirty (full-screen continuous scroll)
+        if (full_screen) {
             if (!self.all_dirty) {
                 self.markDirtyRange(.{ .start = 0, .end = (bot + 1) * cols });
                 self.all_dirty = true;
@@ -553,11 +564,12 @@ pub const Term = struct {
         @memset(self.cells[phys_start..phys_end], self.blankCell());
         if (self.current_bg_rgb) |rgb| {
             @memset(self.bg_rgb[phys_start..phys_end], rgb);
+            @memset(self.fg_rgb[phys_start..phys_end], null);
             self.has_truecolor_cells = true;
-        } else {
+        } else if (self.has_truecolor_cells) {
             @memset(self.bg_rgb[phys_start..phys_end], null);
+            @memset(self.fg_rgb[phys_start..phys_end], null);
         }
-        @memset(self.fg_rgb[phys_start..phys_end], null);
     }
 
     /// Fix wide character boundaries at the edges of an erase/delete range.
@@ -627,11 +639,15 @@ pub const Term = struct {
                 // BCE: fill TrueColor arrays with current bg
                 if (self.current_bg_rgb) |rgb| {
                     @memset(self.bg_rgb[0..total], rgb);
+                    @memset(self.fg_rgb[0..total], null);
                     self.has_truecolor_cells = true;
-                } else {
+                } else if (self.has_truecolor_cells) {
                     @memset(self.bg_rgb[0..total], null);
+                    @memset(self.fg_rgb[0..total], null);
+                    // All cells cleared — reset truecolor flag
+                    self.has_truecolor_cells = false;
                 }
-                @memset(self.fg_rgb[0..total], null);
+                self.has_wide_chars = false;
             },
             else => {},
         }
@@ -1135,6 +1151,7 @@ test "Term: deleteChars shifts TrueColor RGB alongside cells" {
         term.fg_rgb[idx] = .{ c * 10, c * 20, c * 30 };
         term.bg_rgb[idx] = .{ c + 100, c + 110, c + 120 };
     }
+    term.has_truecolor_cells = true;
 
     // Delete 2 chars at column 1 → cols 3,4 shift left to 1,2
     term.cursor_x = 1;
@@ -1173,6 +1190,7 @@ test "Term: insertChars shifts TrueColor RGB alongside cells" {
         const idx = phys * @as(usize, term.cols) + i;
         term.fg_rgb[idx] = .{ c * 10, c * 20, c * 30 };
     }
+    term.has_truecolor_cells = true;
 
     // Insert 2 chars at column 1 → cols 1..7 shift right to 3..9
     term.cursor_x = 1;
