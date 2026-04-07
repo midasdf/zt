@@ -906,7 +906,7 @@ pub const X11Backend = struct {
                                 self.suppress_xim_result = false;
                                 return null;
                             }
-                            continue; // XIM processing — drain remaining XCB events
+                            return null; // wait for async XIM response (one key at a time)
                         }
                     }
                 }
