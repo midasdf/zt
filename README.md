@@ -59,61 +59,59 @@ Measured on Intel i5-12450H, 1 CPU core, real display (:0, hardware GPU), `-Dopt
 
 | | Time | vs zt |
 |---|---|---|
-| **zt** | **5.6ms** | 1.0x |
-| xterm | 26ms | 4.6x |
-| foot | 47ms | 8.4x |
-| st | 52ms | 9.3x |
-| alacritty | 136ms | 24x |
-| kitty | 202ms | 36x |
-| ghostty | 492ms | 87x |
+| **zt** | **5.5ms** | 1.0x |
+| xterm | 22ms | 3.9x |
+| st | 44ms | 8.0x |
+| alacritty | 119ms | 22x |
+| ghostty | 379ms | 69x |
 
 ### Throughput: dense ASCII (4.7MB, 5 runs)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **58ms** | **82** | 1.0x |
-| foot | 134ms | 35 | 2.3x |
-| st | 174ms | 27 | 3.0x |
-| xterm | 196ms | 24 | 3.4x |
-| alacritty | 252ms | 19 | 4.3x |
-| kitty | 354ms | 13 | 6.1x |
-| ghostty | 704ms | 7 | 12x |
+| **zt** | **52ms** | **88** | 1.0x |
+| foot | 116ms | 40 | 2.2x |
+| st | 160ms | 29 | 3.1x |
+| xterm | 180ms | 26 | 3.5x |
+| alacritty | 222ms | 21 | 4.3x |
+| kitty | 306ms | 15 | 5.9x |
+| ghostty | 598ms | 8 | 11.5x |
 
-### Throughput: TrueColor (292KB, 5 runs)
-
-| | Time | MB/s | vs zt |
-|---|---|---|---|
-| **zt** | **2ms** | **95** | 1.0x |
-| xterm | 32ms | 6 | 16x |
-| st | 52ms | 4 | 26x |
-| foot | 60ms | 3 | 30x |
-| alacritty | 140ms | 1 | 70x |
-| kitty | 250ms | <1 | 125x |
-| ghostty | 496ms | <1 | 248x |
-
-### Throughput: Unicode/CJK (300KB, 5 runs)
+### Throughput: TrueColor (2.9MB, 5 runs)
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **4ms** | **49** | 1.0x |
-| xterm | 30ms | 7 | 7.5x |
-| st | 58ms | 3 | 15x |
-| foot | 62ms | 3 | 16x |
-| alacritty | 144ms | 1 | 36x |
-| kitty | 250ms | <1 | 63x |
-| ghostty | 490ms | <1 | 123x |
+| **zt** | **53ms** | **55** | 1.0x |
+| foot | 107ms | 27 | 2.0x |
+| xterm | 129ms | 23 | 2.4x |
+| st | 130ms | 22 | 2.4x |
+| alacritty | 196ms | 15 | 3.7x |
+| kitty | 280ms | 10 | 5.3x |
+| ghostty | 534ms | 5 | 10.1x |
+
+### Throughput: Unicode/CJK (3.0MB, 5 runs)
+
+| | Time | MB/s | vs zt |
+|---|---|---|---|
+| **zt** | **58ms** | **52** | 1.0x |
+| foot | 126ms | 24 | 2.2x |
+| st | 126ms | 24 | 2.2x |
+| xterm | 142ms | 21 | 2.5x |
+| alacritty | 200ms | 15 | 3.4x |
+| kitty | 292ms | 10 | 5.0x |
+| ghostty | 480ms | 6 | 8.3x |
 
 ### Idle memory (PSS)
 
 | | RSS | PSS | vs zt |
 |---|---|---|---|
-| **zt** | **4.9 MB** | **2.2 MB** | 1.0x |
-| xterm | 11 MB | 4.5 MB | 2.1x |
-| foot | 24 MB | 11 MB | 5.0x |
-| st | 29 MB | 15 MB | 6.8x |
-| alacritty | 110 MB | 35 MB | 16x |
-| kitty | 139 MB | 53 MB | 24x |
-| ghostty | 221 MB | 96 MB | 44x |
+| **zt** | **5.0 MB** | **2.3 MB** | 1.0x |
+| xterm | 11 MB | 4.3 MB | 1.8x |
+| foot | 24 MB | 10 MB | 4.2x |
+| st | 25 MB | 13 MB | 5.3x |
+| alacritty | 107 MB | 33 MB | 14x |
+| kitty | 135 MB | 51 MB | 22x |
+| ghostty | 215 MB | 87 MB | 38x |
 
 ## Build
 
