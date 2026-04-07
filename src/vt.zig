@@ -1018,6 +1018,14 @@ fn handlePrint(cp: u21, term: *Term) void {
         } else if (existing.attrs.wide and term.cursor_x + 1 < term.cols) {
             term.setCell(term.cursor_x + 1, term.cursor_y, term.blankCell());
         }
+        // For wide chars: also check cursor_x+1 (where the dummy will go).
+        // If cursor_x+1 is a wide cell, its dummy at cursor_x+2 would be orphaned.
+        if (wide and term.cursor_x + 1 < term.cols) {
+            const next = term.getCell(term.cursor_x + 1, term.cursor_y);
+            if (next.attrs.wide and term.cursor_x + 2 < term.cols) {
+                term.setCell(term.cursor_x + 2, term.cursor_y, term.blankCell());
+            }
+        }
     }
 
     var attrs = term.current_attrs;
@@ -2101,4 +2109,91 @@ test "Executor: malformed SGR 48;2;256;0;0 does not panic" {
     }
     // bg_rgb should remain null (not set)
     try testing.expectEqual(@as(?[3]u8, null), term.current_bg_rgb);
+}
+
+test "Executor: wide char overwrite clears orphaned dummy" {
+    // Scenario: "aあいう" → delete 'a' → shell reprints あいう shifted left by 1.
+    // Each wide char write at cursor_x must clear the dummy at cursor_x+2
+    // when cursor_x+1 holds a wide cell (left half of the OLD pair).
+    var term = try Term.init(testing.allocator, 10, 4);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Write "aあいう" — a=col0, あ=col1-2, い=col3-4, う=col5-6
+    for ("a") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Write あ (U+3042 = E3 81 82)
+    for ("\xe3\x81\x82") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Write い (U+3044 = E3 81 84)
+    for ("\xe3\x81\x84") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Write う (U+3046 = E3 81 86)
+    for ("\xe3\x81\x86") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    // Verify initial layout: a=0, あ=1-2, い=3-4, う=5-6
+    const phys = term.row_map[0];
+    const base = @as(usize, phys) * @as(usize, term.cols);
+    try testing.expectEqual(@as(u21, 'a'), term.cells[base + 0].char);
+    try testing.expectEqual(@as(u21, 0x3042), term.cells[base + 1].char);
+    try testing.expect(term.cells[base + 1].attrs.wide);
+    try testing.expect(term.cells[base + 2].attrs.wide_dummy);
+    try testing.expectEqual(@as(u21, 0x3044), term.cells[base + 3].char);
+    try testing.expect(term.cells[base + 3].attrs.wide);
+    try testing.expect(term.cells[base + 4].attrs.wide_dummy);
+
+    // Now simulate shell reprinting after deleting 'a':
+    // Move cursor to col 0, then print あいう (shifted left by 1)
+    // CSI 1 G = move cursor to column 1 (0-based: col 0)
+    for ("\x1b[1G") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(@as(u32, 0), term.cursor_x);
+
+    // Print あ at col 0 (overwrites 'a' at col 0, dummy goes to col 1)
+    for ("\xe3\x81\x82") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Print い at col 2
+    for ("\xe3\x81\x84") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Print う at col 4
+    for ("\xe3\x81\x86") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Print space at col 6 to clear trailing
+    for (" ") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    // Verify: あ=0-1, い=2-3, う=4-5, space=6
+    try testing.expectEqual(@as(u21, 0x3042), term.cells[base + 0].char);
+    try testing.expect(term.cells[base + 0].attrs.wide);
+    try testing.expect(term.cells[base + 1].attrs.wide_dummy);
+
+    try testing.expectEqual(@as(u21, 0x3044), term.cells[base + 2].char);
+    try testing.expect(term.cells[base + 2].attrs.wide);
+    try testing.expect(term.cells[base + 3].attrs.wide_dummy);
+
+    try testing.expectEqual(@as(u21, 0x3046), term.cells[base + 4].char);
+    try testing.expect(term.cells[base + 4].attrs.wide);
+    try testing.expect(term.cells[base + 5].attrs.wide_dummy);
+
+    // Col 6 must NOT be an orphaned wide_dummy
+    try testing.expect(!term.cells[base + 6].attrs.wide_dummy);
 }
