@@ -10,47 +10,6 @@ Minimal terminal emulator written in Zig. Renders directly to the Linux framebuf
 
 Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero) (RPi Zero 2W + 720x720 HyperPixel4), but runs on any Linux system.
 
-## Features
-
-- **Quad backend** — framebuffer direct rendering (no X11/Wayland), XCB + SHM under X11, pure Zig Wayland client (no libwayland), or Cocoa/AppKit on macOS
-- **Comptime everything** — backend, font, palette, pixel scale all resolved at compile time. Zero runtime cost for unused code paths
-- **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI/PC displays. Integer scaling renders each bitmap pixel as an NxN block. Same font blob, no quality loss
-- **Row-map scroll** — O(1) scroll via row indirection table instead of cell copying. 60K scrolls move 44MB of pointers vs 880MB of cell data
-- **Damage tracking** — per-cell dirty bitmap with O(1) flag, row-level skip, dirty region present. Scroll marks only recycled rows dirty
-- **Double-buffered SHM** — tear-free X11 rendering with lazy second-buffer init (no startup cost)
-- **XKB keyboard layout** — any X11/Wayland keyboard layout works automatically via libxkbcommon (US, JP, DE, FR, etc.)
-- **Input method** — XIM under X11, text-input-v3 under Wayland. Japanese/Chinese/Korean input via fcitx5, ibus, etc.
-- **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim), DEC modes, alternate screen
-- **CJK wide character support** — correct double-width rendering with wide-char boundary repair on erase/delete
-- **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
-- **Adaptive frame limiter** — 4-tier adaptive FPS (120→60→15→5) based on output volume. During extreme output, drops to 5fps for maximum parse throughput. Dynamic epoll timeout for zero-waste idle
-- **Bulk ASCII fast path** — VT parser writes directly to cell array with SIMD range checking (@Vector 16-byte), 8-byte template cell writes, and range-based dirty marking
-- **UTF-8 bulk path** — ground-state multi-byte characters decoded directly, bypassing per-byte parser state machine
-- **Scroll pixel memmove** — on scroll, shift pixel buffer via memmove and re-render only recycled rows. Saturated scrolls fall back to full re-render with global background fill
-- **PTY drain loop** — reads all available data (configurable buffer, `-Dpty_buf_kb`, default 1MB) before rendering, reducing frame count during bulk output
-- **Write buffering** — PTY writes buffered on backpressure with EPOLLOUT retry
-- **ConfigureNotify coalescing** — drag-resize processes only the final size, skipping intermediate reallocation
-- **No libc** (fbdev) — pure `std.posix` syscalls, single static binary
-- **73 unit tests** across 7 modules
-
-## Status
-
-| Backend | Status |
-|---------|--------|
-| fbdev | Stable |
-| X11 | Stable |
-| Wayland | WIP — resize crash on window drag-to-edge |
-| macOS | Experimental |
-
-## Numbers
-
-|  | fbdev | X11 | Wayland |
-|---|---|---|---|
-| Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB | 2.8 MB |
-| Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit | libxkbcommon |
-| Build time | < 1s | < 1s | < 1s |
-| Source | ~10K lines across 19 files | | |
-
 ## Benchmarks
 
 Measured on Intel i5-12450H, 1 CPU core, real display (:0, hardware GPU), `-Doptimize=ReleaseFast`. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and methodology.
@@ -113,9 +72,47 @@ Measured on Intel i5-12450H, 1 CPU core, real display (:0, hardware GPU), `-Dopt
 | kitty | 135 MB | 51 MB | 22x |
 | ghostty | 215 MB | 87 MB | 38x |
 
+## Features
+
+### Rendering
+
+- **Quad backend** — framebuffer (no X11/Wayland), XCB + SHM under X11, pure Zig Wayland client (no libwayland), Cocoa/AppKit on macOS
+- **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI/PC displays. Integer scaling, same font blob, no quality loss
+- **Double-buffered SHM** — tear-free X11 rendering with lazy second-buffer init
+- **Adaptive frame limiter** — 4-tier FPS (120→60→15→5) based on output volume
+
+### Terminal
+
+- **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim, strikethrough), DEC modes, alternate screen
+- **CJK wide character support** — correct double-width rendering with wide-char boundary repair
+- **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
+- **XKB keyboard layout** — any X11/Wayland layout works automatically (US, JP, DE, FR, etc.)
+- **Input method** — XIM under X11, text-input-v3 under Wayland (fcitx5, ibus, etc.)
+
+### Performance
+
+- **Bulk ASCII fast path** — SIMD 16-byte range check, 8-byte template cell writes, range-based dirty marking
+- **UTF-8 bulk path** — ground-state multi-byte characters decoded directly, bypassing per-byte state machine
+- **Row-map scroll** — O(1) scroll via row indirection table instead of cell copying
+- **Damage tracking** — per-cell dirty bitmap with O(1) flag, row-level skip
+- **PTY drain loop** — configurable buffer (`-Dpty_buf_kb`, default 1MB), drain before render
+- **Comptime everything** — backend, font, palette, scale resolved at compile time. Zero runtime cost for unused paths
+- **No libc** (fbdev) — pure `std.posix` syscalls, single static binary
+
+### Testing
+
+- **73 unit tests** across 7 modules
+
 ## Build
 
 Requires Zig 0.15+.
+
+|  | fbdev | X11 | Wayland |
+|---|---|---|---|
+| Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB | 2.8 MB |
+| Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit | libxkbcommon |
+| Build time | < 1s | < 1s | < 1s |
+| Source | ~10K lines across 19 files | | |
 
 ### Build Profiles
 
@@ -203,6 +200,15 @@ Works on any xdg-shell compliant compositor: Sway, Hyprland, GNOME, KDE, river, 
 
 Requires macOS SDK (Xcode or Command Line Tools).
 
+## Status
+
+| Backend | Status |
+|---------|--------|
+| fbdev | Stable |
+| X11 | Stable |
+| Wayland | WIP — resize crash on window drag-to-edge |
+| macOS | Experimental |
+
 ## Configuration
 
 Edit `config.zig` and rebuild — [st](https://st.suckless.org/)-style, no runtime config files.
@@ -286,6 +292,9 @@ epoll event loop (single-threaded, dynamic timeout)
 
 ## Supported escape sequences
 
+<details>
+<summary>Click to expand — CSI, SGR, DEC modes, OSC, DCS, VT52</summary>
+
 ### CSI sequences
 
 | Sequence | Name | Description |
@@ -323,7 +332,6 @@ epoll event loop (single-threaded, dynamic timeout)
 | `CSI ! p` | DECSTR | Soft terminal reset |
 | `CSI Ps SP q` | DECSCUSR | Set cursor style |
 | `CSI Ps $ p` | DECRQM | Mode query (responds with mode status) |
-| `CSI ! p` | DECSTR | Soft terminal reset |
 | `CSI " p` | DECSCL | Conformance level (silently accepted) |
 | `CSI " q` | DECSCA | Set character protection attribute |
 | `CSI Ps t` | XTWINOPS | Window operations (silently accepted) |
@@ -441,9 +449,9 @@ Entered via `CSI ? 2 l` (DECANM reset). Exit via `ESC <`.
 | `DCS + q` | XTGETTCAP — query terminal capabilities |
 | `DCS $ q` | DECRQSS — query status string (SGR, DECSTBM, DECSCUSR) |
 
-## Tested applications
+</details>
 
-The following applications have been verified working under Xvfb integration tests:
+## Tested applications
 
 vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L), Claude Code (Anthropic CLI)
 
