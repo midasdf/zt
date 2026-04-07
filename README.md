@@ -12,7 +12,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 
 ## Benchmarks
 
-Measured on Intel i5-12450H, 1 CPU core, real display (:0, hardware GPU), `-Doptimize=ReleaseFast`. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and methodology.
+Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=ReleaseFast`. Wayland-native terminals (foot) run via XWayland. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and methodology.
 
 ### Startup (hyperfine, 30 runs)
 
