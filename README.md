@@ -24,7 +24,7 @@ Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero)
 - **CJK wide character support** — correct double-width rendering with wide-char boundary repair on erase/delete
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
 - **Adaptive frame limiter** — 4-tier adaptive FPS (120→60→15→5) based on output volume. During extreme output, drops to 5fps for maximum parse throughput. Dynamic epoll timeout for zero-waste idle
-- **Bulk ASCII fast path** — VT parser writes directly to cell array with SIMD range checking (@Vector 16-byte) and range-based dirty marking
+- **Bulk ASCII fast path** — VT parser writes directly to cell array with SIMD range checking (@Vector 16-byte), 8-byte template cell writes, and range-based dirty marking
 - **UTF-8 bulk path** — ground-state multi-byte characters decoded directly, bypassing per-byte parser state machine
 - **Scroll pixel memmove** — on scroll, shift pixel buffer via memmove and re-render only recycled rows. Saturated scrolls fall back to full re-render with global background fill
 - **PTY drain loop** — reads all available data (configurable buffer, `-Dpty_buf_kb`, default 1MB) before rendering, reducing frame count during bulk output
