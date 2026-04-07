@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 82 MB/s throughput. 5.6ms startup. 2MB memory. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 88 MB/s throughput. 5.5ms startup. 2MB memory. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
