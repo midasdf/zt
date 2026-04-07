@@ -1,4 +1,4 @@
-# ⚡zt — the fastest terminal emulator. 73 MB/s throughput. 5.6ms startup. 2MB memory. Pure Zig.
+# ⚡zt — the fastest terminal emulator. 82 MB/s throughput. 5.6ms startup. 2MB memory. Pure Zig.
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -71,13 +71,13 @@ Measured on Intel i5-12450H, 1 CPU core, real display (:0, hardware GPU), `-Dopt
 
 | | Time | MB/s | vs zt |
 |---|---|---|---|
-| **zt** | **64ms** | **73** | 1.0x |
-| foot | 134ms | 35 | 2.1x |
-| st | 174ms | 27 | 2.7x |
-| xterm | 196ms | 24 | 3.1x |
-| alacritty | 252ms | 19 | 3.9x |
-| kitty | 354ms | 13 | 5.5x |
-| ghostty | 704ms | 7 | 11x |
+| **zt** | **58ms** | **82** | 1.0x |
+| foot | 134ms | 35 | 2.3x |
+| st | 174ms | 27 | 3.0x |
+| xterm | 196ms | 24 | 3.4x |
+| alacritty | 252ms | 19 | 4.3x |
+| kitty | 354ms | 13 | 6.1x |
+| ghostty | 704ms | 7 | 12x |
 
 ### Throughput: TrueColor (292KB, 5 runs)
 
