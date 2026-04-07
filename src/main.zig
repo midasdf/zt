@@ -561,6 +561,7 @@ pub fn main() !void {
     var write_pending: usize = 0;
     var last_render_ns: i128 = 0;
     var bytes_since_render: usize = 0;
+    var sync_update_start_ns: i128 = 0; // timestamp when sync_update was first seen
 
     while (running) {
         const loop_now = std.time.nanoTimestamp();
@@ -788,7 +789,19 @@ pub fn main() !void {
         if (!term.hasDirty()) continue;
 
         // Synchronized output (DEC 2026): defer render until ESU
-        if (term.sync_update) continue;
+        // Timeout after 3 seconds to prevent permanent freeze if app crashes
+        if (term.sync_update) {
+            if (sync_update_start_ns == 0) {
+                sync_update_start_ns = loop_now;
+            } else if (loop_now - sync_update_start_ns > 3_000_000_000) {
+                term.sync_update = false;
+                sync_update_start_ns = 0;
+            } else {
+                continue;
+            }
+        } else {
+            sync_update_start_ns = 0;
+        }
 
         // Frame rate limiting: skip render if too soon since last frame
         if (effective_frame_ns > 0) {

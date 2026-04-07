@@ -92,6 +92,7 @@ pub const X11Backend = struct {
     has_forwarded_key: bool = false,
     pending_xim_keycode: u8 = 0, // key sent to IM, awaiting response
     has_pending_xim: bool = false,
+    xim_pending_ns: i128 = 0, // timestamp when XIM key was forwarded (for timeout)
     suppress_xim_result: bool = false, // discard next XIM result (IME toggle key)
     last_ime_x: i16 = -1, // last cursor position sent to IME (-1 = never set)
     last_ime_y: i16 = -1,
@@ -765,6 +766,20 @@ pub const X11Backend = struct {
             return .close;
         }
 
+        // XIM timeout: if IM server hasn't responded within 500ms, fall back to local XKB
+        if (self.has_pending_xim) {
+            const now = std.time.nanoTimestamp();
+            if (now - self.xim_pending_ns > 500_000_000) {
+                self.has_pending_xim = false;
+                // Fall back to local XKB processing for the stuck key
+                if (!self.suppress_xim_result) {
+                    const result = self.processKeycode(self.pending_xim_keycode);
+                    if (result != null) return result;
+                }
+                self.suppress_xim_result = false;
+            }
+        }
+
         // First, check if XIM callbacks produced events
         if (self.has_committed) {
             self.has_committed = false;
@@ -847,7 +862,7 @@ pub const X11Backend = struct {
                 // Ctrl+Shift+V → paste from clipboard
                 if (evdev_keycode == 47 and mods.ctrl and mods.shift and !mods.alt) {
                     self.requestPaste();
-                    return null;
+                    continue; // don't return null — drain remaining XCB events
                 }
 
                 // Forward key to XIM if IC is active — IM server processes
@@ -872,6 +887,7 @@ pub const X11Backend = struct {
                             // Save pending key for fallback if IM doesn't respond
                             self.pending_xim_keycode = key.*.detail;
                             self.has_pending_xim = true;
+                            self.xim_pending_ns = std.time.nanoTimestamp();
                             _ = c.xcb_xim_forward_event(xim, self.xic, key);
                             // Check if forwarding produced immediate results
                             if (self.has_committed) {
@@ -890,14 +906,14 @@ pub const X11Backend = struct {
                                 self.suppress_xim_result = false;
                                 return null;
                             }
-                            return null; // wait for async response
+                            continue; // XIM processing — drain remaining XCB events
                         }
                     }
                 }
 
                 // Suppress IME toggle keys (Shift+Space) — don't produce text
                 if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt) {
-                    return null;
+                    continue; // don't return null — drain remaining XCB events
                 }
 
                 // Special keys (Enter, Backspace, arrows, Fn...) → KeyEvent for escape sequence handling
@@ -939,7 +955,7 @@ pub const X11Backend = struct {
                         return .{ .text = text_ev };
                     }
                     // XKB returned nothing (modifier-only key etc.) → ignore
-                    return null;
+                    continue; // don't return null — drain remaining XCB events
                 }
 
                 // Fallback: no XKB → use hardcoded keymap via KeyEvent
