@@ -73,6 +73,9 @@ pub const Parser = struct {
     osc_len: u16 = 0,
     // ESC in OSC tracking
     esc_in_osc: bool = false,
+    // VT52 ESC Y cursor addressing state: 0=none, 'Y'=awaiting row, 'R'=awaiting col
+    vt52_cursor_state: u8 = 0,
+    vt52_cursor_row: u8 = 0,
 
     pub fn feed(self: *Parser, byte: u8) Action {
         return switch (self.state) {
@@ -305,7 +308,7 @@ pub const Parser = struct {
         } else if (byte >= 0x40 and byte <= 0x7E) {
             // Final byte — finalize param_count
             self.in_subparam = false;
-            self.param_count += 1;
+            if (self.param_count < 16) self.param_count += 1;
             self.state = .ground;
             return Action{ .csi_dispatch = self.buildCsiAction(byte) };
         } else if (byte >= 0x3C and byte <= 0x3F) {
@@ -914,21 +917,20 @@ fn respondDecrqss(term: *Term, query: []const u8) void {
 
 fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser) void {
     // VT52 ESC Y sub-state: collecting row and column bytes
-    // Reuse utf8_buf[0] as sub-state: 0=normal, 'Y'=awaiting row, 'R'=awaiting col
-    if (parser.utf8_buf[0] == 'Y') {
-        // Awaiting row byte (row = byte - 0x1F, 1-based)
-        parser.utf8_buf[1] = byte;
-        parser.utf8_buf[0] = 'R'; // now awaiting col
+    if (parser.vt52_cursor_state == 'Y') {
+        // Awaiting row byte (row = byte - 0x20, 0-based)
+        parser.vt52_cursor_row = byte;
+        parser.vt52_cursor_state = 'R'; // now awaiting col
         return;
     }
-    if (parser.utf8_buf[0] == 'R') {
+    if (parser.vt52_cursor_state == 'R') {
         // Awaiting col byte
-        const row = if (parser.utf8_buf[1] >= 0x20) parser.utf8_buf[1] - 0x20 else 0;
+        const row = if (parser.vt52_cursor_row >= 0x20) parser.vt52_cursor_row - 0x20 else 0;
         const col = if (byte >= 0x20) byte - 0x20 else 0;
         term.cursor_x = @min(@as(u32, col), term.cols -| 1);
         term.cursor_y = @min(@as(u32, row), term.rows -| 1);
         term.wrap_next = false;
-        parser.utf8_buf[0] = 0;
+        parser.vt52_cursor_state = 0;
         return;
     }
 
@@ -965,7 +967,7 @@ fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser) void {
             'J' => term.eraseDisplay(0),
             'K' => term.eraseLine(0),
             'Y' => {
-                parser.utf8_buf[0] = 'Y';
+                parser.vt52_cursor_state = 'Y';
                 return;
             }, // Begin cursor addressing
             'Z' => { // Identify
@@ -1251,7 +1253,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const col = if (pc > 1 and p[1] > 0) p[1] - 1 else 0;
             if (term.origin_mode) {
                 // DECOM: row is relative to scroll region top, clamped to region
-                const abs_row = term.scroll_top + @min(@as(u32, @intCast(row)), term.scroll_bottom - term.scroll_top);
+                const abs_row = term.scroll_top + @min(@as(u32, @intCast(row)), term.scroll_bottom -| term.scroll_top);
                 term.moveCursorTo(@intCast(col), abs_row);
             } else {
                 term.moveCursorTo(@intCast(col), @intCast(row));
