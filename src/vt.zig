@@ -2314,3 +2314,211 @@ test "Executor: wide char overwrite clears orphaned dummy" {
     // Col 6 must NOT be an orphaned wide_dummy
     try testing.expect(!term.cells[base + 6].attrs.wide_dummy);
 }
+
+test "OSC 52: base64 decode sets clipboard buffer" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Send OSC 52 ; c ; SGVsbG8= BEL  (base64("Hello") = "SGVsbG8=")
+    const seq = "\x1b]52;c;SGVsbG8=\x07";
+    for (seq) |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    try testing.expect(term.osc52_pending);
+    try testing.expectEqual(@as(u16, 5), term.osc52_len);
+    try testing.expectEqualSlices(u8, "Hello", term.osc52_buf[0..term.osc52_len]);
+}
+
+test "SGR 4:3 sets curly underline style" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // ESC [ 4:3 m — curly underline
+    const seq = "\x1b[4:3m";
+    for (seq) |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    try testing.expectEqual(@as(u3, 3), term.current_attrs.underline_style);
+
+    // ESC [ 4:1 m — single underline
+    for ("\x1b[4:1m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(@as(u3, 1), term.current_attrs.underline_style);
+
+    // ESC [ 24 m — reset underline
+    for ("\x1b[24m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(@as(u3, 0), term.current_attrs.underline_style);
+}
+
+test "SGR 4 without sub-param sets single underline" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b[4m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(@as(u3, 1), term.current_attrs.underline_style);
+}
+
+test "SGR 21 sets double underline" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b[21m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(@as(u3, 2), term.current_attrs.underline_style);
+}
+
+test "SGR 58;2;r;g;b sets underline color" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // ESC [ 58;2;255;128;0 m — orange underline color
+    for ("\x1b[58;2;255;128;0m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    try testing.expect(term.current_ul_color_rgb != null);
+    const rgb = term.current_ul_color_rgb.?;
+    try testing.expectEqual(@as(u8, 255), rgb[0]);
+    try testing.expectEqual(@as(u8, 128), rgb[1]);
+    try testing.expectEqual(@as(u8, 0), rgb[2]);
+
+    // ESC [ 59 m — reset underline color
+    for ("\x1b[59m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expect(term.current_ul_color_rgb == null);
+}
+
+test "OSC 8: hyperlink sets current_hyperlink_id" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // OSC 8 ; ; https://example.com BEL — start hyperlink
+    const start = "\x1b]8;;https://example.com\x07";
+    for (start) |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    try testing.expect(term.current_hyperlink_id != 0);
+    const id = term.current_hyperlink_id;
+    const slot = id - 1;
+    const entry = &term.hyperlink_table[slot];
+    try testing.expectEqualSlices(u8, "https://example.com", entry.slice());
+
+    // OSC 8 ; ; BEL — end hyperlink
+    const end_seq = "\x1b]8;;\x07";
+    for (end_seq) |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(@as(u16, 0), term.current_hyperlink_id);
+}
+
+test "OSC 8: hyperlink id written to cells" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Start hyperlink, print "AB", end hyperlink, print "C"
+    const seq = "\x1b]8;;https://test.com\x07AB\x1b]8;;\x07C";
+    for (seq) |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    const phys = term.row_map[0];
+    const base = @as(usize, phys) * @as(usize, term.cols);
+    // A and B should have hyperlink id
+    try testing.expect(term.hyperlink_ids[base + 0] != 0);
+    try testing.expect(term.hyperlink_ids[base + 1] != 0);
+    // C should NOT have hyperlink id
+    try testing.expectEqual(@as(u16, 0), term.hyperlink_ids[base + 2]);
+}
+
+test "Bracketed paste mode tracked by DECSET 2004" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    try testing.expect(!term.bracketed_paste);
+
+    // DECSET 2004
+    for ("\x1b[?2004h") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expect(term.bracketed_paste);
+
+    // DECRST 2004
+    for ("\x1b[?2004l") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expect(!term.bracketed_paste);
+}
+
+test "SGR 0 does not reset hyperlink id" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Start hyperlink
+    for ("\x1b]8;;https://example.com\x07") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    const id = term.current_hyperlink_id;
+    try testing.expect(id != 0);
+
+    // SGR 0 reset
+    for ("\x1b[0m") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Hyperlink must survive SGR reset
+    try testing.expectEqual(id, term.current_hyperlink_id);
+}
+
+test "CUP respects DECOM origin mode" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Set scroll region 5-20 and enable origin mode
+    for ("\x1b[5;20r\x1b[?6h") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    // CUP 1;1 — should go to row 5 (scroll_top + 0), col 0
+    for ("\x1b[1;1H") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    try testing.expectEqual(@as(u32, 0), term.cursor_x);
+    try testing.expectEqual(@as(u32, 4), term.cursor_y); // row 5 (0-indexed = 4)
+}

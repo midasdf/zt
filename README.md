@@ -87,7 +87,10 @@ Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=Rel
 
 ### Terminal
 
-- **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim, strikethrough), DEC modes, alternate screen
+- **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim, strikethrough), styled underlines (single/double/curly/dotted/dashed) with custom colors, DEC modes, alternate screen
+- **OSC 52 clipboard** — applications can copy to system clipboard (via xclip/wl-copy)
+- **OSC 8 hyperlinks** — terminal hyperlinks from cargo, gcc, ls --hyperlink, etc.
+- **Bracketed paste** — safe pasting in shells and editors (DECSET 2004)
 - **CJK wide character support** — correct double-width rendering with wide-char boundary repair
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
 - **XKB keyboard layout** — any X11/Wayland layout works automatically (US, JP, DE, FR, etc.)
@@ -105,7 +108,7 @@ Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=Rel
 
 ### Testing
 
-- **73 unit tests** across 7 modules
+- **124 unit tests** across 12 modules
 
 ## Build
 
@@ -116,7 +119,7 @@ Requires Zig 0.15+.
 | Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB | 2.8 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit | libxkbcommon |
 | Build time | < 1s | < 1s | < 1s |
-| Source | ~10K lines across 19 files | | |
+| Source | ~13K lines across 19 files | | |
 
 ### Build Profiles
 
@@ -280,12 +283,12 @@ epoll event loop (single-threaded, dynamic timeout)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/vt.zig` | 1,859 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path |
+| `src/vt.zig` | 2,524 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path, OSC 52/8 |
 | `src/backend/x11.zig` | 950 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
-| `src/term.zig` | 1,080 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor sparse maps |
-| `src/main.zig` | 559 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration |
+| `src/term.zig` | 1,400 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor + underline color + hyperlink maps |
+| `src/main.zig` | 1,002 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration, clipboard dispatch |
 | `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
-| `src/render.zig` | 389 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), memcpy row duplication |
+| `src/render.zig` | 520 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), 5 underline styles, memcpy row duplication |
 | `src/backend/wayland.zig` | 1,099 | Pure Zig Wayland client: wl_shm double buffer, xdg-shell, event dispatch, internal epoll |
 | `src/backend/wayland/*.zig` | 2,028 | Wire protocol, core/xdg-shell/seat/text-input-v3/clipboard/decoration modules |
 | `src/backend/fbdev.zig` | 319 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
@@ -354,7 +357,13 @@ All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown priva
 | 1 | Bold |
 | 2 | Dim |
 | 3 | Italic |
-| 4 | Underline |
+| 4 | Underline (single) |
+| 4:0 | No underline |
+| 4:1 | Single underline |
+| 4:2 | Double underline |
+| 4:3 | Curly underline |
+| 4:4 | Dotted underline |
+| 4:5 | Dashed underline |
 | 5, 6 | Blink |
 | 7 | Reverse video |
 | 8 | Invisible |
@@ -375,6 +384,9 @@ All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown priva
 | 48;5;n | Background 256-color |
 | 48;2;r;g;b | Background 24-bit TrueColor |
 | 49 | Default background |
+| 58;5;n | Underline 256-color |
+| 58;2;r;g;b | Underline 24-bit TrueColor |
+| 59 | Default underline color |
 | 90-97 | Foreground bright |
 | 100-107 | Background bright |
 
@@ -443,7 +455,8 @@ Entered via `CSI ? 2 l` (DECANM reset). Exit via `ESC <`.
 | `OSC 10 ; ?` | Query foreground color |
 | `OSC 11 ; ?` | Query background color |
 | `OSC 12 ; ?` | Query cursor color |
-| `OSC 52` | Clipboard (silently accepted) |
+| `OSC 8 ; params ; URI` | Hyperlinks — set/clear terminal hyperlink |
+| `OSC 52 ; Pc ; Pd` | Clipboard — base64-decode Pd, copy to system clipboard via xclip/wl-copy |
 | `OSC 104` | Reset colors (silently accepted) |
 
 ### DCS sequences
@@ -462,7 +475,7 @@ vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, r
 ## Limitations
 
 - No scrollback buffer — only the current viewport is kept
-- No clipboard on fbdev/X11 (Wayland supports Ctrl+Shift+V paste and primary selection)
+- No clipboard paste on fbdev (X11/Wayland support Ctrl+Shift+V paste; OSC 52 copy works on all backends with xclip/wl-copy)
 - No mouse support
 - fbdev keymap is compile-time only (US/JP); X11 uses XKB for any layout
 - No inline pre-edit display — IME candidate window is handled by the input method (fcitx5 default)
