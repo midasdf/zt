@@ -940,7 +940,7 @@ pub const WaylandBackend = struct {
                     // Shift+Insert -> primary selection paste
                     if (evdev_keycode == input_mod.KEY.INSERT and mods.shift) {
                         if (self.clipboard.primary_offer_id != 0 and self.clipboard.primary_has_text) {
-                            clipboard_mod.requestPaste(&self.conn, self.clipboard.primary_offer_id, &self.clipboard) catch {};
+                            clipboard_mod.requestPaste(&self.conn, self.clipboard.primary_offer_id, &self.clipboard, clipboard_mod.ZWP_PRIMARY_SELECTION_OFFER_RECEIVE) catch {};
                             if (self.clipboard.paste_pipe_fd >= 0) {
                                 var epev = linux.epoll_event{
                                     .events = linux.EPOLL.IN | linux.EPOLL.HUP,
@@ -955,7 +955,7 @@ pub const WaylandBackend = struct {
                     // Ctrl+Shift+V -> clipboard paste
                     if (evdev_keycode == input_mod.KEY.V and mods.ctrl and mods.shift) {
                         if (self.clipboard.current_offer_id != 0 and self.clipboard.offer_has_text) {
-                            clipboard_mod.requestPaste(&self.conn, self.clipboard.current_offer_id, &self.clipboard) catch {};
+                            clipboard_mod.requestPaste(&self.conn, self.clipboard.current_offer_id, &self.clipboard, clipboard_mod.WL_DATA_OFFER_RECEIVE) catch {};
                             if (self.clipboard.paste_pipe_fd >= 0) {
                                 var epev = linux.epoll_event{
                                     .events = linux.EPOLL.IN | linux.EPOLL.HUP,

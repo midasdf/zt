@@ -1246,10 +1246,16 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             term.cursor_x = @min(@as(u32, @intCast(col)), term.cols -| 1);
             term.wrap_next = false;
         },
-        'H', 'f' => { // CUP — cursor position (1-indexed params)
+        'H', 'f' => { // CUP/HVP — cursor position (1-indexed params, DECOM-aware)
             const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
             const col = if (pc > 1 and p[1] > 0) p[1] - 1 else 0;
-            term.moveCursorTo(@intCast(col), @intCast(row));
+            if (term.origin_mode) {
+                // DECOM: row is relative to scroll region top, clamped to region
+                const abs_row = term.scroll_top + @min(@as(u32, @intCast(row)), term.scroll_bottom - term.scroll_top);
+                term.moveCursorTo(@intCast(col), abs_row);
+            } else {
+                term.moveCursorTo(@intCast(col), @intCast(row));
+            }
         },
         'J' => { // ED / DECSED — erase display
             const mode: u8 = if (pc > 0) @intCast(p[0]) else 0;

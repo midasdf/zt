@@ -124,11 +124,13 @@ pub fn requestPaste(
     conn: *wire.Connection,
     offer_id: u32,
     state: *ClipboardState,
+    opcode: u16,
 ) !void {
     // Create a non-blocking, close-on-exec pipe pair
     const fds = try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
     const read_fd = fds[0];
     const write_fd = fds[1];
+    defer posix.close(write_fd); // always close write end (compositor gets dup via SCM_RIGHTS)
     errdefer posix.close(read_fd);
 
     const mime = "text/plain;charset=utf-8";
@@ -139,10 +141,7 @@ pub fn requestPaste(
     var pos: usize = 0;
     wire.putString(&payload, &pos, mime);
 
-    try conn.sendMessage(offer_id, WL_DATA_OFFER_RECEIVE, payload[0..pos], &[_]posix.fd_t{write_fd});
-
-    // Close write end — compositor has a duplicate via SCM_RIGHTS
-    posix.close(write_fd);
+    try conn.sendMessage(offer_id, opcode, payload[0..pos], &[_]posix.fd_t{write_fd});
 
     // Flush immediately so the compositor processes the receive request
     try conn.flush();

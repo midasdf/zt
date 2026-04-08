@@ -115,12 +115,14 @@ pub fn putString(buf: []u8, pos: *usize, str: []const u8) void {
 }
 
 pub fn getUint(buf: []const u8, pos: *usize) u32 {
+    if (pos.* + 4 > buf.len) return 0; // bounds check
     const value = std.mem.readInt(u32, buf[pos.*..][0..4], .little);
     pos.* += 4;
     return value;
 }
 
 pub fn getInt(buf: []const u8, pos: *usize) i32 {
+    if (pos.* + 4 > buf.len) return 0; // bounds check
     const value = std.mem.readInt(i32, buf[pos.*..][0..4], .little);
     pos.* += 4;
     return value;
@@ -132,8 +134,12 @@ pub fn getInt(buf: []const u8, pos: *usize) i32 {
 pub fn getString(buf: []const u8, pos: *usize) []const u8 {
     const len = getUint(buf, pos);
     if (len == 0) return buf[0..0]; // empty/null string
-    const str = buf[pos.*..][0 .. len - 1]; // exclude null terminator
     const padded = alignUp(len, 4);
+    if (pos.* + padded > buf.len or len - 1 > buf.len - pos.*) {
+        pos.* = buf.len; // skip to end on malformed
+        return buf[0..0];
+    }
+    const str = buf[pos.*..][0 .. len - 1]; // exclude null terminator
     pos.* += padded;
     return str;
 }
@@ -143,8 +149,12 @@ pub fn getString(buf: []const u8, pos: *usize) []const u8 {
 /// Advances pos past the padded end.
 pub fn getArray(buf: []const u8, pos: *usize) []const u8 {
     const len = getUint(buf, pos);
-    const data = buf[pos.*..][0..len];
     const padded = alignUp(len, 4);
+    if (pos.* + padded > buf.len or len > buf.len - pos.*) {
+        pos.* = buf.len; // skip to end on malformed
+        return buf[0..0];
+    }
+    const data = buf[pos.*..][0..len];
     pos.* += padded;
     return data;
 }
