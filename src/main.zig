@@ -327,6 +327,46 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
 
 /// Handle a single backend event (key, text, paste, resize, etc.).
 /// Returns false if the event loop should stop (close event or write failure).
+/// Dispatch clipboard copy via external tool (xclip for X11, wl-copy for Wayland).
+/// Non-blocking: forks a child process and writes data to its stdin.
+fn dispatchClipboardCopy(data: []const u8) void {
+    if (data.len == 0) return;
+
+    const tool: []const []const u8 = switch (config.backend) {
+        .x11 => &.{ "xclip", "-selection", "clipboard" },
+        .wayland => &.{"wl-copy"},
+        else => return,
+    };
+
+    const pipe = std.posix.pipe2(.{ .CLOEXEC = true }) catch return;
+    const pid = std.posix.fork() catch {
+        std.posix.close(pipe[0]);
+        std.posix.close(pipe[1]);
+        return;
+    };
+
+    if (pid == 0) {
+        // Child: redirect stdin from pipe read end
+        std.posix.dup2(pipe[0], 0) catch std.posix.exit(1);
+        std.posix.close(pipe[0]);
+        std.posix.close(pipe[1]);
+
+        const err = std.posix.execvpeZ(
+            tool[0].ptr,
+            @ptrCast(tool.ptr),
+            @ptrCast(std.c.environ),
+        );
+        _ = err;
+        std.posix.exit(1);
+    }
+
+    // Parent: write data to pipe write end, close both
+    std.posix.close(pipe[0]);
+    _ = std.posix.write(pipe[1], data) catch {};
+    std.posix.close(pipe[1]);
+    // Don't waitpid — let child be reaped by SIGCHLD handler or init
+}
+
 fn handleBackendEvent(
     event: *const BackendEvent,
     term: *Term,
@@ -772,6 +812,12 @@ pub fn main() !void {
             }
         }
 
+        // OSC 52: copy to system clipboard via external tool
+        if (term.osc52_pending) {
+            term.osc52_pending = false;
+            dispatchClipboardCopy(term.osc52_buf[0..term.osc52_len]);
+        }
+
         // Mark old cursor position dirty if cursor moved
         if (prev_cursor_x != term.cursor_x or prev_cursor_y != term.cursor_y) {
             term.markDirty(prev_cursor_x, prev_cursor_y);
@@ -835,6 +881,7 @@ pub fn main() !void {
             const row_cells = term.cells[row_base..][0..term.cols];
             const row_fg = term.fg_rgb[row_base..][0..term.cols];
             const row_bg = term.bg_rgb[row_base..][0..term.cols];
+            const row_ul = term.ul_color_rgb[row_base..][0..term.cols];
             const dirty_row_base = @as(usize, y) * @as(usize, term.cols);
 
             var x: u32 = 0;
@@ -846,6 +893,7 @@ pub fn main() !void {
 
                 var fg_rgb = row_fg[x];
                 var bg_rgb = row_bg[x];
+                const ul_rgb = row_ul[x];
                 const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
                 const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
 
@@ -866,15 +914,15 @@ pub fn main() !void {
                 const skip_bg = all_dirty and (render_cell.bg == config.default_bg) and (bg_rgb == null) and !render_cell.attrs.reverse;
                 if (skip_bg) {
                     if (cell.attrs.wide) {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, true);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, true);
                     } else {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, true);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, true);
                     }
                 } else {
                     if (cell.attrs.wide) {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, false);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, false);
                     } else {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, false);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, false);
                     }
                 }
 

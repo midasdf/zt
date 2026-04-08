@@ -94,6 +94,7 @@ pub fn renderCell(
     cell: Cell,
     fg_rgb_override: ?[3]u8,
     bg_rgb_override: ?[3]u8,
+    ul_rgb_override: ?[3]u8,
     glyph: ?GlyphView,
     comptime font_w: u32,
     comptime font_h: u32,
@@ -235,29 +236,172 @@ pub fn renderCell(
         }
     }
 
-    // 8. Underline: at (font_h - 2) * scale with scale-pixel thickness
-    if (cell.attrs.underline) {
+    // 8. Underline (styled): at (font_h - 2) * scale
+    const ul_style = cell.attrs.underline_style;
+    if (ul_style != 0) {
+        // Underline color: use override if present, otherwise fg_color
+        const ul_color = if (ul_rgb_override) |rgb| Color{ .r = rgb[0], .g = rgb[1], .b = rgb[2] } else fg_color;
         const ul_start = (font_h - 2) * scale;
-        if (pixel_format == .bgra32) {
-            const fg_packed = [4]u8{ fg_color.b, fg_color.g, fg_color.r, 0xFF };
-            for (0..scale) |s| {
-                const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + px_x * bpp;
-                if (row_offset + scaled_w * 4 <= max_offset) {
-                    const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
-                    @memset(pixels[0..scaled_w], fg_packed);
-                }
+
+        switch (ul_style) {
+            1 => drawUnderlineSingle(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
+            2 => drawUnderlineDouble(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
+            3 => drawUnderlineCurly(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
+            4 => drawUnderlineDotted(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
+            5 => drawUnderlineDashed(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
+            else => drawUnderlineSingle(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
+        }
+    }
+}
+
+// --- Underline style helpers ---
+
+fn drawUnderlineSingle(
+    buffer: []u8,
+    stride: u32,
+    px_x: u32,
+    px_y: u32,
+    ul_start: u32,
+    scaled_w: u32,
+    color: Color,
+    max_offset: usize,
+    comptime pixel_format: PixelFormat,
+    comptime scale: u32,
+) void {
+    const bpp = comptime bppFor(pixel_format);
+    if (pixel_format == .bgra32) {
+        const bgra = [4]u8{ color.b, color.g, color.r, 0xFF };
+        for (0..scale) |s| {
+            const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + px_x * bpp;
+            if (row_offset + scaled_w * 4 <= max_offset) {
+                const pixels: [*][4]u8 = @ptrCast(buffer.ptr + row_offset);
+                @memset(pixels[0..scaled_w], bgra);
             }
-        } else {
-            for (0..scale) |s| {
-                const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + px_x * bpp;
-                for (0..scaled_w) |col| {
-                    const offset = row_offset + @as(u32, @intCast(col)) * bpp;
-                    if (offset + bpp > max_offset) continue;
-                    writePixel(buffer, offset, fg_color, pixel_format);
-                }
+        }
+    } else {
+        for (0..scale) |s| {
+            const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + px_x * bpp;
+            for (0..scaled_w) |col| {
+                const offset = row_offset + @as(u32, @intCast(col)) * bpp;
+                if (offset + bpp > max_offset) continue;
+                writePixel(buffer, offset, color, pixel_format);
             }
         }
     }
+}
+
+fn drawUnderlineDouble(
+    buffer: []u8,
+    stride: u32,
+    px_x: u32,
+    px_y: u32,
+    ul_start: u32,
+    scaled_w: u32,
+    color: Color,
+    max_offset: usize,
+    comptime pixel_format: PixelFormat,
+    comptime scale: u32,
+) void {
+    // Two lines: one at ul_start, one at ul_start + 2*scale
+    drawUnderlineSingle(buffer, stride, px_x, px_y, ul_start, scaled_w, color, max_offset, pixel_format, scale);
+    const second_start = ul_start + 2 * scale;
+    drawUnderlineSingle(buffer, stride, px_x, px_y, second_start, scaled_w, color, max_offset, pixel_format, scale);
+}
+
+fn drawUnderlineCurly(
+    buffer: []u8,
+    stride: u32,
+    px_x: u32,
+    px_y: u32,
+    ul_start: u32,
+    scaled_w: u32,
+    color: Color,
+    max_offset: usize,
+    comptime pixel_format: PixelFormat,
+    comptime scale: u32,
+) void {
+    // Sine-like wave: 3 pixel height, period = scaled_w
+    const bpp = comptime bppFor(pixel_format);
+    const height: u32 = 3 * scale;
+    for (0..scaled_w) |col_usize| {
+        const col: u32 = @intCast(col_usize);
+        // Simple wave pattern: 0,1,2,1,0,1,2,1,... (period 4)
+        const phase = col / scale % 4;
+        const dy: u32 = switch (phase) {
+            0 => 0,
+            1 => 1 * scale,
+            2 => 2 * scale,
+            3 => 1 * scale,
+            else => 0,
+        };
+        _ = height;
+        for (0..scale) |s| {
+            const row_offset = (px_y + ul_start + dy + @as(u32, @intCast(s))) * stride + (px_x + col) * bpp;
+            if (row_offset + bpp <= max_offset) {
+                writePixel(buffer, row_offset, color, pixel_format);
+            }
+        }
+    }
+}
+
+fn drawUnderlineDotted(
+    buffer: []u8,
+    stride: u32,
+    px_x: u32,
+    px_y: u32,
+    ul_start: u32,
+    scaled_w: u32,
+    color: Color,
+    max_offset: usize,
+    comptime pixel_format: PixelFormat,
+    comptime scale: u32,
+) void {
+    // Every other pixel
+    const bpp = comptime bppFor(pixel_format);
+    for (0..scaled_w) |col_usize| {
+        const col: u32 = @intCast(col_usize);
+        if ((col / scale) % 2 != 0) continue;
+        for (0..scale) |s| {
+            const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + (px_x + col) * bpp;
+            if (row_offset + bpp <= max_offset) {
+                writePixel(buffer, row_offset, color, pixel_format);
+            }
+        }
+    }
+}
+
+fn drawUnderlineDashed(
+    buffer: []u8,
+    stride: u32,
+    px_x: u32,
+    px_y: u32,
+    ul_start: u32,
+    scaled_w: u32,
+    color: Color,
+    max_offset: usize,
+    comptime pixel_format: PixelFormat,
+    comptime scale: u32,
+) void {
+    // 3 on, 1 off pattern
+    const bpp = comptime bppFor(pixel_format);
+    for (0..scaled_w) |col_usize| {
+        const col: u32 = @intCast(col_usize);
+        if ((col / scale) % 4 == 3) continue; // gap
+        for (0..scale) |s| {
+            const row_offset = (px_y + ul_start + @as(u32, @intCast(s))) * stride + (px_x + col) * bpp;
+            if (row_offset + bpp <= max_offset) {
+                writePixel(buffer, row_offset, color, pixel_format);
+            }
+        }
+    }
+}
+
+fn bppFor(comptime pixel_format: PixelFormat) u32 {
+    return switch (pixel_format) {
+        .bgra32 => 4,
+        .rgb24 => 3,
+        .rgb565 => 2,
+    };
 }
 
 // --- Tests ---
@@ -295,7 +439,7 @@ test "Render: renderCell writes pixels to buffer" {
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
     const glyph = GlyphView{ .codepoint = 'A', .width = 8, .height = 16, .bitmap = &bitmap };
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, 1, false);
+    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, null, glyph, w, h, .bgra32, false, 1, false);
 
     // Row 2 (0x18 = bits 3,4) should have white pixels at columns 3 and 4
     const row2_start = 2 * stride;
@@ -323,7 +467,7 @@ test "Render: renderCell scale=2 writes 2x2 pixel blocks" {
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
     const glyph = GlyphView{ .codepoint = 'A', .width = 8, .height = 16, .bitmap = &bitmap };
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, glyph, w, h, .bgra32, false, scale, false);
+    renderCell(&buffer, stride, 0, 0, .{ .char = 'A', .fg = 7, .bg = 0 }, null, null, null, glyph, w, h, .bgra32, false, scale, false);
 
     // Bitmap pixel (3, 2) at scale=2 → screen pixels (6, 4), (7, 4), (6, 5), (7, 5)
     // Check top-left of 2x2 block: screen row 4, col 6
@@ -359,7 +503,7 @@ test "Render: space with null glyph produces background only" {
     const stride = w * bpp;
     var buffer: [stride * h]u8 = [_]u8{0} ** (stride * h);
 
-    renderCell(&buffer, stride, 0, 0, .{ .char = ' ', .fg = 7, .bg = 0 }, null, null, null, w, h, .bgra32, false, 1, false);
+    renderCell(&buffer, stride, 0, 0, .{ .char = ' ', .fg = 7, .bg = 0 }, null, null, null, null, w, h, .bgra32, false, 1, false);
 
     try testing.expectEqual(@as(u8, 0), buffer[2]);
 
