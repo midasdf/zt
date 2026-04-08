@@ -987,9 +987,10 @@ pub const WaylandBackend = struct {
                         return;
                     }
 
-                    // Use xkbcommon for layout-aware text translation
+                    // Use xkbcommon for layout-aware text translation.
+                    // Skip if IME is active — text_input.commit_string handles it.
                     var utf8_buf: [32]u8 = undefined;
-                    const utf8_len = self.keyboard.getUtf8(key, &utf8_buf);
+                    const utf8_len = if (self.text_input.enabled) @as(usize, 0) else self.keyboard.getUtf8(key, &utf8_buf);
                     if (utf8_len > 0) {
                         var text_ev: TextEvent = .{};
                         if (mods.alt) {
@@ -1192,6 +1193,8 @@ pub const WaylandBackend = struct {
         if (n_isize <= 0) return null;
         const n_events: usize = @intCast(n_isize);
 
+        // Pass 1: Process Wayland socket first so key releases clear repeat_key
+        // before the repeat timer is checked in pass 2.
         for (events[0..n_events]) |epoll_ev| {
             const tag = epoll_ev.data.u32;
             if (tag == EPOLL_TAG_WAYLAND) {
@@ -1214,6 +1217,11 @@ pub const WaylandBackend = struct {
                 // without waiting for the next render cycle
                 self.conn.flush() catch {};
             }
+        }
+
+        // Pass 2: Process timers and clipboard after Wayland events
+        for (events[0..n_events]) |epoll_ev| {
+            const tag = epoll_ev.data.u32;
             if (tag == EPOLL_TAG_REPEAT) {
                 // Key repeat timer fired -- read to acknowledge
                 var timer_buf: [8]u8 = undefined;
@@ -1238,9 +1246,9 @@ pub const WaylandBackend = struct {
                             .modifiers = mods,
                         } });
                     } else {
-                        // Text repeat via xkbcommon
+                        // Text repeat via xkbcommon (skip if IME active)
                         var utf8_buf: [32]u8 = undefined;
-                        const utf8_len = self.keyboard.getUtf8(rk, &utf8_buf);
+                        const utf8_len = if (self.text_input.enabled) @as(usize, 0) else self.keyboard.getUtf8(rk, &utf8_buf);
                         if (utf8_len > 0) {
                             var text_ev: TextEvent = .{};
                             if (mods.alt) {
