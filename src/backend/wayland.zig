@@ -115,7 +115,7 @@ pub const WaylandBackend = struct {
     internal_epoll_fd: posix.fd_t = -1,
 
     // Event queue (pollEvents returns one event at a time)
-    pending_events: [16]Event = undefined,
+    pending_events: [128]Event = undefined,
     pending_count: usize = 0,
     pending_read: usize = 0,
 
@@ -940,7 +940,7 @@ pub const WaylandBackend = struct {
                     // Shift+Insert -> primary selection paste
                     if (evdev_keycode == input_mod.KEY.INSERT and mods.shift) {
                         if (self.clipboard.primary_offer_id != 0 and self.clipboard.primary_has_text) {
-                            clipboard_mod.requestPaste(&self.conn, self.clipboard.primary_offer_id, &self.clipboard, clipboard_mod.ZWP_PRIMARY_SELECTION_OFFER_RECEIVE) catch {};
+                            clipboard_mod.requestPaste(&self.conn, self.clipboard.primary_offer_id, &self.clipboard, clipboard_mod.ZWP_PRIMARY_SELECTION_OFFER_RECEIVE, self.internal_epoll_fd) catch {};
                             if (self.clipboard.paste_pipe_fd >= 0) {
                                 var epev = linux.epoll_event{
                                     .events = linux.EPOLL.IN | linux.EPOLL.HUP,
@@ -955,7 +955,7 @@ pub const WaylandBackend = struct {
                     // Ctrl+Shift+V -> clipboard paste
                     if (evdev_keycode == input_mod.KEY.V and mods.ctrl and mods.shift) {
                         if (self.clipboard.current_offer_id != 0 and self.clipboard.offer_has_text) {
-                            clipboard_mod.requestPaste(&self.conn, self.clipboard.current_offer_id, &self.clipboard, clipboard_mod.WL_DATA_OFFER_RECEIVE) catch {};
+                            clipboard_mod.requestPaste(&self.conn, self.clipboard.current_offer_id, &self.clipboard, clipboard_mod.WL_DATA_OFFER_RECEIVE, self.internal_epoll_fd) catch {};
                             if (self.clipboard.paste_pipe_fd >= 0) {
                                 var epev = linux.epoll_event{
                                     .events = linux.EPOLL.IN | linux.EPOLL.HUP,
@@ -1087,6 +1087,8 @@ pub const WaylandBackend = struct {
                 // Payload: new_id(u32)
                 var pos: usize = 0;
                 const new_id = wire.getUint(payload, &pos);
+                // Destroy previous offer to avoid compositor-side accumulation
+                clipboard_mod.destroyOffer(&self.conn, self.clipboard.current_offer_id, false);
                 self.clipboard.current_offer_id = new_id;
                 self.clipboard.offer_has_text = false;
             },
@@ -1096,7 +1098,8 @@ pub const WaylandBackend = struct {
                 var pos: usize = 0;
                 const offer_id = wire.getUint(payload, &pos);
                 if (offer_id == 0) {
-                    // Selection cleared
+                    // Selection cleared — destroy the old offer
+                    clipboard_mod.destroyOffer(&self.conn, self.clipboard.current_offer_id, false);
                     self.clipboard.current_offer_id = 0;
                     self.clipboard.offer_has_text = false;
                 }
@@ -1113,6 +1116,8 @@ pub const WaylandBackend = struct {
                 // Payload: new_id(u32)
                 var pos: usize = 0;
                 const new_id = wire.getUint(payload, &pos);
+                // Destroy previous offer to avoid compositor-side accumulation
+                clipboard_mod.destroyOffer(&self.conn, self.clipboard.primary_offer_id, true);
                 self.clipboard.primary_offer_id = new_id;
                 self.clipboard.primary_has_text = false;
             },
@@ -1121,6 +1126,8 @@ pub const WaylandBackend = struct {
                 var pos: usize = 0;
                 const offer_id = wire.getUint(payload, &pos);
                 if (offer_id == 0) {
+                    // Selection cleared — destroy the old offer
+                    clipboard_mod.destroyOffer(&self.conn, self.clipboard.primary_offer_id, true);
                     self.clipboard.primary_offer_id = 0;
                     self.clipboard.primary_has_text = false;
                 }

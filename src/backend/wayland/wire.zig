@@ -62,7 +62,7 @@ pub fn alignUp(n: usize, alignment: usize) usize {
 pub const ObjectIdAllocator = struct {
     /// Next fresh ID to hand out. ID 1 is reserved for wl_display.
     next_id: u32 = 2,
-    free_list: [32]u32 = [_]u32{0} ** 32,
+    free_list: [128]u32 = [_]u32{0} ** 128,
     free_count: u32 = 0,
 
     /// Allocate a new object ID. Reuses freed IDs when available.

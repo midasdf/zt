@@ -115,6 +115,28 @@ pub fn getPrimaryDevice(
 // Paste request
 // ============================================================================
 
+/// Destroy an old clipboard offer object on the compositor and release its ID.
+/// Call this before overwriting current_offer_id / primary_offer_id.
+pub fn destroyOffer(conn: *wire.Connection, offer_id: u32, is_primary: bool) void {
+    if (offer_id == 0) return;
+    const opcode: u16 = if (is_primary) ZWP_PRIMARY_SELECTION_OFFER_DESTROY else WL_DATA_OFFER_DESTROY;
+    conn.sendMessage(offer_id, opcode, &.{}, &.{}) catch {};
+    conn.id_alloc.release(offer_id);
+}
+
+/// Close an active paste pipe fd if one exists. Must be called before
+/// overwriting paste_pipe_fd to avoid leaking fds and stale epoll entries.
+pub fn closePastePipe(state: *ClipboardState, epoll_fd: posix.fd_t) void {
+    if (state.paste_pipe_fd >= 0) {
+        if (epoll_fd >= 0) {
+            _ = linux.epoll_ctl(epoll_fd, linux.EPOLL.CTL_DEL, state.paste_pipe_fd, null);
+        }
+        posix.close(state.paste_pipe_fd);
+        state.paste_pipe_fd = -1;
+        state.paste_len = 0;
+    }
+}
+
 /// Request paste from the compositor: creates a pipe, sends data_offer.receive
 /// with the write end via SCM_RIGHTS, then stores the read end for async polling.
 ///
@@ -125,7 +147,11 @@ pub fn requestPaste(
     offer_id: u32,
     state: *ClipboardState,
     opcode: u16,
+    epoll_fd: posix.fd_t,
 ) !void {
+    // Close any previous paste pipe to avoid fd leak
+    closePastePipe(state, epoll_fd);
+
     // Create a non-blocking, close-on-exec pipe pair
     const fds = try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
     const read_fd = fds[0];
