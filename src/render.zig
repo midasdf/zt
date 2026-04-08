@@ -243,10 +243,20 @@ pub fn renderCell(
         const ul_color = if (ul_rgb_override) |rgb| Color{ .r = rgb[0], .g = rgb[1], .b = rgb[2] } else fg_color;
         const ul_start = (font_h - 2) * scale;
 
+        // Multi-line styles need earlier start to stay within cell bounds
+        const cell_bottom = font_h * scale;
         switch (ul_style) {
             1 => drawUnderlineSingle(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
-            2 => drawUnderlineDouble(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
-            3 => drawUnderlineCurly(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
+            2 => {
+                // Double: two lines separated by scale pixels, both within cell
+                const dbl_start = if (ul_start + 2 * scale >= cell_bottom) ul_start -| (2 * scale) else ul_start;
+                drawUnderlineDouble(buffer, stride, px_x, px_y, dbl_start, scaled_w, ul_color, max_offset, pixel_format, scale);
+            },
+            3 => {
+                // Curly: 3-pixel wave, shift up to stay in cell
+                const curly_start = if (ul_start + 3 * scale > cell_bottom) ul_start -| (3 * scale) else ul_start;
+                drawUnderlineCurly(buffer, stride, px_x, px_y, curly_start, scaled_w, ul_color, max_offset, pixel_format, scale);
+            },
             4 => drawUnderlineDotted(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
             5 => drawUnderlineDashed(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
             else => drawUnderlineSingle(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),

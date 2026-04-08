@@ -36,7 +36,6 @@ pub const UnderlineStyle = struct {
 pub const HyperlinkEntry = struct {
     url: [512]u8 = undefined,
     len: u16 = 0,
-    ref_count: u16 = 0, // cells referencing this entry
 
     pub fn slice(self: *const HyperlinkEntry) []const u8 {
         return self.url[0..self.len];
@@ -117,7 +116,7 @@ pub const Term = struct {
     current_hyperlink_id: u16 = 0,
 
     // OSC 52 clipboard output
-    osc52_buf: [4096]u8 = undefined,
+    osc52_buf: [6144]u8 = undefined, // base64(8192) decodes to max ~6144 bytes
     osc52_len: u16 = 0,
     osc52_pending: bool = false,
 
@@ -909,12 +908,14 @@ pub const Term = struct {
         // Fix wide boundaries using logical coords
         self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
 
-        // Shift characters left (physical) — cells + TrueColor arrays
+        // Shift characters left (physical) — cells + TrueColor + ul_color + hyperlinks
         const copy_len = remaining - count;
         if (copy_len > 0) {
             std.mem.copyForwards(Cell, self.cells[row_base + cx .. row_base + cx + copy_len], self.cells[row_base + cx + count .. row_base + cx + count + copy_len]);
             std.mem.copyForwards(?[3]u8, self.fg_rgb[row_base + cx .. row_base + cx + copy_len], self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
             std.mem.copyForwards(?[3]u8, self.bg_rgb[row_base + cx .. row_base + cx + copy_len], self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(?[3]u8, self.ul_color_rgb[row_base + cx .. row_base + cx + copy_len], self.ul_color_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(u16, self.hyperlink_ids[row_base + cx .. row_base + cx + copy_len], self.hyperlink_ids[row_base + cx + count .. row_base + cx + count + copy_len]);
         }
 
         // Clear rightmost characters with BCE
@@ -940,6 +941,8 @@ pub const Term = struct {
             std.mem.copyBackwards(Cell, self.cells[row_base + cx + count .. row_base + cx + count + copy_len], self.cells[row_base + cx .. row_base + cx + copy_len]);
             std.mem.copyBackwards(?[3]u8, self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.fg_rgb[row_base + cx .. row_base + cx + copy_len]);
             std.mem.copyBackwards(?[3]u8, self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.bg_rgb[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(?[3]u8, self.ul_color_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.ul_color_rgb[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(u16, self.hyperlink_ids[row_base + cx + count .. row_base + cx + count + copy_len], self.hyperlink_ids[row_base + cx .. row_base + cx + copy_len]);
         }
 
         // Clear inserted characters with BCE

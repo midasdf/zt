@@ -542,6 +542,9 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     @memset(term.fg_rgb[phys_start .. phys_start + count], null);
                     @memset(term.bg_rgb[phys_start .. phys_start + count], null);
                 }
+                // Underline color + hyperlink metadata
+                @memset(term.ul_color_rgb[phys_start .. phys_start + count], term.current_ul_color_rgb);
+                @memset(term.hyperlink_ids[phys_start .. phys_start + count], term.current_hyperlink_id);
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 term.markDirtyRange(.{ .start = logical_start, .end = logical_start + count });
@@ -682,6 +685,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     term.fg_rgb[phys_idx] = null;
                     term.bg_rgb[phys_idx] = null;
                 }
+                term.ul_color_rgb[phys_idx] = term.current_ul_color_rgb;
+                term.hyperlink_ids[phys_idx] = term.current_hyperlink_id;
                 const logical_idx = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 dirty_run_end = logical_idx + 1;
                 term.last_printed_char = cp;
@@ -825,7 +830,6 @@ fn handleOsc8(param: []const u8, term: *Term) void {
     const slot = (term.hyperlink_next_id - 1) % 64;
     term.hyperlink_table[slot].len = @intCast(max_len);
     @memcpy(term.hyperlink_table[slot].url[0..max_len], uri[0..max_len]);
-    term.hyperlink_table[slot].ref_count = 0;
     term.current_hyperlink_id = slot + 1;
     term.hyperlink_next_id +%= 1;
     if (term.hyperlink_next_id == 0) term.hyperlink_next_id = 1;
@@ -1602,7 +1606,8 @@ fn resetSgr(term: *Term) void {
     term.current_fg_rgb = null;
     term.current_bg_rgb = null;
     term.current_ul_color_rgb = null;
-    term.current_hyperlink_id = 0;
+    // Note: current_hyperlink_id is NOT reset by SGR 0.
+    // Hyperlinks are controlled exclusively by OSC 8, not SGR.
 }
 
 fn parseUnderlineColor(p: [16]u16, pc: u8, start: u8, term: *Term) u8 {

@@ -312,7 +312,16 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
     };
 
     return switch (signo) {
-        SIG_CHLD, SIG_TERM, SIG_INT, SIG_HUP => false,
+        SIG_CHLD => blk: {
+            // Reap zombie children (clipboard helpers, etc.) without exiting.
+            // PTY child death is detected by read() returning 0 in the event loop.
+            while (true) {
+                const result = std.posix.waitpid(-1, linux.W.NOHANG);
+                if (result.pid <= 0) break; // no more children to reap
+            }
+            break :blk true;
+        },
+        SIG_TERM, SIG_INT, SIG_HUP => false,
         SIG_USR1 => blk: {
             backend.releaseVt();
             break :blk true;
@@ -330,41 +339,40 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
 /// Dispatch clipboard copy via external tool (xclip for X11, wl-copy for Wayland).
 /// Non-blocking: forks a child process and writes data to its stdin.
 fn dispatchClipboardCopy(data: []const u8) void {
-    if (data.len == 0) return;
-
-    const tool: []const []const u8 = switch (config.backend) {
-        .x11 => &.{ "xclip", "-selection", "clipboard" },
-        .wayland => &.{"wl-copy"},
+    const argv: [*:null]const ?[*:0]const u8 = switch (config.backend) {
+        .x11 => &[_:null]?[*:0]const u8{ "xclip", "-selection", "clipboard" },
+        .wayland => &[_:null]?[*:0]const u8{"wl-copy"},
         else => return,
     };
 
-    const pipe = std.posix.pipe2(.{ .CLOEXEC = true }) catch return;
+    const pipe_fds = std.posix.pipe() catch return;
     const pid = std.posix.fork() catch {
-        std.posix.close(pipe[0]);
-        std.posix.close(pipe[1]);
+        std.posix.close(pipe_fds[0]);
+        std.posix.close(pipe_fds[1]);
         return;
     };
 
     if (pid == 0) {
         // Child: redirect stdin from pipe read end
-        std.posix.dup2(pipe[0], 0) catch std.posix.exit(1);
-        std.posix.close(pipe[0]);
-        std.posix.close(pipe[1]);
+        std.posix.dup2(pipe_fds[0], 0) catch std.posix.exit(1);
+        std.posix.close(pipe_fds[0]);
+        std.posix.close(pipe_fds[1]);
 
         const err = std.posix.execvpeZ(
-            tool[0].ptr,
-            @ptrCast(tool.ptr),
+            argv[0].?,
+            argv,
             @ptrCast(std.c.environ),
         );
         _ = err;
         std.posix.exit(1);
     }
 
-    // Parent: write data to pipe write end, close both
-    std.posix.close(pipe[0]);
-    _ = std.posix.write(pipe[1], data) catch {};
-    std.posix.close(pipe[1]);
-    // Don't waitpid — let child be reaped by SIGCHLD handler or init
+    // Parent: write data to pipe write end, close read end immediately
+    std.posix.close(pipe_fds[0]);
+    if (data.len > 0) {
+        _ = std.posix.write(pipe_fds[1], data) catch {};
+    }
+    std.posix.close(pipe_fds[1]); // EOF signals end of data to child
 }
 
 fn handleBackendEvent(
