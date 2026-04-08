@@ -1077,6 +1077,10 @@ fn handlePrint(cp: u21, term: *Term) void {
             term.setCell(term.cursor_x, term.cursor_y, term.blankCell());
             term.cursor_x = 0;
             term.insertNewline();
+        } else {
+            // DECAWM off: no room for wide char, replace with space
+            term.setCell(term.cursor_x, term.cursor_y, term.blankCell());
+            return;
         }
     }
 
@@ -1918,13 +1922,21 @@ fn saveDECModes(csi: CsiAction, term: *Term) void {
 }
 
 fn restoreDECModes(csi: CsiAction, term: *Term) void {
-    _ = csi;
-    for (0..term.saved_dec_mode_count) |idx| {
-        const saved = term.saved_dec_modes[idx];
-        var restore_csi = CsiAction{};
-        restore_csi.params[0] = saved.mode;
-        restore_csi.param_count = 1;
-        handleDecSet(restore_csi, term, saved.value);
+    const pc = csi.param_count;
+    if (pc == 0) return;
+    // Only restore modes that were explicitly requested in the CSI params
+    for (0..pc) |pi| {
+        const requested_mode = csi.params[pi];
+        for (0..term.saved_dec_mode_count) |idx| {
+            const saved = term.saved_dec_modes[idx];
+            if (saved.mode == requested_mode) {
+                var restore_csi = CsiAction{};
+                restore_csi.params[0] = saved.mode;
+                restore_csi.param_count = 1;
+                handleDecSet(restore_csi, term, saved.value);
+                break;
+            }
+        }
     }
 }
 

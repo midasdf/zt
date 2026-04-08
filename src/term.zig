@@ -1110,6 +1110,8 @@ pub const Term = struct {
                         self.cells[idx] = blank;
                         self.fg_rgb[idx] = null;
                         self.bg_rgb[idx] = bg_rgb_val;
+                        self.ul_color_rgb[idx] = null;
+                        self.hyperlink_ids[idx] = 0;
                     }
                 }
                 self.markDirtyRange(.{ .start = row_start + self.cursor_x, .end = row_start + cols });
@@ -1122,6 +1124,8 @@ pub const Term = struct {
                         self.cells[idx] = blank;
                         self.fg_rgb[idx] = null;
                         self.bg_rgb[idx] = bg_rgb_val;
+                        self.ul_color_rgb[idx] = null;
+                        self.hyperlink_ids[idx] = 0;
                     }
                 }
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + self.cursor_x + 1 });
@@ -1134,6 +1138,8 @@ pub const Term = struct {
                         self.cells[idx] = blank;
                         self.fg_rgb[idx] = null;
                         self.bg_rgb[idx] = bg_rgb_val;
+                        self.ul_color_rgb[idx] = null;
+                        self.hyperlink_ids[idx] = 0;
                     }
                 }
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + cols });

@@ -735,15 +735,8 @@ pub const X11Backend = struct {
         const new_stride = w * 4;
         const new_size = new_stride * h;
 
-        // Recreate SHM buffers (only those that were initialized)
-        for (0..2) |i| {
-            if (self.buffers[i].len > 0) {
-                _ = c.xcb_shm_detach(self.connection, self.shm_seg[i]);
-                _ = c.shmdt(self.buffers[i].ptr);
-                self.buffers[i] = &.{};
-            }
-        }
-        // Create primary buffer; second will be lazy-inited on next present
+        // Allocate new SHM buffer BEFORE destroying old ones — if this fails,
+        // the old buffers remain valid and the terminal keeps working.
         const new_shm_id = c.shmget(c.IPC_PRIVATE, new_size, c.IPC_CREAT | 0o600);
         if (new_shm_id < 0) return error.ShmGetFailed;
         const new_ptr = c.shmat(new_shm_id, null, 0);
@@ -751,6 +744,16 @@ pub const X11Backend = struct {
             _ = c.shmctl(new_shm_id, c.IPC_RMID, null);
             return error.ShmAtFailed;
         }
+
+        // New buffer ready — now safe to destroy old ones
+        for (0..2) |i| {
+            if (self.buffers[i].len > 0) {
+                _ = c.xcb_shm_detach(self.connection, self.shm_seg[i]);
+                _ = c.shmdt(self.buffers[i].ptr);
+                self.buffers[i] = &.{};
+            }
+        }
+
         self.buffers[0] = @as([*]u8, @ptrCast(new_ptr))[0..new_size];
         @memset(self.buffers[0], 0);
         const new_seg = c.xcb_generate_id(self.connection);

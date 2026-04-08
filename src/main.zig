@@ -222,21 +222,49 @@ fn ptyBufferedWrite(
             }
             write_pending.* = remaining;
         }
-        // Append after flush — reject if buffer still can't fit all data
+        // Append after flush — chunk if data exceeds remaining space
         const space2 = write_buf.len - write_pending.*;
-        if (data.len > space2) return false; // buffer full, cannot accept
-        @memcpy(write_buf[write_pending.* .. write_pending.* + data.len], data);
-        write_pending.* += data.len;
+        if (data.len <= space2) {
+            @memcpy(write_buf[write_pending.* .. write_pending.* + data.len], data);
+            write_pending.* += data.len;
+            return true;
+        }
+        // Write what fits, then chunk the rest via direct writes
+        if (space2 > 0) {
+            @memcpy(write_buf[write_pending.* .. write_pending.* + space2], data[0..space2]);
+            write_pending.* += space2;
+        }
+        // Flush buffer then write remaining data in chunks
+        var rest = data[space2..];
+        while (rest.len > 0) {
+            if (write_pending.* > 0) {
+                const f = pty_ptr.write(write_buf[0..write_pending.*]) catch |err| switch (err) {
+                    error.WouldBlock => 0,
+                    else => return false,
+                };
+                if (f > 0) {
+                    const rem = write_pending.* - f;
+                    if (rem > 0) std.mem.copyForwards(u8, write_buf[0..rem], write_buf[f .. f + rem]);
+                    write_pending.* = rem;
+                }
+                if (write_pending.* == write_buf.len) return true; // still full, retry later
+            }
+            const chunk = @min(rest.len, write_buf.len - write_pending.*);
+            if (chunk == 0) return true; // buffer full, will retry on next flush
+            @memcpy(write_buf[write_pending.* .. write_pending.* + chunk], rest[0..chunk]);
+            write_pending.* += chunk;
+            rest = rest[chunk..];
+        }
         return true;
     }
 
     // Try direct write
     const written = pty_ptr.write(data) catch |err| switch (err) {
         error.WouldBlock => {
-            // Buffer everything — reject if data exceeds buffer capacity
-            if (data.len > write_buf.len) return false;
-            @memcpy(write_buf[0..data.len], data);
-            write_pending.* = data.len;
+            // Buffer everything — chunk if data exceeds buffer capacity
+            const to_buf = @min(data.len, write_buf.len);
+            @memcpy(write_buf[0..to_buf], data[0..to_buf]);
+            write_pending.* = to_buf;
             if (is_linux) {
                 epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
             } else {
@@ -247,12 +275,12 @@ fn ptyBufferedWrite(
         else => return false,
     };
 
-    // Partial write — buffer the rest (reject if remainder exceeds buffer)
+    // Partial write — buffer the rest (truncate to buffer capacity)
     if (written < data.len) {
         const remaining = data.len - written;
-        if (remaining > write_buf.len) return false;
-        @memcpy(write_buf[0..remaining], data[written .. written + remaining]);
-        write_pending.* = remaining;
+        const to_buf = @min(remaining, write_buf.len);
+        @memcpy(write_buf[0..to_buf], data[written .. written + to_buf]);
+        write_pending.* = to_buf;
         if (is_linux) {
             epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
         } else {
