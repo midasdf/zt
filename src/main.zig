@@ -347,10 +347,16 @@ fn dispatchClipboardCopy(data: []const u8) void {
     };
 
     // Block SIGPIPE to prevent write() from killing us if child dies early
+    const SIG_PIPE = if (is_linux) linux.SIG.PIPE else std.c.SIG.PIPE;
+    const SIG_BLOCK: u32 = if (is_linux) linux.SIG.BLOCK else 1; // SIG_BLOCK=1 on macOS/BSD
+    const SIG_UNBLOCK: u32 = if (is_linux) linux.SIG.UNBLOCK else 2;
     if (is_linux) {
         var mask = linux.sigemptyset();
-        linux.sigaddset(&mask, linux.SIG.PIPE);
-        _ = linux.sigprocmask(linux.SIG.BLOCK, &mask, null);
+        linux.sigaddset(&mask, SIG_PIPE);
+        _ = linux.sigprocmask(SIG_BLOCK, &mask, null);
+    } else if (is_macos) {
+        // macOS: use signal(SIGPIPE, SIG_IGN) around the write
+        _ = std.c.signal(SIG_PIPE, std.c.SIG.IGN);
     }
 
     const pipe_fds = std.posix.pipe() catch return;
@@ -381,11 +387,13 @@ fn dispatchClipboardCopy(data: []const u8) void {
     }
     std.posix.close(pipe_fds[1]); // EOF signals end of data to child
 
-    // Unblock SIGPIPE
+    // Restore SIGPIPE handling
     if (is_linux) {
         var mask = linux.sigemptyset();
-        linux.sigaddset(&mask, linux.SIG.PIPE);
-        _ = linux.sigprocmask(linux.SIG.UNBLOCK, &mask, null);
+        linux.sigaddset(&mask, SIG_PIPE);
+        _ = linux.sigprocmask(SIG_UNBLOCK, &mask, null);
+    } else if (is_macos) {
+        _ = std.c.signal(SIG_PIPE, std.c.SIG.DFL);
     }
 }
 
@@ -832,6 +840,14 @@ pub fn main() !void {
                 extra_total += extra;
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
             }
+        }
+
+        // Flush VT response buffer (DA1, DSR, DECRQSS, etc.) via buffered PTY write
+        if (term.vt_response_len > 0) {
+            if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+                running = false;
+            }
+            term.vt_response_len = 0;
         }
 
         // OSC 52: copy to system clipboard via external tool

@@ -705,7 +705,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         }
         // VT52 mode: simplified parser
         if (term.vt52_mode) {
-            handleVt52Byte(data[i], term, parser, writer_fd);
+            handleVt52Byte(data[i], term, parser);
             i += 1;
             continue;
         }
@@ -723,18 +723,19 @@ pub fn executeAction(action: Action, term: *Term) void {
 }
 
 pub fn executeActionWithFd(action: Action, term: *Term, writer_fd: ?std.posix.fd_t) void {
+    _ = writer_fd; // VT responses now buffered in term.vt_response_buf
     switch (action) {
         .print => |cp| handlePrint(cp, term),
         .execute => |c| handleControl(c, term),
-        .csi_dispatch => |csi| handleCsi(csi, term, writer_fd),
-        .esc_dispatch => |esc| handleEsc(esc, term, writer_fd),
-        .osc_dispatch => |payload| handleOsc(payload, term, writer_fd),
-        .dcs_dispatch => |payload| handleDcsDispatch(payload, writer_fd, term),
+        .csi_dispatch => |csi| handleCsi(csi, term),
+        .esc_dispatch => |esc| handleEsc(esc, term),
+        .osc_dispatch => |payload| handleOsc(payload, term),
+        .dcs_dispatch => |payload| handleDcsDispatch(payload, term),
         .none => {},
     }
 }
 
-fn handleOsc(payload: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void {
+fn handleOsc(payload: []const u8, term: *Term) void {
     // Parse "Ps;Pt" — find first ';' to separate command from parameter
     const sep = std.mem.indexOfScalar(u8, payload, ';');
     const cmd_str = if (sep) |s| payload[0..s] else payload;
@@ -761,15 +762,13 @@ fn handleOsc(payload: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void 
         10, 11, 12 => {
             // Dynamic color query: param == "?" means query
             if (std.mem.eql(u8, param, "?")) {
-                if (writer_fd) |fd| {
-                    const response = switch (cmd) {
-                        10 => "\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
-                        11 => "\x1b]11;rgb:0000/0000/0000\x1b\\",
-                        12 => "\x1b]12;rgb:ffff/ffff/ffff\x1b\\",
-                        else => unreachable,
-                    };
-                    _ = std.posix.write(fd, response) catch {};
-                }
+                const response = switch (cmd) {
+                    10 => "\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
+                    11 => "\x1b]11;rgb:0000/0000/0000\x1b\\",
+                    12 => "\x1b]12;rgb:ffff/ffff/ffff\x1b\\",
+                    else => unreachable,
+                };
+                term.queueResponse(response);
             }
         },
         52 => handleOsc52(param, term),
@@ -835,12 +834,11 @@ fn handleOsc8(param: []const u8, term: *Term) void {
     if (term.hyperlink_next_id == 0) term.hyperlink_next_id = 1;
 }
 
-fn handleDcsDispatch(payload: []const u8, writer_fd: ?std.posix.fd_t, term: *const Term) void {
-    const fd = writer_fd orelse return;
+fn handleDcsDispatch(payload: []const u8, term: *Term) void {
 
     // DECRQSS: DCS $ q Pt ST — Request Status String
     if (payload.len >= 2 and payload[0] == '$' and payload[1] == 'q') {
-        respondDecrqss(fd, payload[2..], term);
+        respondDecrqss(term, payload[2..]);
         return;
     }
 
@@ -852,11 +850,11 @@ fn handleDcsDispatch(payload: []const u8, writer_fd: ?std.posix.fd_t, term: *con
     var iter = std.mem.splitScalar(u8, hex_names, ';');
     while (iter.next()) |hex_name| {
         if (hex_name.len == 0) continue;
-        respondXtgettcap(fd, hex_name);
+        respondXtgettcap(term, hex_name);
     }
 }
 
-fn respondXtgettcap(fd: std.posix.fd_t, hex_name: []const u8) void {
+fn respondXtgettcap(term: *Term, hex_name: []const u8) void {
     // Known capabilities (hex-encoded name → hex-encoded value)
     const caps = .{
         // indn (scroll forward): \e[%p1%dS
@@ -877,9 +875,8 @@ fn respondXtgettcap(fd: std.posix.fd_t, hex_name: []const u8) void {
 
     inline for (caps) |cap| {
         if (std.mem.eql(u8, hex_name, cap[0])) {
-            // Valid response: DCS 1 + r <name>=<value> ST
             const resp = "\x1bP1+r" ++ cap[0] ++ "=" ++ cap[1] ++ "\x1b\\";
-            _ = std.posix.write(fd, resp) catch {};
+            term.queueResponse(resp);
             return;
         }
     }
@@ -895,31 +892,27 @@ fn respondXtgettcap(fd: std.posix.fd_t, hex_name: []const u8) void {
         pos += hex_name.len;
         @memcpy(resp_buf[pos..][0..suffix.len], suffix);
         pos += suffix.len;
-        _ = std.posix.write(fd, resp_buf[0..pos]) catch {};
+        term.queueResponse(resp_buf[0..pos]);
     }
 }
 
-fn respondDecrqss(fd: std.posix.fd_t, query: []const u8, term: *const Term) void {
+fn respondDecrqss(term: *Term, query: []const u8) void {
     if (std.mem.eql(u8, query, "m")) {
-        // SGR state — report reset (simplified)
-        _ = std.posix.write(fd, "\x1bP1$r0m\x1b\\") catch {};
+        term.queueResponse("\x1bP1$r0m\x1b\\");
     } else if (std.mem.eql(u8, query, "r")) {
-        // DECSTBM state
         var buf: [32]u8 = undefined;
         const resp = std.fmt.bufPrint(&buf, "\x1bP1$r{d};{d}r\x1b\\", .{ term.scroll_top + 1, term.scroll_bottom + 1 }) catch return;
-        _ = std.posix.write(fd, resp) catch {};
+        term.queueResponse(resp);
     } else if (std.mem.eql(u8, query, " q")) {
-        // DECSCUSR state
         var buf: [32]u8 = undefined;
         const resp = std.fmt.bufPrint(&buf, "\x1bP1$r{d} q\x1b\\", .{term.cursor_style}) catch return;
-        _ = std.posix.write(fd, resp) catch {};
+        term.queueResponse(resp);
     } else {
-        // Unknown — respond invalid
-        _ = std.posix.write(fd, "\x1bP0$r\x1b\\") catch {};
+        term.queueResponse("\x1bP0$r\x1b\\");
     }
 }
 
-fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser, writer_fd: ?std.posix.fd_t) void {
+fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser) void {
     // VT52 ESC Y sub-state: collecting row and column bytes
     // Reuse utf8_buf[0] as sub-state: 0=normal, 'Y'=awaiting row, 'R'=awaiting col
     if (parser.utf8_buf[0] == 'Y') {
@@ -976,7 +969,7 @@ fn handleVt52Byte(byte: u8, term: *Term, parser: *Parser, writer_fd: ?std.posix.
                 return;
             }, // Begin cursor addressing
             'Z' => { // Identify
-                if (writer_fd) |fd| _ = std.posix.write(fd, "\x1b/Z") catch {};
+                term.queueResponse("\x1b/Z");
             },
             '<' => {
                 term.vt52_mode = false;
@@ -1049,7 +1042,7 @@ fn isWide(cp: u21) bool {
         0x1F800...0x1F8FF, // Supplemental Arrows-C
         0x1F900...0x1F9FF, // Supplemental Symbols and Pictographs
         0x1FA70...0x1FAFF, // Symbols and Pictographs Extended-A
-        0x1FB00...0x1FBFF, // Symbols for Legacy Computing
+        // 0x1FB00-0x1FBFF (Symbols for Legacy Computing) excluded: EAW=N
         0x20000...0x2FFFF, // CJK Extensions B-G, Compatibility Supplement
         0x30000...0x3FFFF, // CJK Extension H+
         => true,
@@ -1207,7 +1200,7 @@ fn handleControl(c: u8, term: *Term) void {
     }
 }
 
-fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
+fn handleCsi(csi: CsiAction, term: *Term) void {
     const p = csi.params;
     const pc = csi.param_count;
 
@@ -1304,28 +1297,22 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             if (csi.private_marker == 0) handleSgr(csi, term);
         },
         'c' => { // Device Attributes
-            if (writer_fd) |fd| {
-                if (csi.private_marker == 0) {
-                    // DA1 — report as VT220
-                    _ = std.posix.write(fd, "\x1b[?62;22c") catch {};
-                } else if (csi.private_marker == '>') {
-                    // DA2 — secondary device attributes (xterm-compatible)
-                    _ = std.posix.write(fd, "\x1b[>0;0;0c") catch {};
-                }
+            if (csi.private_marker == 0) {
+                // DA1 — report as VT220
+                term.queueResponse("\x1b[?62;22c");
+            } else if (csi.private_marker == '>') {
+                // DA2 — secondary device attributes (xterm-compatible)
+                term.queueResponse("\x1b[>0;0;0c");
             }
         },
         'n' => { // DSR — device status report
             if (csi.private_marker == 0 and pc > 0) {
-                if (writer_fd) |fd| {
-                    if (p[0] == 5) {
-                        // Status Report — respond "OK"
-                        _ = std.posix.write(fd, "\x1b[0n") catch {};
-                    } else if (p[0] == 6) {
-                        // Cursor Position Report
-                        var buf: [32]u8 = undefined;
-                        const response = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ term.cursor_y + 1, term.cursor_x + 1 }) catch return;
-                        _ = std.posix.write(fd, response) catch {};
-                    }
+                if (p[0] == 5) {
+                    term.queueResponse("\x1b[0n");
+                } else if (p[0] == 6) {
+                    var buf: [32]u8 = undefined;
+                    const response = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ term.cursor_y + 1, term.cursor_x + 1 }) catch return;
+                    term.queueResponse(response);
                 }
             }
         },
@@ -1341,7 +1328,7 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             const ch = term.last_printed_char;
             if (ch > 0) {
-                const count = @min(n, term.cols * term.rows);
+                const count = @min(n, term.cols);
                 var rep: u16 = 0;
                 while (rep < count) : (rep += 1) {
                     handlePrint(ch, term);
@@ -1374,8 +1361,8 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
         },
         'u' => { // Restore cursor (only without private marker; \e[?u/\e[>Nu are Kitty keyboard protocol)
             if (csi.private_marker == 0) {
-                term.cursor_x = term.saved_cursor_x;
-                term.cursor_y = term.saved_cursor_y;
+                term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
+                term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
             }
         },
         'g' => { // TBC — tab clear
@@ -1446,17 +1433,17 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                 }
             } else if (csi.intermediate_count > 0 and csi.intermediates[0] == '$') {
                 // DECRQM — Request Mode
-                if (writer_fd) |fd| {
+                {
                     const mode = if (pc > 0) p[0] else 0;
                     var buf: [32]u8 = undefined;
                     if (csi.private_marker == '?') {
                         const status = queryDecMode(term, mode);
                         const resp = std.fmt.bufPrint(&buf, "\x1b[?{d};{d}$y", .{ mode, status }) catch return;
-                        _ = std.posix.write(fd, resp) catch {};
+                        term.queueResponse(resp);
                     } else if (csi.private_marker == 0) {
                         const status = queryAnsiMode(term, mode);
                         const resp = std.fmt.bufPrint(&buf, "\x1b[{d};{d}$y", .{ mode, status }) catch return;
-                        _ = std.posix.write(fd, resp) catch {};
+                        term.queueResponse(resp);
                     }
                 }
             } else if (csi.intermediate_count > 0 and csi.intermediates[0] == '"') {
@@ -1474,9 +1461,7 @@ fn handleCsi(csi: CsiAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
                 term.current_attrs.protected = (ps == 1);
             } else if (csi.private_marker == '>' and pc > 0 and p[0] == 0) {
                 // XTVERSION — respond with terminal identification
-                if (writer_fd) |fd| {
-                    _ = std.posix.write(fd, "\x1bP>|zt(0.4.1)\x1b\\") catch {};
-                }
+                term.queueResponse("\x1bP>|zt(0.4.1)\x1b\\");
             }
         },
         'i' => {}, // MC — Media Copy (printer control, silently accept)
@@ -1666,8 +1651,8 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.saved_cursor_x = term.cursor_x;
                     term.saved_cursor_y = term.cursor_y;
                 } else {
-                    term.cursor_x = term.saved_cursor_x;
-                    term.cursor_y = term.saved_cursor_y;
+                    term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
+                    term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
                     term.wrap_next = false;
                 }
             },
@@ -1689,10 +1674,10 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.switchScreen(false) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
-                    term.cursor_x = term.saved_cursor_x;
-                    term.cursor_y = term.saved_cursor_y;
-                    term.scroll_top = term.saved_scroll_top;
-                    term.scroll_bottom = term.saved_scroll_bottom;
+                    term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
+                    term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
+                    term.scroll_top = @min(term.saved_scroll_top, term.rows -| 1);
+                    term.scroll_bottom = @min(term.saved_scroll_bottom, term.rows -| 1);
                     term.wrap_next = term.saved_wrap_next;
                 }
             },
@@ -1721,7 +1706,7 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
     }
 }
 
-fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
+fn handleEsc(esc: EscAction, term: *Term) void {
     // Character set designation (ESC with intermediate byte)
     if (esc.intermediate != 0) {
         switch (esc.intermediate) {
@@ -1762,8 +1747,8 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             term.saved_origin_mode = term.origin_mode;
         },
         '8' => { // DECRC — restore cursor (with attributes + TrueColor)
-            term.cursor_x = term.saved_cursor_x;
-            term.cursor_y = term.saved_cursor_y;
+            term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
+            term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
             term.current_attrs = term.saved_attrs;
             term.current_fg = term.saved_fg;
             term.current_bg = term.saved_bg;
@@ -1801,9 +1786,7 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             }
         },
         'Z' => { // DECID — identify terminal
-            if (writer_fd) |fd| {
-                _ = std.posix.write(fd, "\x1b[?62;22c") catch {};
-            }
+            term.queueResponse("\x1b[?62;22c");
         },
         'c' => { // RIS — full reset
             term.cursor_x = 0;

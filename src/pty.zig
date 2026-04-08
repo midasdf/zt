@@ -162,7 +162,7 @@ pub const Pty = struct {
             var path_env_buf: [1024]u8 = undefined;
             const path_env = std.fmt.bufPrintZ(&path_env_buf, "PATH={s}", .{path_val}) catch "PATH=/usr/local/bin:/usr/bin:/bin";
 
-            var env_arr: [20:null]?[*:0]const u8 = .{null} ** 20;
+            var env_arr: [32:null]?[*:0]const u8 = .{null} ** 32;
             var ei: usize = 0;
             env_arr[ei] = "TERM=xterm-256color";
             ei += 1;

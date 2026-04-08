@@ -42,6 +42,11 @@ pub const HyperlinkEntry = struct {
     }
 };
 
+comptime {
+    // fastCellFill and feedBulk ASCII fast path assume Cell is exactly 8 bytes
+    std.debug.assert(@sizeOf(Cell) == 8);
+}
+
 const default_cell: Cell = .{};
 
 pub const CharsetType = enum { us_ascii, dec_graphics };
@@ -114,6 +119,10 @@ pub const Term = struct {
     hyperlink_table: [64]HyperlinkEntry = [_]HyperlinkEntry{.{}} ** 64,
     hyperlink_next_id: u16 = 1,
     current_hyperlink_id: u16 = 0,
+
+    // VT response buffer — accumulated responses flushed by event loop via ptyBufferedWrite
+    vt_response_buf: [1024]u8 = undefined,
+    vt_response_len: u16 = 0,
 
     // OSC 52 clipboard output
     osc52_buf: [6144]u8 = undefined, // base64(8192) decodes to max ~6144 bytes
@@ -577,19 +586,35 @@ pub const Term = struct {
 
         // Lazy-allocate alt buffer on first switch to alt screen
         if (alt and self.alt_cells == null) {
-            self.alt_cells = try self.allocator.alloc(Cell, total);
-            @memset(self.alt_cells.?, Cell{});
-            self.alt_row_map = try self.allocator.alloc(u32, self.rows);
-            for (0..self.rows) |i| self.alt_row_map.?[i] = @intCast(i);
-            self.alt_dirty = try std.DynamicBitSet.initFull(self.allocator, total);
-            self.alt_fg_rgb = try self.allocator.alloc(?[3]u8, total);
-            @memset(self.alt_fg_rgb.?, null);
-            self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, total);
-            @memset(self.alt_bg_rgb.?, null);
-            self.alt_ul_color_rgb = try self.allocator.alloc(?[3]u8, total);
-            @memset(self.alt_ul_color_rgb.?, null);
-            self.alt_hyperlink_ids = try self.allocator.alloc(u16, total);
-            @memset(self.alt_hyperlink_ids.?, 0);
+            // Allocate all alt buffers with errdefer to prevent leaks on partial failure
+            const ac = try self.allocator.alloc(Cell, total);
+            errdefer self.allocator.free(ac);
+            @memset(ac, Cell{});
+            const arm = try self.allocator.alloc(u32, self.rows);
+            errdefer self.allocator.free(arm);
+            for (0..self.rows) |i| arm[i] = @intCast(i);
+            var ad = try std.DynamicBitSet.initFull(self.allocator, total);
+            errdefer ad.deinit();
+            const afg = try self.allocator.alloc(?[3]u8, total);
+            errdefer self.allocator.free(afg);
+            @memset(afg, null);
+            const abg = try self.allocator.alloc(?[3]u8, total);
+            errdefer self.allocator.free(abg);
+            @memset(abg, null);
+            const aul = try self.allocator.alloc(?[3]u8, total);
+            errdefer self.allocator.free(aul);
+            @memset(aul, null);
+            const ahl = try self.allocator.alloc(u16, total);
+            // No errdefer needed for last allocation — if it fails, all above are freed
+            @memset(ahl, 0);
+            // All succeeded — assign
+            self.alt_cells = ac;
+            self.alt_row_map = arm;
+            self.alt_dirty = ad;
+            self.alt_fg_rgb = afg;
+            self.alt_bg_rgb = abg;
+            self.alt_ul_color_rgb = aul;
+            self.alt_hyperlink_ids = ahl;
         }
 
         // Swap main <-> alt (cells, row_map, dirty, TrueColor, ul_color, hyperlinks)
@@ -623,6 +648,15 @@ pub const Term = struct {
 
         self.is_alt_screen = alt;
         self.markDirtyRange(.{ .start = 0, .end = total });
+    }
+
+    /// Queue a VT response to be flushed by the event loop (avoids direct write to non-blocking fd)
+    pub fn queueResponse(self: *Self, data: []const u8) void {
+        const avail = self.vt_response_buf.len - self.vt_response_len;
+        const len = @min(data.len, avail);
+        if (len == 0) return;
+        @memcpy(self.vt_response_buf[self.vt_response_len..][0..len], data[0..len]);
+        self.vt_response_len += @intCast(len);
     }
 
     pub fn moveCursorTo(self: *Self, x: u32, y: u32) void {

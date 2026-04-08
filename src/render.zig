@@ -330,9 +330,8 @@ fn drawUnderlineCurly(
     comptime pixel_format: PixelFormat,
     comptime scale: u32,
 ) void {
-    // Sine-like wave: 3 pixel height, period = scaled_w
+    // Sine-like wave: period = scaled_w
     const bpp = comptime bppFor(pixel_format);
-    const height: u32 = 3 * scale;
     for (0..scaled_w) |col_usize| {
         const col: u32 = @intCast(col_usize);
         // Simple wave pattern: 0,1,2,1,0,1,2,1,... (period 4)
@@ -344,7 +343,6 @@ fn drawUnderlineCurly(
             3 => 1 * scale,
             else => 0,
         };
-        _ = height;
         for (0..scale) |s| {
             const row_offset = (px_y + ul_start + dy + @as(u32, @intCast(s))) * stride + (px_x + col) * bpp;
             if (row_offset + bpp <= max_offset) {
