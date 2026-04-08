@@ -1163,6 +1163,8 @@ fn handlePrint(cp: u21, term: *Term) void {
                 term.fg_rgb[dummy_phys] = null;
                 term.bg_rgb[dummy_phys] = null;
             }
+            term.ul_color_rgb[dummy_phys] = term.current_ul_color_rgb;
+            term.hyperlink_ids[dummy_phys] = term.current_hyperlink_id;
             const dummy_dirty = @as(usize, term.cursor_y) * cols + @as(usize, term.cursor_x - 1);
             term.dirty.set(dummy_dirty);
         }

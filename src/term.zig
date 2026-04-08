@@ -752,9 +752,10 @@ pub const Term = struct {
                 } else if (self.has_truecolor_cells) {
                     @memset(self.bg_rgb[0..total], null);
                     @memset(self.fg_rgb[0..total], null);
-                    // All cells cleared — reset truecolor flag
                     self.has_truecolor_cells = false;
                 }
+                @memset(self.ul_color_rgb[0..total], null);
+                @memset(self.hyperlink_ids[0..total], 0);
                 self.has_wide_chars = false;
             },
             else => {},
@@ -984,6 +985,8 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            self.ul_color_rgb[idx] = null;
+                            self.hyperlink_ids[idx] = 0;
                         }
                     }
                 }
@@ -1000,6 +1003,8 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            self.ul_color_rgb[idx] = null;
+                            self.hyperlink_ids[idx] = 0;
                         }
                     }
                 }
@@ -1015,6 +1020,8 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            self.ul_color_rgb[idx] = null;
+                            self.hyperlink_ids[idx] = 0;
                         }
                     }
                 }

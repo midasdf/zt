@@ -315,8 +315,9 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
         SIG_CHLD => blk: {
             // Reap zombie children (clipboard helpers, etc.) without exiting.
             // PTY child death is detected by read() returning 0 in the event loop.
+            const WNOHANG: u32 = if (is_linux) linux.W.NOHANG else 1; // WNOHANG=1 on macOS/BSD too
             while (true) {
-                const result = std.posix.waitpid(-1, linux.W.NOHANG);
+                const result = std.posix.waitpid(-1, WNOHANG);
                 if (result.pid <= 0) break; // no more children to reap
             }
             break :blk true;
@@ -345,6 +346,13 @@ fn dispatchClipboardCopy(data: []const u8) void {
         else => return,
     };
 
+    // Block SIGPIPE to prevent write() from killing us if child dies early
+    if (is_linux) {
+        var mask = linux.sigemptyset();
+        linux.sigaddset(&mask, linux.SIG.PIPE);
+        _ = linux.sigprocmask(linux.SIG.BLOCK, &mask, null);
+    }
+
     const pipe_fds = std.posix.pipe() catch return;
     const pid = std.posix.fork() catch {
         std.posix.close(pipe_fds[0]);
@@ -358,12 +366,11 @@ fn dispatchClipboardCopy(data: []const u8) void {
         std.posix.close(pipe_fds[0]);
         std.posix.close(pipe_fds[1]);
 
-        const err = std.posix.execvpeZ(
+        _ = std.posix.execvpeZ(
             argv[0].?,
             argv,
             @ptrCast(std.c.environ),
-        );
-        _ = err;
+        ) catch {};
         std.posix.exit(1);
     }
 
@@ -373,6 +380,13 @@ fn dispatchClipboardCopy(data: []const u8) void {
         _ = std.posix.write(pipe_fds[1], data) catch {};
     }
     std.posix.close(pipe_fds[1]); // EOF signals end of data to child
+
+    // Unblock SIGPIPE
+    if (is_linux) {
+        var mask = linux.sigemptyset();
+        linux.sigaddset(&mask, linux.SIG.PIPE);
+        _ = linux.sigprocmask(linux.SIG.UNBLOCK, &mask, null);
+    }
 }
 
 fn handleBackendEvent(
