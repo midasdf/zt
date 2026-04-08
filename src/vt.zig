@@ -10,6 +10,8 @@ const testing = std.testing;
 
 pub const CsiAction = struct {
     params: [16]u16 = [_]u16{0} ** 16,
+    sub_params: [16]u16 = [_]u16{0} ** 16,
+    has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     param_count: u8 = 0,
     intermediates: [2]u8 = [_]u8{0} ** 2,
     intermediate_count: u8 = 0,
@@ -60,12 +62,14 @@ pub const Parser = struct {
     intermediate_count: u8 = 0,
     private_marker: u8 = 0,
     in_subparam: bool = false,
+    sub_params: [16]u16 = [_]u16{0} ** 16,
+    has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     // UTF-8 accumulator
     utf8_buf: [4]u8 = undefined,
     utf8_len: u3 = 0,
     utf8_expected: u3 = 0,
     // OSC accumulator
-    osc_buf: [256]u8 = undefined,
+    osc_buf: [8192]u8 = undefined,
     osc_len: u16 = 0,
     // ESC in OSC tracking
     esc_in_osc: bool = false,
@@ -261,17 +265,30 @@ pub const Parser = struct {
 
     fn handleCsiParam(self: *Parser, byte: u8) Action {
         if (byte >= '0' and byte <= '9') {
-            // Accumulate digit (skip if in colon sub-parameter)
-            if (self.in_subparam) return .none;
-            const idx = self.param_count;
-            if (idx < 16) {
-                self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
+            if (self.in_subparam) {
+                // Accumulate first colon sub-parameter digit
+                const idx = self.param_count;
+                if (idx < 16) {
+                    self.sub_params[idx] = self.sub_params[idx] *| 10 +| (byte - '0');
+                }
+            } else {
+                const idx = self.param_count;
+                if (idx < 16) {
+                    self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
+                }
             }
             return .none;
         } else if (byte == ':') {
             // Colon sub-parameter separator (e.g., \e[4:3m)
-            // Keep the main parameter, skip sub-parameter digits
-            self.in_subparam = true;
+            if (!self.in_subparam) {
+                // First colon: mark this param as having a sub-param
+                const idx = self.param_count;
+                if (idx < 16) {
+                    self.has_sub |= @as(u16, 1) << @intCast(idx);
+                }
+                self.in_subparam = true;
+            }
+            // Subsequent colons (e.g., 58:2::r:g:b) — ignore for now
             return .none;
         } else if (byte == ';') {
             // Next param — ends any sub-parameter
@@ -332,11 +349,11 @@ pub const Parser = struct {
                 return Action{ .osc_dispatch = self.osc_buf[0..self.osc_len] };
             }
             // Not ST, store the ESC and this byte
-            if (self.osc_len < 256) {
+            if (self.osc_len < 8192) {
                 self.osc_buf[self.osc_len] = 0x1B;
                 self.osc_len += 1;
             }
-            if (self.osc_len < 256) {
+            if (self.osc_len < 8192) {
                 self.osc_buf[self.osc_len] = byte;
                 self.osc_len += 1;
             }
@@ -352,7 +369,7 @@ pub const Parser = struct {
             self.esc_in_osc = true;
             return .none;
         } else {
-            if (self.osc_len < 256) {
+            if (self.osc_len < 8192) {
                 self.osc_buf[self.osc_len] = byte;
                 self.osc_len += 1;
             }
@@ -374,7 +391,7 @@ pub const Parser = struct {
                 return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
             } else {
                 // ESC followed by non-backslash — store the ESC and reprocess byte
-                if (self.osc_len < 256) {
+                if (self.osc_len < 8192) {
                     self.osc_buf[self.osc_len] = 0x1B;
                     self.osc_len += 1;
                 }
@@ -386,7 +403,7 @@ pub const Parser = struct {
             self.esc_in_osc = true;
             return .none;
         } else {
-            if (self.osc_len < 256) {
+            if (self.osc_len < 8192) {
                 self.osc_buf[self.osc_len] = byte;
                 self.osc_len += 1;
             }
@@ -396,6 +413,8 @@ pub const Parser = struct {
 
     fn clearCsi(self: *Parser) void {
         self.params = [_]u16{0} ** 16;
+        self.sub_params = [_]u16{0} ** 16;
+        self.has_sub = 0;
         self.param_count = 0;
         self.intermediates = [_]u8{0} ** 2;
         self.intermediate_count = 0;
@@ -406,6 +425,8 @@ pub const Parser = struct {
     fn buildCsiAction(self: *const Parser, final_byte: u8) CsiAction {
         return CsiAction{
             .params = self.params,
+            .sub_params = self.sub_params,
+            .has_sub = self.has_sub,
             .param_count = self.param_count,
             .intermediates = self.intermediates,
             .intermediate_count = self.intermediate_count,
@@ -521,6 +542,9 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     @memset(term.fg_rgb[phys_start .. phys_start + count], null);
                     @memset(term.bg_rgb[phys_start .. phys_start + count], null);
                 }
+                // Underline color + hyperlink metadata
+                @memset(term.ul_color_rgb[phys_start .. phys_start + count], term.current_ul_color_rgb);
+                @memset(term.hyperlink_ids[phys_start .. phys_start + count], term.current_hyperlink_id);
                 // Bulk dirty (logical index)
                 const logical_start = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 term.markDirtyRange(.{ .start = logical_start, .end = logical_start + count });
@@ -661,6 +685,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     term.fg_rgb[phys_idx] = null;
                     term.bg_rgb[phys_idx] = null;
                 }
+                term.ul_color_rgb[phys_idx] = term.current_ul_color_rgb;
+                term.hyperlink_ids[phys_idx] = term.current_hyperlink_id;
                 const logical_idx = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x;
                 dirty_run_end = logical_idx + 1;
                 term.last_printed_char = cp;
@@ -731,7 +757,7 @@ fn handleOsc(payload: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void 
         1 => {}, // Set icon name only — silently accept
         4 => {}, // Set color palette — silently accept
         7 => {}, // Set working directory — silently accept
-        8 => {}, // Hyperlinks — silently accept
+        8 => handleOsc8(param, term),
         10, 11, 12 => {
             // Dynamic color query: param == "?" means query
             if (std.mem.eql(u8, param, "?")) {
@@ -746,10 +772,67 @@ fn handleOsc(payload: []const u8, term: *Term, writer_fd: ?std.posix.fd_t) void 
                 }
             }
         },
-        52 => {}, // Clipboard — silently accept
+        52 => handleOsc52(param, term),
         104, 110, 111, 112 => {}, // Reset colors — silently accept
         else => {},
     }
+}
+
+fn handleOsc52(param: []const u8, term: *Term) void {
+    // OSC 52 ; Pc ; Pd ST
+    // Pc = clipboard selection (c, p, s, etc.), Pd = base64 data or "?" for query
+    const sep = std.mem.indexOfScalar(u8, param, ';');
+    const b64_data = if (sep) |s| param[s + 1 ..] else param;
+
+    // Query ("?") — not supported for security reasons
+    if (b64_data.len == 1 and b64_data[0] == '?') return;
+    // Clear ("") — clear clipboard
+    if (b64_data.len == 0) {
+        term.osc52_len = 0;
+        term.osc52_pending = true;
+        return;
+    }
+
+    // Base64 decode
+    const decoder = std.base64.standard.Decoder;
+    const decoded_len = decoder.calcSizeForSlice(b64_data) catch return;
+    if (decoded_len > term.osc52_buf.len) return; // too large
+    decoder.decode(&term.osc52_buf, b64_data) catch return;
+    term.osc52_len = @intCast(decoded_len);
+    term.osc52_pending = true;
+}
+
+fn handleOsc8(param: []const u8, term: *Term) void {
+    // OSC 8 ; params ; URI ST  (start hyperlink)
+    // OSC 8 ; ; ST             (end hyperlink)
+    // Format: params;URI — find second semicolon
+    const first_sep = std.mem.indexOfScalar(u8, param, ';') orelse return;
+    const uri = param[first_sep + 1 ..];
+
+    if (uri.len == 0) {
+        // End hyperlink
+        term.current_hyperlink_id = 0;
+        return;
+    }
+
+    // Start hyperlink — find or create entry
+    const max_len = @min(uri.len, @as(usize, 512));
+
+    // Search existing entries
+    for (&term.hyperlink_table, 0..) |*entry, idx| {
+        if (entry.len == max_len and std.mem.eql(u8, entry.url[0..entry.len], uri[0..max_len])) {
+            term.current_hyperlink_id = @intCast(idx + 1);
+            return;
+        }
+    }
+
+    // Allocate new entry (ring buffer)
+    const slot = (term.hyperlink_next_id - 1) % 64;
+    term.hyperlink_table[slot].len = @intCast(max_len);
+    @memcpy(term.hyperlink_table[slot].url[0..max_len], uri[0..max_len]);
+    term.current_hyperlink_id = slot + 1;
+    term.hyperlink_next_id +%= 1;
+    if (term.hyperlink_next_id == 0) term.hyperlink_next_id = 1;
 }
 
 fn handleDcsDispatch(payload: []const u8, writer_fd: ?std.posix.fd_t, term: *const Term) void {
@@ -1053,6 +1136,13 @@ fn handlePrint(cp: u21, term: *Term) void {
         term.fg_rgb[phys_idx] = null;
         term.bg_rgb[phys_idx] = null;
     }
+    // Underline color + hyperlink: only write when active (avoid touching cache lines)
+    if (term.current_ul_color_rgb != null) {
+        term.ul_color_rgb[phys_idx] = term.current_ul_color_rgb;
+    } else {
+        term.ul_color_rgb[phys_idx] = null;
+    }
+    term.hyperlink_ids[phys_idx] = term.current_hyperlink_id;
     const dirty_idx = @as(usize, term.cursor_y) * cols + @as(usize, term.cursor_x);
     term.dirty.set(dirty_idx);
     term.dirty_flag = true;
@@ -1073,6 +1163,8 @@ fn handlePrint(cp: u21, term: *Term) void {
                 term.fg_rgb[dummy_phys] = null;
                 term.bg_rgb[dummy_phys] = null;
             }
+            term.ul_color_rgb[dummy_phys] = term.current_ul_color_rgb;
+            term.hyperlink_ids[dummy_phys] = term.current_hyperlink_id;
             const dummy_dirty = @as(usize, term.cursor_y) * cols + @as(usize, term.cursor_x - 1);
             term.dirty.set(dummy_dirty);
         }
@@ -1422,18 +1514,26 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             1 => term.current_attrs.bold = true,
             2 => term.current_attrs.dim = true,
             3 => term.current_attrs.italic = true,
-            4 => term.current_attrs.underline = true,
+            4 => {
+                // Check for sub-param (4:N styled underline)
+                if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
+                    const style = csi.sub_params[i];
+                    term.current_attrs.underline_style = if (style <= 5) @intCast(style) else 1;
+                } else {
+                    term.current_attrs.underline_style = 1; // single
+                }
+            },
             5, 6 => term.current_attrs.blink = true, // slow/rapid blink
             7 => term.current_attrs.reverse = true,
             8 => term.current_attrs.invisible = true,
             9 => term.current_attrs.strikethrough = true,
-            21 => term.current_attrs.underline = true, // Doubly-underlined (treated as underline)
+            21 => term.current_attrs.underline_style = 2, // double underline
             22 => {
                 term.current_attrs.bold = false;
                 term.current_attrs.dim = false;
             },
             23 => term.current_attrs.italic = false,
-            24 => term.current_attrs.underline = false,
+            24 => term.current_attrs.underline_style = 0,
             25 => term.current_attrs.blink = false,
             27 => term.current_attrs.reverse = false,
             28 => term.current_attrs.invisible = false,
@@ -1458,17 +1558,9 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             },
             58 => {
                 // Extended underline color (58;2;r;g;b or 58;5;n)
-                // Must consume sub-params so they aren't misread as SGR codes
-                if (i + 1 < pc) {
-                    const sub = p[i + 1];
-                    if (sub == 5 and i + 2 < pc) {
-                        i = i + 2;
-                    } else if (sub == 2 and i + 4 < pc) {
-                        i = i + 4;
-                    }
-                }
+                i = parseUnderlineColor(p, pc, i, term);
             },
-            59 => {},
+            59 => term.current_ul_color_rgb = null,
             90...97 => term.current_fg = @intCast(param - 90 + 8),
             100...107 => term.current_bg = @intCast(param - 100 + 8),
             else => {},
@@ -1515,6 +1607,37 @@ fn resetSgr(term: *Term) void {
     term.current_attrs = .{};
     term.current_fg_rgb = null;
     term.current_bg_rgb = null;
+    term.current_ul_color_rgb = null;
+    // Note: current_hyperlink_id is NOT reset by SGR 0.
+    // Hyperlinks are controlled exclusively by OSC 8, not SGR.
+}
+
+fn parseUnderlineColor(p: [16]u16, pc: u8, start: u8, term: *Term) u8 {
+    const i = start;
+    if (i + 1 < pc) {
+        const sub = p[i + 1];
+        if (sub == 5 and i + 2 < pc) {
+            // 58;5;n — 256-color underline
+            if (p[i + 2] <= 255) {
+                const color: u8 = @intCast(p[i + 2]);
+                const render = @import("render.zig");
+                const c = render.palette[color];
+                term.current_ul_color_rgb = .{ c.r, c.g, c.b };
+            }
+            return i + 2;
+        } else if (sub == 2 and i + 4 < pc) {
+            // 58;2;r;g;b — TrueColor underline
+            if (p[i + 2] <= 255 and p[i + 3] <= 255 and p[i + 4] <= 255) {
+                term.current_ul_color_rgb = .{
+                    @intCast(p[i + 2]),
+                    @intCast(p[i + 3]),
+                    @intCast(p[i + 4]),
+                };
+            }
+            return i + 4;
+        }
+    }
+    return i;
 }
 
 fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
@@ -1633,6 +1756,7 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             term.saved_bg = term.current_bg;
             term.saved_fg_rgb = term.current_fg_rgb;
             term.saved_bg_rgb = term.current_bg_rgb;
+            term.saved_ul_color_rgb = term.current_ul_color_rgb;
             term.saved_charset = term.charset;
             term.saved_wrap_next = term.wrap_next;
             term.saved_origin_mode = term.origin_mode;
@@ -1645,6 +1769,7 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             term.current_bg = term.saved_bg;
             term.current_fg_rgb = term.saved_fg_rgb;
             term.current_bg_rgb = term.saved_bg_rgb;
+            term.current_ul_color_rgb = term.saved_ul_color_rgb;
             term.charset = term.saved_charset;
             term.wrap_next = term.saved_wrap_next;
             term.origin_mode = term.saved_origin_mode;
@@ -1716,6 +1841,9 @@ fn handleEsc(esc: EscAction, term: *Term, writer_fd: ?std.posix.fd_t) void {
             term.saved_charset = 0;
             term.saved_wrap_next = false;
             term.saved_origin_mode = false;
+            term.saved_ul_color_rgb = null;
+            term.current_ul_color_rgb = null;
+            term.current_hyperlink_id = 0;
             term.saved_fg_rgb = null;
             term.saved_bg_rgb = null;
             for (0..term.tabs.len) |c| {

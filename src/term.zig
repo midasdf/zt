@@ -11,7 +11,7 @@ pub const Cell = struct {
     pub const Attrs = packed struct(u16) {
         bold: bool = false,
         italic: bool = false,
-        underline: bool = false,
+        underline_style: u3 = 0, // 0=none, 1=single, 2=double, 3=curly, 4=dotted, 5=dashed
         reverse: bool = false,
         dim: bool = false,
         wide: bool = false,
@@ -19,9 +19,27 @@ pub const Cell = struct {
         blink: bool = false,
         invisible: bool = false,
         strikethrough: bool = false,
-        protected: bool = false, // DECSCA character protection
-        _pad: u5 = 0,
+        protected: bool = false,
+        _pad: u3 = 0,
     };
+};
+
+pub const UnderlineStyle = struct {
+    pub const none: u3 = 0;
+    pub const single: u3 = 1;
+    pub const double: u3 = 2;
+    pub const curly: u3 = 3;
+    pub const dotted: u3 = 4;
+    pub const dashed: u3 = 5;
+};
+
+pub const HyperlinkEntry = struct {
+    url: [512]u8 = undefined,
+    len: u16 = 0,
+
+    pub fn slice(self: *const HyperlinkEntry) []const u8 {
+        return self.url[0..self.len];
+    }
 };
 
 const default_cell: Cell = .{};
@@ -62,6 +80,8 @@ pub const Term = struct {
     alt_dirty: ?std.DynamicBitSet = null,
     alt_fg_rgb: ?[]?[3]u8 = null,
     alt_bg_rgb: ?[]?[3]u8 = null,
+    alt_ul_color_rgb: ?[]?[3]u8 = null,
+    alt_hyperlink_ids: ?[]u16 = null,
     is_alt_screen: bool = false,
 
     // Cursor
@@ -82,10 +102,23 @@ pub const Term = struct {
     current_attrs: Cell.Attrs = .{},
     current_fg_rgb: ?[3]u8 = null,
     current_bg_rgb: ?[3]u8 = null,
+    current_ul_color_rgb: ?[3]u8 = null,
 
     // TrueColor flat arrays (indexed by physical cell index, null = no override)
     fg_rgb: []?[3]u8,
     bg_rgb: []?[3]u8,
+    ul_color_rgb: []?[3]u8,
+
+    // Hyperlinks (indexed by physical cell index, 0 = no link)
+    hyperlink_ids: []u16,
+    hyperlink_table: [64]HyperlinkEntry = [_]HyperlinkEntry{.{}} ** 64,
+    hyperlink_next_id: u16 = 1,
+    current_hyperlink_id: u16 = 0,
+
+    // OSC 52 clipboard output
+    osc52_buf: [6144]u8 = undefined, // base64(8192) decodes to max ~6144 bytes
+    osc52_len: u16 = 0,
+    osc52_pending: bool = false,
 
     // Last printed graphic character (for REP / CSI b)
     last_printed_char: u21 = 0,
@@ -148,6 +181,7 @@ pub const Term = struct {
     saved_origin_mode: bool = false,
     saved_fg_rgb: ?[3]u8 = null,
     saved_bg_rgb: ?[3]u8 = null,
+    saved_ul_color_rgb: ?[3]u8 = null,
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
@@ -163,6 +197,10 @@ pub const Term = struct {
         @memset(fg_rgb, null);
         const bg_rgb = try allocator.alloc(?[3]u8, total);
         @memset(bg_rgb, null);
+        const ul_color_rgb = try allocator.alloc(?[3]u8, total);
+        @memset(ul_color_rgb, null);
+        const hyperlink_ids = try allocator.alloc(u16, total);
+        @memset(hyperlink_ids, 0);
 
         // Initialize tab stops every 8 columns
         const tabs = try allocator.alloc(bool, cols);
@@ -180,6 +218,8 @@ pub const Term = struct {
             .scroll_bottom = rows -| 1,
             .fg_rgb = fg_rgb,
             .bg_rgb = bg_rgb,
+            .ul_color_rgb = ul_color_rgb,
+            .hyperlink_ids = hyperlink_ids,
             .tabs = tabs,
         };
     }
@@ -196,8 +236,12 @@ pub const Term = struct {
         }
         if (self.alt_fg_rgb) |a| self.allocator.free(a);
         if (self.alt_bg_rgb) |a| self.allocator.free(a);
+        if (self.alt_ul_color_rgb) |a| self.allocator.free(a);
+        if (self.alt_hyperlink_ids) |a| self.allocator.free(a);
         self.allocator.free(self.fg_rgb);
         self.allocator.free(self.bg_rgb);
+        self.allocator.free(self.ul_color_rgb);
+        self.allocator.free(self.hyperlink_ids);
     }
 
     /// Physical cell index via row_map indirection
@@ -228,6 +272,8 @@ pub const Term = struct {
         self.dirty_flag = true;
         self.fg_rgb[phys_idx] = null;
         self.bg_rgb[phys_idx] = null;
+        self.ul_color_rgb[phys_idx] = null;
+        self.hyperlink_ids[phys_idx] = 0;
     }
 
     pub fn isDirty(self: *const Self, x: u32, y: u32) bool {
@@ -394,6 +440,14 @@ pub const Term = struct {
         errdefer self.allocator.free(new_bg_rgb);
         @memset(new_bg_rgb, null);
 
+        const new_ul_color_rgb = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_ul_color_rgb);
+        @memset(new_ul_color_rgb, null);
+
+        const new_hyperlink_ids = try self.allocator.alloc(u16, new_total);
+        errdefer self.allocator.free(new_hyperlink_ids);
+        @memset(new_hyperlink_ids, 0);
+
         const new_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
         errdefer @constCast(&new_dirty).deinit();
 
@@ -413,6 +467,8 @@ pub const Term = struct {
             @memcpy(new_cells[new_start .. new_start + copy_cols], self.cells[old_start .. old_start + copy_cols]);
             @memcpy(new_fg_rgb[new_start .. new_start + copy_cols], self.fg_rgb[old_start .. old_start + copy_cols]);
             @memcpy(new_bg_rgb[new_start .. new_start + copy_cols], self.bg_rgb[old_start .. old_start + copy_cols]);
+            @memcpy(new_ul_color_rgb[new_start .. new_start + copy_cols], self.ul_color_rgb[old_start .. old_start + copy_cols]);
+            @memcpy(new_hyperlink_ids[new_start .. new_start + copy_cols], self.hyperlink_ids[old_start .. old_start + copy_cols]);
         }
 
         // Fix wide char boundaries broken by column truncation
@@ -425,6 +481,8 @@ pub const Term = struct {
                     new_cells[last] = blank;
                     new_fg_rgb[last] = null;
                     new_bg_rgb[last] = null;
+                    new_ul_color_rgb[last] = null;
+                    new_hyperlink_ids[last] = 0;
                 }
                 // Orphaned wide_dummy at first column (wide cell was in previous row's truncated area)
                 const first = y * @as(usize, new_cols);
@@ -432,6 +490,8 @@ pub const Term = struct {
                     new_cells[first] = blank;
                     new_fg_rgb[first] = null;
                     new_bg_rgb[first] = null;
+                    new_ul_color_rgb[first] = null;
+                    new_hyperlink_ids[first] = 0;
                 }
             }
         }
@@ -441,6 +501,8 @@ pub const Term = struct {
         self.allocator.free(self.row_map);
         self.allocator.free(self.fg_rgb);
         self.allocator.free(self.bg_rgb);
+        self.allocator.free(self.ul_color_rgb);
+        self.allocator.free(self.hyperlink_ids);
         if (self.tabs.len > 0) self.allocator.free(self.tabs);
         self.dirty.deinit();
 
@@ -448,6 +510,8 @@ pub const Term = struct {
         self.row_map = new_row_map;
         self.fg_rgb = new_fg_rgb;
         self.bg_rgb = new_bg_rgb;
+        self.ul_color_rgb = new_ul_color_rgb;
+        self.hyperlink_ids = new_hyperlink_ids;
         self.dirty = new_dirty;
         self.dirty_flag = true;
         self.all_dirty = true;
@@ -474,6 +538,10 @@ pub const Term = struct {
             const new_alt_fg = if (self.alt_fg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
             errdefer if (new_alt_fg) |nafg| self.allocator.free(nafg);
             const new_alt_bg = if (self.alt_bg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+            errdefer if (new_alt_bg) |nabg| self.allocator.free(nabg);
+            const new_alt_ul = if (self.alt_ul_color_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+            errdefer if (new_alt_ul) |naul| self.allocator.free(naul);
+            const new_alt_hl = if (self.alt_hyperlink_ids != null) try self.allocator.alloc(u16, new_total) else null;
 
             // All allocations succeeded — now free old and swap
             if (self.alt_cells) |alt| self.allocator.free(alt);
@@ -481,6 +549,8 @@ pub const Term = struct {
             if (self.alt_dirty) |*ad| ad.deinit();
             if (self.alt_fg_rgb) |a| self.allocator.free(a);
             if (self.alt_bg_rgb) |a| self.allocator.free(a);
+            if (self.alt_ul_color_rgb) |a| self.allocator.free(a);
+            if (self.alt_hyperlink_ids) |a| self.allocator.free(a);
 
             if (new_alt_cells) |nac| @memset(nac, Cell{});
             self.alt_cells = new_alt_cells;
@@ -493,6 +563,10 @@ pub const Term = struct {
             self.alt_fg_rgb = new_alt_fg;
             if (new_alt_bg) |nbg| @memset(nbg, null);
             self.alt_bg_rgb = new_alt_bg;
+            if (new_alt_ul) |nul| @memset(nul, null);
+            self.alt_ul_color_rgb = new_alt_ul;
+            if (new_alt_hl) |nhl| @memset(nhl, 0);
+            self.alt_hyperlink_ids = new_alt_hl;
         }
     }
 
@@ -512,9 +586,13 @@ pub const Term = struct {
             @memset(self.alt_fg_rgb.?, null);
             self.alt_bg_rgb = try self.allocator.alloc(?[3]u8, total);
             @memset(self.alt_bg_rgb.?, null);
+            self.alt_ul_color_rgb = try self.allocator.alloc(?[3]u8, total);
+            @memset(self.alt_ul_color_rgb.?, null);
+            self.alt_hyperlink_ids = try self.allocator.alloc(u16, total);
+            @memset(self.alt_hyperlink_ids.?, 0);
         }
 
-        // Swap main <-> alt (cells, row_map, dirty, TrueColor)
+        // Swap main <-> alt (cells, row_map, dirty, TrueColor, ul_color, hyperlinks)
         const tmp_cells = self.cells;
         self.cells = self.alt_cells.?;
         self.alt_cells = tmp_cells;
@@ -534,6 +612,14 @@ pub const Term = struct {
         const tmp_bg = self.bg_rgb;
         self.bg_rgb = self.alt_bg_rgb.?;
         self.alt_bg_rgb = tmp_bg;
+
+        const tmp_ul = self.ul_color_rgb;
+        self.ul_color_rgb = self.alt_ul_color_rgb.?;
+        self.alt_ul_color_rgb = tmp_ul;
+
+        const tmp_hl = self.hyperlink_ids;
+        self.hyperlink_ids = self.alt_hyperlink_ids.?;
+        self.alt_hyperlink_ids = tmp_hl;
 
         self.is_alt_screen = alt;
         self.markDirtyRange(.{ .start = 0, .end = total });
@@ -590,6 +676,8 @@ pub const Term = struct {
             @memset(self.bg_rgb[phys_start..phys_end], null);
             @memset(self.fg_rgb[phys_start..phys_end], null);
         }
+        @memset(self.ul_color_rgb[phys_start..phys_end], null);
+        @memset(self.hyperlink_ids[phys_start..phys_end], 0);
     }
 
     /// Fix wide character boundaries at the edges of an erase/delete range.
@@ -664,9 +752,10 @@ pub const Term = struct {
                 } else if (self.has_truecolor_cells) {
                     @memset(self.bg_rgb[0..total], null);
                     @memset(self.fg_rgb[0..total], null);
-                    // All cells cleared — reset truecolor flag
                     self.has_truecolor_cells = false;
                 }
+                @memset(self.ul_color_rgb[0..total], null);
+                @memset(self.hyperlink_ids[0..total], 0);
                 self.has_wide_chars = false;
             },
             else => {},
@@ -820,12 +909,14 @@ pub const Term = struct {
         // Fix wide boundaries using logical coords
         self.fixWideBoundaries(logical_row_start + cx, logical_row_start + cx + count);
 
-        // Shift characters left (physical) — cells + TrueColor arrays
+        // Shift characters left (physical) — cells + TrueColor + ul_color + hyperlinks
         const copy_len = remaining - count;
         if (copy_len > 0) {
             std.mem.copyForwards(Cell, self.cells[row_base + cx .. row_base + cx + copy_len], self.cells[row_base + cx + count .. row_base + cx + count + copy_len]);
             std.mem.copyForwards(?[3]u8, self.fg_rgb[row_base + cx .. row_base + cx + copy_len], self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
             std.mem.copyForwards(?[3]u8, self.bg_rgb[row_base + cx .. row_base + cx + copy_len], self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(?[3]u8, self.ul_color_rgb[row_base + cx .. row_base + cx + copy_len], self.ul_color_rgb[row_base + cx + count .. row_base + cx + count + copy_len]);
+            std.mem.copyForwards(u16, self.hyperlink_ids[row_base + cx .. row_base + cx + copy_len], self.hyperlink_ids[row_base + cx + count .. row_base + cx + count + copy_len]);
         }
 
         // Clear rightmost characters with BCE
@@ -851,6 +942,8 @@ pub const Term = struct {
             std.mem.copyBackwards(Cell, self.cells[row_base + cx + count .. row_base + cx + count + copy_len], self.cells[row_base + cx .. row_base + cx + copy_len]);
             std.mem.copyBackwards(?[3]u8, self.fg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.fg_rgb[row_base + cx .. row_base + cx + copy_len]);
             std.mem.copyBackwards(?[3]u8, self.bg_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.bg_rgb[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(?[3]u8, self.ul_color_rgb[row_base + cx + count .. row_base + cx + count + copy_len], self.ul_color_rgb[row_base + cx .. row_base + cx + copy_len]);
+            std.mem.copyBackwards(u16, self.hyperlink_ids[row_base + cx + count .. row_base + cx + count + copy_len], self.hyperlink_ids[row_base + cx .. row_base + cx + copy_len]);
         }
 
         // Clear inserted characters with BCE
@@ -892,6 +985,8 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            self.ul_color_rgb[idx] = null;
+                            self.hyperlink_ids[idx] = 0;
                         }
                     }
                 }
@@ -908,6 +1003,8 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            self.ul_color_rgb[idx] = null;
+                            self.hyperlink_ids[idx] = 0;
                         }
                     }
                 }
@@ -923,6 +1020,8 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            self.ul_color_rgb[idx] = null;
+                            self.hyperlink_ids[idx] = 0;
                         }
                     }
                 }

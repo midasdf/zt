@@ -312,7 +312,17 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
     };
 
     return switch (signo) {
-        SIG_CHLD, SIG_TERM, SIG_INT, SIG_HUP => false,
+        SIG_CHLD => blk: {
+            // Reap zombie children (clipboard helpers, etc.) without exiting.
+            // PTY child death is detected by read() returning 0 in the event loop.
+            const WNOHANG: u32 = if (is_linux) linux.W.NOHANG else 1; // WNOHANG=1 on macOS/BSD too
+            while (true) {
+                const result = std.posix.waitpid(-1, WNOHANG);
+                if (result.pid <= 0) break; // no more children to reap
+            }
+            break :blk true;
+        },
+        SIG_TERM, SIG_INT, SIG_HUP => false,
         SIG_USR1 => blk: {
             backend.releaseVt();
             break :blk true;
@@ -327,6 +337,58 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
 
 /// Handle a single backend event (key, text, paste, resize, etc.).
 /// Returns false if the event loop should stop (close event or write failure).
+/// Dispatch clipboard copy via external tool (xclip for X11, wl-copy for Wayland).
+/// Non-blocking: forks a child process and writes data to its stdin.
+fn dispatchClipboardCopy(data: []const u8) void {
+    const argv: [*:null]const ?[*:0]const u8 = switch (config.backend) {
+        .x11 => &[_:null]?[*:0]const u8{ "xclip", "-selection", "clipboard" },
+        .wayland => &[_:null]?[*:0]const u8{"wl-copy"},
+        else => return,
+    };
+
+    // Block SIGPIPE to prevent write() from killing us if child dies early
+    if (is_linux) {
+        var mask = linux.sigemptyset();
+        linux.sigaddset(&mask, linux.SIG.PIPE);
+        _ = linux.sigprocmask(linux.SIG.BLOCK, &mask, null);
+    }
+
+    const pipe_fds = std.posix.pipe() catch return;
+    const pid = std.posix.fork() catch {
+        std.posix.close(pipe_fds[0]);
+        std.posix.close(pipe_fds[1]);
+        return;
+    };
+
+    if (pid == 0) {
+        // Child: redirect stdin from pipe read end
+        std.posix.dup2(pipe_fds[0], 0) catch std.posix.exit(1);
+        std.posix.close(pipe_fds[0]);
+        std.posix.close(pipe_fds[1]);
+
+        _ = std.posix.execvpeZ(
+            argv[0].?,
+            argv,
+            @ptrCast(std.c.environ),
+        ) catch {};
+        std.posix.exit(1);
+    }
+
+    // Parent: write data to pipe write end, close read end immediately
+    std.posix.close(pipe_fds[0]);
+    if (data.len > 0) {
+        _ = std.posix.write(pipe_fds[1], data) catch {};
+    }
+    std.posix.close(pipe_fds[1]); // EOF signals end of data to child
+
+    // Unblock SIGPIPE
+    if (is_linux) {
+        var mask = linux.sigemptyset();
+        linux.sigaddset(&mask, linux.SIG.PIPE);
+        _ = linux.sigprocmask(linux.SIG.UNBLOCK, &mask, null);
+    }
+}
+
 fn handleBackendEvent(
     event: *const BackendEvent,
     term: *Term,
@@ -772,6 +834,12 @@ pub fn main() !void {
             }
         }
 
+        // OSC 52: copy to system clipboard via external tool
+        if (term.osc52_pending) {
+            term.osc52_pending = false;
+            dispatchClipboardCopy(term.osc52_buf[0..term.osc52_len]);
+        }
+
         // Mark old cursor position dirty if cursor moved
         if (prev_cursor_x != term.cursor_x or prev_cursor_y != term.cursor_y) {
             term.markDirty(prev_cursor_x, prev_cursor_y);
@@ -835,6 +903,7 @@ pub fn main() !void {
             const row_cells = term.cells[row_base..][0..term.cols];
             const row_fg = term.fg_rgb[row_base..][0..term.cols];
             const row_bg = term.bg_rgb[row_base..][0..term.cols];
+            const row_ul = term.ul_color_rgb[row_base..][0..term.cols];
             const dirty_row_base = @as(usize, y) * @as(usize, term.cols);
 
             var x: u32 = 0;
@@ -846,6 +915,7 @@ pub fn main() !void {
 
                 var fg_rgb = row_fg[x];
                 var bg_rgb = row_bg[x];
+                const ul_rgb = row_ul[x];
                 const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
                 const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
 
@@ -866,15 +936,15 @@ pub fn main() !void {
                 const skip_bg = all_dirty and (render_cell.bg == config.default_bg) and (bg_rgb == null) and !render_cell.attrs.reverse;
                 if (skip_bg) {
                     if (cell.attrs.wide) {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, true);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, true);
                     } else {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, true);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, true);
                     }
                 } else {
                     if (cell.attrs.wide) {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, false);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, true, config.scale, false);
                     } else {
-                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, false);
+                        render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, false);
                     }
                 }
 
