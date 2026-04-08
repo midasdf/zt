@@ -552,16 +552,7 @@ pub const Term = struct {
             errdefer if (new_alt_ul) |naul| self.allocator.free(naul);
             const new_alt_hl = if (self.alt_hyperlink_ids != null) try self.allocator.alloc(u16, new_total) else null;
 
-            // All allocations succeeded — now free old and swap
-            if (self.alt_cells) |alt| self.allocator.free(alt);
-            if (self.alt_row_map) |arm| self.allocator.free(arm);
-            if (self.alt_dirty) |*ad| ad.deinit();
-            if (self.alt_fg_rgb) |a| self.allocator.free(a);
-            if (self.alt_bg_rgb) |a| self.allocator.free(a);
-            if (self.alt_ul_color_rgb) |a| self.allocator.free(a);
-            if (self.alt_hyperlink_ids) |a| self.allocator.free(a);
-
-            // Initialize new alt buffers then copy existing content
+            // Initialize new alt buffers then copy existing content BEFORE freeing old
             if (new_alt_cells) |nac| @memset(nac, Cell{});
             if (new_alt_row_map) |narm| for (0..new_rows) |i| { narm[i] = @intCast(i); };
             if (new_alt_fg) |nfg| @memset(nfg, null);
@@ -569,14 +560,17 @@ pub const Term = struct {
             if (new_alt_ul) |nul| @memset(nul, null);
             if (new_alt_hl) |nhl| @memset(nhl, 0);
 
-            // Copy existing alt buffer content (preserve hidden screen on resize)
+            // Copy content from old alt buffers using OLD dimensions (cols/rows already updated)
+            // old_cols/old_rows derived from old alt buffer sizes
             if (self.alt_cells) |old_cells| {
                 if (new_alt_cells) |nac| {
-                    const alt_copy_cols: usize = @min(self.cols, new_cols);
-                    const alt_copy_rows: usize = @min(self.rows, new_rows);
+                    const old_alt_cols = old_cells.len / (if (self.alt_row_map) |arm| arm.len else new_rows);
+                    const old_alt_rows = if (self.alt_row_map) |arm| arm.len else new_rows;
+                    const alt_copy_cols: usize = @min(old_alt_cols, new_cols);
+                    const alt_copy_rows: usize = @min(old_alt_rows, new_rows);
                     for (0..alt_copy_rows) |ay| {
                         const old_rm = if (self.alt_row_map) |arm| arm[ay] else @as(u32, @intCast(ay));
-                        const old_start = @as(usize, old_rm) * @as(usize, self.cols);
+                        const old_start = @as(usize, old_rm) * old_alt_cols;
                         const new_start = ay * @as(usize, new_cols);
                         @memcpy(nac[new_start .. new_start + alt_copy_cols], old_cells[old_start .. old_start + alt_copy_cols]);
                         if (new_alt_fg) |nfg| if (self.alt_fg_rgb) |ofg| {
@@ -594,6 +588,15 @@ pub const Term = struct {
                     }
                 }
             }
+
+            // Now free old buffers
+            if (self.alt_cells) |alt| self.allocator.free(alt);
+            if (self.alt_row_map) |arm| self.allocator.free(arm);
+            if (self.alt_dirty) |*ad| ad.deinit();
+            if (self.alt_fg_rgb) |a| self.allocator.free(a);
+            if (self.alt_bg_rgb) |a| self.allocator.free(a);
+            if (self.alt_ul_color_rgb) |a| self.allocator.free(a);
+            if (self.alt_hyperlink_ids) |a| self.allocator.free(a);
 
             self.alt_cells = new_alt_cells;
             self.alt_row_map = new_alt_row_map;
