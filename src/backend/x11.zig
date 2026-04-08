@@ -89,8 +89,10 @@ pub const X11Backend = struct {
     committed_text: TextEvent = .{},
     has_committed: bool = false,
     forwarded_keycode: u8 = 0, // XCB keycode (detail) from forward_event callback
+    forwarded_mods: input_mod.Modifiers = .{}, // modifiers from forwarded key
     has_forwarded_key: bool = false,
     pending_xim_keycode: u8 = 0, // key sent to IM, awaiting response
+    pending_xim_mods: input_mod.Modifiers = .{}, // modifiers from pending XIM key
     has_pending_xim: bool = false,
     xim_pending_ns: i128 = 0, // timestamp when XIM key was forwarded (for timeout)
     suppress_xim_result: bool = false, // discard next XIM result (IME toggle key)
@@ -411,12 +413,13 @@ pub const X11Backend = struct {
     }
 
     /// Convert an XCB keycode (detail) to an Event using XKB or fallback keymap.
-    fn processKeycode(self: *Self, xcb_keycode: u8) ?Event {
+    /// Preserves modifiers from the original X event for correct key translation.
+    fn processKeycode(self: *Self, xcb_keycode: u8, mods: input_mod.Modifiers) ?Event {
         const evdev_keycode: u16 = @as(u16, xcb_keycode) -| 8;
 
-        // Special keys → KeyEvent
+        // Special keys → KeyEvent (preserve modifiers)
         if (isSpecialKey(evdev_keycode)) {
-            return .{ .key = .{ .keycode = evdev_keycode, .pressed = true, .modifiers = .{} } };
+            return .{ .key = .{ .keycode = evdev_keycode, .pressed = true, .modifiers = mods } };
         }
 
         // XKB text translation
@@ -433,8 +436,8 @@ pub const X11Backend = struct {
             }
         }
 
-        // Fallback
-        return .{ .key = .{ .keycode = evdev_keycode, .pressed = true, .modifiers = .{} } };
+        // Fallback (preserve modifiers)
+        return .{ .key = .{ .keycode = evdev_keycode, .pressed = true, .modifiers = mods } };
     }
 
     fn initXim(self: *Self) void {
@@ -551,6 +554,7 @@ pub const X11Backend = struct {
             const is_press = (ev.response_type & 0x7F) == c.XCB_KEY_PRESS;
             if (!is_press) return; // ignore key release from IM
             self.forwarded_keycode = ev.detail;
+            self.forwarded_mods = xcbStateToMods(ev.state);
             self.has_forwarded_key = true;
             self.has_pending_xim = false;
         }
@@ -773,7 +777,7 @@ pub const X11Backend = struct {
                 self.has_pending_xim = false;
                 // Fall back to local XKB processing for the stuck key
                 if (!self.suppress_xim_result) {
-                    const result = self.processKeycode(self.pending_xim_keycode);
+                    const result = self.processKeycode(self.pending_xim_keycode, self.pending_xim_mods);
                     if (result != null) return result;
                 }
                 self.suppress_xim_result = false;
@@ -794,7 +798,7 @@ pub const X11Backend = struct {
             if (self.suppress_xim_result) {
                 self.suppress_xim_result = false;
             } else {
-                return self.processKeycode(self.forwarded_keycode);
+                return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
             }
         }
 
@@ -828,7 +832,7 @@ pub const X11Backend = struct {
                     if (self.suppress_xim_result) {
                         self.suppress_xim_result = false;
                     } else {
-                        return self.processKeycode(self.forwarded_keycode);
+                        return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
                     }
                 }
                 continue; // XIM consumed event but produced nothing, try next
@@ -886,6 +890,7 @@ pub const X11Backend = struct {
 
                             // Save pending key for fallback if IM doesn't respond
                             self.pending_xim_keycode = key.*.detail;
+                            self.pending_xim_mods = xcbStateToMods(key.*.state);
                             self.has_pending_xim = true;
                             self.xim_pending_ns = std.time.nanoTimestamp();
                             _ = c.xcb_xim_forward_event(xim, self.xic, key);
@@ -901,7 +906,7 @@ pub const X11Backend = struct {
                             if (self.has_forwarded_key) {
                                 self.has_forwarded_key = false;
                                 if (!self.suppress_xim_result) {
-                                    return self.processKeycode(self.forwarded_keycode);
+                                    return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
                                 }
                                 self.suppress_xim_result = false;
                                 return null;

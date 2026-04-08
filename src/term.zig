@@ -561,20 +561,46 @@ pub const Term = struct {
             if (self.alt_ul_color_rgb) |a| self.allocator.free(a);
             if (self.alt_hyperlink_ids) |a| self.allocator.free(a);
 
+            // Initialize new alt buffers then copy existing content
             if (new_alt_cells) |nac| @memset(nac, Cell{});
+            if (new_alt_row_map) |narm| for (0..new_rows) |i| { narm[i] = @intCast(i); };
+            if (new_alt_fg) |nfg| @memset(nfg, null);
+            if (new_alt_bg) |nbg| @memset(nbg, null);
+            if (new_alt_ul) |nul| @memset(nul, null);
+            if (new_alt_hl) |nhl| @memset(nhl, 0);
+
+            // Copy existing alt buffer content (preserve hidden screen on resize)
+            if (self.alt_cells) |old_cells| {
+                if (new_alt_cells) |nac| {
+                    const alt_copy_cols: usize = @min(self.cols, new_cols);
+                    const alt_copy_rows: usize = @min(self.rows, new_rows);
+                    for (0..alt_copy_rows) |ay| {
+                        const old_rm = if (self.alt_row_map) |arm| arm[ay] else @as(u32, @intCast(ay));
+                        const old_start = @as(usize, old_rm) * @as(usize, self.cols);
+                        const new_start = ay * @as(usize, new_cols);
+                        @memcpy(nac[new_start .. new_start + alt_copy_cols], old_cells[old_start .. old_start + alt_copy_cols]);
+                        if (new_alt_fg) |nfg| if (self.alt_fg_rgb) |ofg| {
+                            @memcpy(nfg[new_start .. new_start + alt_copy_cols], ofg[old_start .. old_start + alt_copy_cols]);
+                        };
+                        if (new_alt_bg) |nbg| if (self.alt_bg_rgb) |obg| {
+                            @memcpy(nbg[new_start .. new_start + alt_copy_cols], obg[old_start .. old_start + alt_copy_cols]);
+                        };
+                        if (new_alt_ul) |nul| if (self.alt_ul_color_rgb) |oul| {
+                            @memcpy(nul[new_start .. new_start + alt_copy_cols], oul[old_start .. old_start + alt_copy_cols]);
+                        };
+                        if (new_alt_hl) |nhl| if (self.alt_hyperlink_ids) |ohl| {
+                            @memcpy(nhl[new_start .. new_start + alt_copy_cols], ohl[old_start .. old_start + alt_copy_cols]);
+                        };
+                    }
+                }
+            }
+
             self.alt_cells = new_alt_cells;
-            if (new_alt_row_map) |narm| for (0..new_rows) |i| {
-                narm[i] = @intCast(i);
-            };
             self.alt_row_map = new_alt_row_map;
             self.alt_dirty = new_alt_dirty;
-            if (new_alt_fg) |nfg| @memset(nfg, null);
             self.alt_fg_rgb = new_alt_fg;
-            if (new_alt_bg) |nbg| @memset(nbg, null);
             self.alt_bg_rgb = new_alt_bg;
-            if (new_alt_ul) |nul| @memset(nul, null);
             self.alt_ul_color_rgb = new_alt_ul;
-            if (new_alt_hl) |nhl| @memset(nhl, 0);
             self.alt_hyperlink_ids = new_alt_hl;
         }
     }

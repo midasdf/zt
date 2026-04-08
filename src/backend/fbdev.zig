@@ -132,6 +132,12 @@ pub const FbdevBackend = struct {
         const fb_size = finfo.line_length * vinfo.yres;
         const bpp = vinfo.bits_per_pixel / 8;
 
+        // Render loop hardcodes BGRA32 — reject unsupported pixel formats
+        if (bpp != 4) {
+            std.log.err("fbdev: unsupported {d}bpp framebuffer (only 32bpp BGRA supported)", .{vinfo.bits_per_pixel});
+            return error.UnsupportedPixelFormat;
+        }
+
         // 4. mmap the framebuffer
         const fb_mem = try std.posix.mmap(
             null,

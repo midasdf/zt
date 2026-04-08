@@ -428,8 +428,15 @@ fn handleBackendEvent(
         .paste => |paste_ev| {
             const text = paste_ev.slice();
             if (text.len > 0) {
+                // Wrap paste in bracketed paste sequences if application enabled DECSET 2004
+                if (term.bracketed_paste) {
+                    if (!ptyBufferedWrite(pty_ptr, "\x1b[200~", write_buf, write_pending, evloop_fd)) return false;
+                }
                 if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) {
                     return false;
+                }
+                if (term.bracketed_paste) {
+                    if (!ptyBufferedWrite(pty_ptr, "\x1b[201~", write_buf, write_pending, evloop_fd)) return false;
                 }
             }
         },
