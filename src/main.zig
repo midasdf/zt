@@ -927,6 +927,7 @@ pub fn main() !void {
             const row_fg = term.fg_rgb[row_base..][0..term.cols];
             const row_bg = term.bg_rgb[row_base..][0..term.cols];
             const row_ul = term.ul_color_rgb[row_base..][0..term.cols];
+            const row_hl = term.hyperlink_ids[row_base..][0..term.cols];
             const dirty_row_base = @as(usize, y) * @as(usize, term.cols);
 
             var x: u32 = 0;
@@ -943,6 +944,10 @@ pub fn main() !void {
                 const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
 
                 var render_cell = cell.*;
+                // Hyperlinked cells: show underline if not already underlined
+                if (row_hl[x] != 0 and render_cell.attrs.underline_style == 0) {
+                    render_cell.attrs.underline_style = 1;
+                }
                 if (is_cursor) {
                     const tmp_idx = render_cell.fg;
                     render_cell.fg = render_cell.bg;

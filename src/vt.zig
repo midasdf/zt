@@ -1467,7 +1467,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                 term.current_attrs.protected = (ps == 1);
             } else if (csi.private_marker == '>' and pc > 0 and p[0] == 0) {
                 // XTVERSION — respond with terminal identification
-                term.queueResponse("\x1bP>|zt(0.4.1)\x1b\\");
+                term.queueResponse("\x1bP>|zt(0.5.3)\x1b\\");
             }
         },
         'i' => {}, // MC — Media Copy (printer control, silently accept)

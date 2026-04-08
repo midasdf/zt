@@ -28,7 +28,7 @@ jobs:
             libxcb-imdkit-dev
 
       - name: Build
-        run: zig build -Dbackend=x11 -Doptimize=ReleaseSmall
+        run: zig build -Dbackend=x11 -Doptimize=ReleaseFast -Dstrip=true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -74,7 +74,7 @@ jobs:
 
       - name: Build
         run: |
-          zig build -Dbackend=x11 -Doptimize=ReleaseSmall \
+          zig build -Dbackend=x11 -Doptimize=ReleaseFast -Dstrip=true \
             -Dtarget=aarch64-linux-gnu.2.38 \
             --search-prefix /tmp/aarch64-sysroot
 
