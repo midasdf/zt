@@ -1004,12 +1004,23 @@ pub const X11Backend = struct {
                 } };
             },
             c.XCB_KEY_RELEASE => {
+                // Update XKB modifier state so lock/depressed bits stay in sync
+                // after modifier keys are released. Don't return an event —
+                // handleBackendEvent ignores key releases anyway, and returning
+                // one wastes an epoll wakeup per keystroke.
                 const key: *c.xcb_key_release_event_t = @ptrCast(@alignCast(event));
-                return .{ .key = .{
-                    .keycode = key.*.detail -| 8,
-                    .pressed = false,
-                    .modifiers = xcbStateToMods(key.*.state),
-                } };
+                if (self.xkb_state) |state| {
+                    const x_state: u32 = key.*.state;
+                    const lock_bits: u32 = x_state & (0x02 | 0x10);
+                    _ = c.xkb_state_update_mask(
+                        state,
+                        x_state & ~lock_bits,
+                        0,
+                        lock_bits,
+                        0, 0, 0,
+                    );
+                }
+                continue;
             },
             c.XCB_CONFIGURE_NOTIFY => {
                 const cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(event));
