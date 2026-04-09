@@ -121,7 +121,8 @@ pub fn destroyOffer(conn: *wire.Connection, offer_id: u32, is_primary: bool) voi
     if (offer_id == 0) return;
     const opcode: u16 = if (is_primary) ZWP_PRIMARY_SELECTION_OFFER_DESTROY else WL_DATA_OFFER_DESTROY;
     conn.sendMessage(offer_id, opcode, &.{}, &.{}) catch {};
-    conn.id_alloc.release(offer_id);
+    // Do NOT release the ID here — the compositor will send wl_display.delete_id
+    // which triggers ID recycling. Releasing here causes double-free.
 }
 
 /// Close an active paste pipe fd if one exists. Must be called before

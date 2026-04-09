@@ -771,18 +771,22 @@ pub fn main() !void {
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
+                            const wp_before = write_pending;
                             while (backend.pollEvents()) |event| {
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                                     running = false;
                                     break;
                                 }
                             }
+                            // Reset cursor blink on input activity (data was written to PTY)
+                            if (write_pending != wp_before) cursor_visible_blink = true;
                         }
                     },
                     else => {
                         // evdev fds (fbdev backend)
                         if (config.backend == .fbdev) {
                             const evdev_idx = ev.data.u32 - EVDEV_BASE;
+                            var had_input = false;
                             while (backend.readEvdev(evdev_idx)) |input_event| {
                                 const K = input.KEY;
                                 switch (input_event.keycode) {
@@ -802,6 +806,7 @@ pub fn main() !void {
                                         if (input_event.pressed or input_event.repeat) {
                                             const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm, term.decbkm);
                                             if (bytes.len > 0) {
+                                                had_input = true;
                                                 if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
                                                     running = false;
                                                     break;
@@ -811,6 +816,7 @@ pub fn main() !void {
                                     },
                                 }
                             }
+                            if (had_input) cursor_visible_blink = true;
                         }
                     },
                 }
@@ -851,12 +857,14 @@ pub fn main() !void {
                     } else if (kev.udata == @intFromEnum(KqueueTag.backend)) {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
+                            const wp_before = write_pending;
                             while (backend.pollEvents()) |event| {
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                                     running = false;
                                     break;
                                 }
                             }
+                            if (write_pending != wp_before) cursor_visible_blink = true;
                         }
                     }
                 } else if (kev.filter == std.c.EVFILT.WRITE) {

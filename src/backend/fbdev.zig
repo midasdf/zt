@@ -278,13 +278,19 @@ pub const FbdevBackend = struct {
     pub fn readEvdev(self: *Self, evdev_index: u32) ?InputEvent {
         if (evdev_index >= self.evdev_count) return null;
         const fd = self.evdev_fds[evdev_index];
-        // struct input_event: { u64 tv_sec, u64 tv_usec, u16 type, u16 code, i32 value } = 24 bytes
-        var buf: [24]u8 = undefined;
-        const n = std.posix.read(fd, &buf) catch return null;
-        if (n < 24) return null;
-        const ev_type = std.mem.readInt(u16, buf[16..18], .little);
-        const ev_code = std.mem.readInt(u16, buf[18..20], .little);
-        const ev_value = std.mem.readInt(i32, buf[20..24], .little);
+        const InputEventRaw = extern struct {
+            tv_sec: i64,
+            tv_usec: i64,
+            type: u16,
+            code: u16,
+            value: i32,
+        };
+        var ev: InputEventRaw = undefined;
+        const n = std.posix.read(fd, std.mem.asBytes(&ev)) catch return null;
+        if (n < @sizeOf(InputEventRaw)) return null;
+        const ev_type = ev.type;
+        const ev_code = ev.code;
+        const ev_value = ev.value;
         if (ev_type != EV_KEY) return null;
         return .{
             .keycode = ev_code,
