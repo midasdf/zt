@@ -1,114 +1,50 @@
-# ⚡zt — the fastest terminal emulator. 88 MB/s throughput. 5.5ms startup. 2MB memory. Pure Zig.
+# zt — minimal terminal emulator in Zig
 
 [![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
-Minimal terminal emulator written in Zig. Renders directly to the Linux framebuffer, X11 via shared memory, Wayland via pure Zig wire protocol, or macOS via Cocoa/AppKit. No GPU required.
+A small terminal emulator written in Zig. Renders to the Linux framebuffer, X11 (XCB + SHM), Wayland (pure Zig wire protocol, no libwayland), or macOS (Cocoa/AppKit, untested). No GPU required.
 
 ![Image](https://github.com/user-attachments/assets/01ab9a42-2efe-41f7-b123-e7312dc5b8d7)
 
-Built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero) (RPi Zero 2W + 720x720 HyperPixel4), but runs on any Linux system.
+Originally built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero) (RPi Zero 2W + 720x720 HyperPixel4). Runs on any Linux system.
+
+> **Note:** This is an experimental project. It works well enough for daily use with common CLI tools, but it is not a full-featured terminal. See [Limitations](#limitations) for what's missing.
 
 ## Benchmarks
 
 ![zt performance comparison](docs/benchmark.png)
 
-Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=ReleaseFast`. Wayland-native terminals (foot) run via XWayland. See [zt-bench](https://github.com/midasdf/zt-bench) for full benchmark suite and methodology.
-
-### Startup (hyperfine, 30 runs)
-
-| | Time | vs zt |
-|---|---|---|
-| **zt** | **5.3ms** | 1.0x |
-| xterm | 23ms | 4.2x |
-| st | 43ms | 8.1x |
-| foot | 46ms | 8.6x |
-| alacritty | 123ms | 23x |
-| kitty | 206ms | 39x |
-| ghostty | 379ms | 71x |
-
-### Throughput: dense ASCII (4.7MB, 5 runs)
-
-| | Time | MB/s | vs zt |
-|---|---|---|---|
-| **zt** | **52ms** | **88** | 1.0x |
-| foot | 116ms | 40 | 2.2x |
-| st | 160ms | 29 | 3.1x |
-| xterm | 180ms | 26 | 3.5x |
-| alacritty | 222ms | 21 | 4.3x |
-| kitty | 306ms | 15 | 5.9x |
-| ghostty | 598ms | 8 | 11.5x |
-
-### Throughput: TrueColor (2.9MB, 5 runs)
-
-| | Time | MB/s | vs zt |
-|---|---|---|---|
-| **zt** | **53ms** | **55** | 1.0x |
-| foot | 107ms | 27 | 2.0x |
-| xterm | 129ms | 23 | 2.4x |
-| st | 130ms | 22 | 2.4x |
-| alacritty | 196ms | 15 | 3.7x |
-| kitty | 280ms | 10 | 5.3x |
-| ghostty | 534ms | 5 | 10.1x |
-
-### Throughput: Unicode/CJK (3.0MB, 5 runs)
-
-| | Time | MB/s | vs zt |
-|---|---|---|---|
-| **zt** | **58ms** | **52** | 1.0x |
-| foot | 126ms | 24 | 2.2x |
-| st | 126ms | 24 | 2.2x |
-| xterm | 142ms | 21 | 2.5x |
-| alacritty | 200ms | 15 | 3.4x |
-| kitty | 292ms | 10 | 5.0x |
-| ghostty | 480ms | 6 | 8.3x |
-
-### Idle memory (PSS)
-
-| | RSS | PSS | vs zt |
-|---|---|---|---|
-| **zt** | **5.0 MB** | **2.3 MB** | 1.0x |
-| xterm | 11 MB | 4.3 MB | 1.8x |
-| foot | 24 MB | 10 MB | 4.2x |
-| st | 25 MB | 13 MB | 5.3x |
-| alacritty | 107 MB | 33 MB | 14x |
-| kitty | 135 MB | 51 MB | 22x |
-| ghostty | 215 MB | 87 MB | 38x |
+Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=ReleaseFast`. See [zt-bench](https://github.com/midasdf/zt-bench) for methodology, detailed results, and how to reproduce.
 
 ## Features
 
 ### Rendering
 
-- **Quad backend** — framebuffer (no X11/Wayland), XCB + SHM under X11, pure Zig Wayland client (no libwayland), Cocoa/AppKit on macOS
-- **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI/PC displays. Integer scaling, same font blob, no quality loss
-- **Double-buffered SHM** — tear-free X11 rendering with lazy second-buffer init
-- **Adaptive frame limiter** — 4-tier FPS (120→60→15→5) based on output volume
+- **Four backends** — framebuffer (no X11/Wayland), XCB + SHM under X11, pure Zig Wayland client (no libwayland), Cocoa/AppKit on macOS (experimental, untested)
+- **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI. Integer scaling, same font blob
+- **Double-buffered SHM** — tear-free rendering on X11 and Wayland
+- **Adaptive frame limiter** — reduces FPS under heavy output to avoid wasting CPU
 
 ### Terminal
 
-- **xterm-256color + 24-bit TrueColor** — full SGR attributes (bold, italic, underline, reverse, dim, strikethrough), styled underlines (single/double/curly/dotted/dashed) with custom colors, DEC modes, alternate screen
-- **OSC 52 clipboard** — applications can copy to system clipboard (via xclip/wl-copy)
-- **OSC 8 hyperlinks** — terminal hyperlinks from cargo, gcc, ls --hyperlink, etc.
-- **Bracketed paste** — safe pasting in shells and editors (DECSET 2004)
-- **CJK wide character support** — correct double-width rendering with wide-char boundary repair
-- **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded as binary blob
-- **XKB keyboard layout** — any X11/Wayland layout works automatically (US, JP, DE, FR, etc.)
+- **xterm-256color + 24-bit TrueColor** — SGR attributes (bold, italic, underline, reverse, dim, strikethrough), styled underlines (single/double/curly/dotted/dashed) with custom colors, DEC modes, alternate screen
+- **Bracketed paste** — DECSET 2004
+- **CJK wide characters** — double-width rendering with boundary repair
+- **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded at compile time
+- **XKB keyboard layout** — any X11/Wayland layout (US, JP, DE, FR, etc.)
 - **Input method** — XIM under X11, text-input-v3 under Wayland (fcitx5, ibus, etc.)
+- **OSC 8 hyperlinks** — parsed and stored; click-to-open is not yet implemented
+- **OSC 52 clipboard** — copy to system clipboard via xclip/wl-copy (disabled by default for security)
 
 ### Performance
 
-- **Bulk ASCII fast path** — SIMD 16-byte range check, 8-byte template cell writes, range-based dirty marking
-- **UTF-8 bulk path** — ground-state multi-byte characters decoded directly, bypassing per-byte state machine
-- **Row-map scroll** — O(1) scroll via row indirection table instead of cell copying
-- **Damage tracking** — per-cell dirty bitmap with O(1) flag, row-level skip
-- **PTY drain loop** — configurable buffer (`-Dpty_buf_kb`, default 1MB), drain before render
-- **Comptime everything** — backend, font, palette, scale resolved at compile time. Zero runtime cost for unused paths
-- **No libc** (fbdev) — pure `std.posix` syscalls, single static binary
-
-### Testing
-
-- **124 unit tests** across 12 modules
+- **Bulk ASCII fast path** — SIMD 16-byte range check, 8-byte template cell writes
+- **UTF-8 bulk path** — multi-byte sequences decoded directly in ground state
+- **Row-map scroll** — O(1) scroll via row indirection instead of copying cells
+- **Damage tracking** — per-cell dirty flag, row-level skip
+- **Comptime configuration** — backend, font, palette, scale resolved at compile time
 
 ## Build
 
@@ -116,78 +52,47 @@ Requires Zig 0.15+.
 
 |  | fbdev | X11 | Wayland |
 |---|---|---|---|
-| Binary (with 59K-glyph font) | 2.8 MB | 2.8 MB | 2.8 MB |
+| Binary (stripped, with 59K-glyph font) | ~3 MB | ~3 MB | ~3 MB |
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit | libxkbcommon |
-| Build time | < 1s | < 1s | < 1s |
-| Source | ~13K lines across 19 files | | |
 
-### Build Profiles
-
-**PC — X11:**
-```sh
-zig build -Dbackend=x11 -Doptimize=ReleaseFast
-```
-
-**PC — Wayland (Sway, Hyprland, GNOME, KDE, etc.):**
-```sh
-zig build -Dbackend=wayland -Doptimize=ReleaseFast
-```
-
-**HackberryPi (minimum size):**
-```sh
-zig build -Doptimize=ReleaseSmall
-```
-
-Add `-Dstrip=true` to remove debug info and symbols (~94MB → ~3MB for ReleaseFast).
-
-ReleaseFast enables aggressive inlining, loop unrolling, and SIMD auto-vectorization.
-ReleaseSmall minimizes binary size for constrained devices (512MB RAM).
-
-### Examples
+### Quick Start
 
 ```sh
-# fbdev (default) — runs on bare Linux console
-zig build -Doptimize=ReleaseSmall
-
-# X11 — runs under X11 window managers
+# X11
 zig build -Dbackend=x11 -Doptimize=ReleaseFast
 
-# Wayland — runs under Wayland compositors (Sway, Hyprland, GNOME, KDE, etc.)
+# Wayland
 zig build -Dbackend=wayland -Doptimize=ReleaseFast
 
-# Wayland with 2x pixel scaling for HiDPI displays
-zig build -Dbackend=wayland -Dscale=2 -Doptimize=ReleaseFast
+# Framebuffer (bare Linux console, no X/Wayland)
+zig build -Doptimize=ReleaseSmall
 
-# X11 with 2x pixel scaling for PC/HiDPI displays
+# Run
+./zig-out/bin/zt
+```
+
+Add `-Dstrip=true` to remove debug symbols.
+
+### More Options
+
+```sh
+# HiDPI (2x or 4x pixel scaling)
 zig build -Dbackend=x11 -Dscale=2 -Doptimize=ReleaseFast
-
-# X11 with 4x pixel scaling for 4K displays
-zig build -Dbackend=x11 -Dscale=4 -Doptimize=ReleaseFast
-
-# X11/Wayland with 60fps cap (battery saving)
-zig build -Dbackend=x11 -Dmax_fps=60 -Doptimize=ReleaseFast
-
-# X11/Wayland with unlimited frame rate (no cap)
-zig build -Dbackend=x11 -Dmax_fps=0 -Doptimize=ReleaseFast
-
-# X11/Wayland with smaller PTY buffer (conserve memory on RPi)
-zig build -Dbackend=x11 -Dpty_buf_kb=256 -Doptimize=ReleaseSmall
-
-# fbdev with JIS keyboard layout (default: us)
-zig build -Dkeymap=jp -Doptimize=ReleaseSmall
-
-# Cross-compile for aarch64 (fbdev, static binary)
-zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
-
-# Cross-compile for aarch64 (X11, needs target sysroot with XCB libs/headers)
-zig build -Dtarget=aarch64-linux-gnu.2.38 -Dbackend=x11 -Doptimize=ReleaseFast \
-  --search-prefix /path/to/aarch64-sysroot
-
-# macOS (experimental — see note below)
-zig build -Dbackend=macos -Dshell=/bin/zsh -Doptimize=ReleaseFast
 
 # Custom shell (default: /bin/sh)
 zig build -Dbackend=x11 -Dshell=/bin/fish -Doptimize=ReleaseFast
+
+# 60fps cap (battery saving)
+zig build -Dbackend=x11 -Dmax_fps=60 -Doptimize=ReleaseFast
+
+# Smaller PTY buffer (conserve memory)
+zig build -Dbackend=x11 -Dpty_buf_kb=256 -Doptimize=ReleaseSmall
+
+# Cross-compile for aarch64
+zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
+
+# macOS (experimental, untested — see note below)
+zig build -Dbackend=macos -Dshell=/bin/zsh -Doptimize=ReleaseFast
 
 # Run tests
 zig build test
@@ -195,112 +100,81 @@ zig build test
 
 ### Wayland Backend
 
-The Wayland backend implements the wire protocol directly in pure Zig — no libwayland-client dependency. Only `libxkbcommon` is required for keyboard layout support.
+Implements the Wayland wire protocol directly in Zig — no libwayland-client dependency. Only `libxkbcommon` is needed for keyboard layout.
 
-Supported protocols: xdg-shell (window management), wl_shm (rendering), text-input-v3 (IME), wl_data_device + primary selection (clipboard), xdg-decoration (server-side decorations), wp_cursor_shape_manager_v1 (cursor).
-
-Works on any xdg-shell compliant compositor: Sway, Hyprland, GNOME, KDE, river, etc.
+Supported protocols: xdg-shell, wl_shm, text-input-v3 (IME), wl_data_device + primary selection (clipboard), xdg-decoration, wp_cursor_shape_manager_v1.
 
 ### macOS Backend (Experimental)
 
-> **Note:** The macOS backend was developed without access to macOS hardware and has not been tested on a real Mac. It uses Cocoa/AppKit via `objc_msgSend` from Zig, with CGBitmapContext for pixel rendering and NSTextInputClient for IME support. Bug reports and patches welcome.
-
-Requires macOS SDK (Xcode or Command Line Tools).
+> **Note:** Developed without access to macOS hardware and never tested on a real Mac. Uses Cocoa/AppKit via `objc_msgSend` from Zig. Bug reports welcome.
 
 ## Status
 
 | Backend | Status |
 |---------|--------|
-| fbdev | Stable |
-| X11 | Stable |
-| Wayland | WIP — resize crash on window drag-to-edge |
-| macOS | Experimental |
+| fbdev | Stable — used daily on HackberryPi |
+| X11 | Stable — primary development target |
+| Wayland | Works — IME and basic usage tested |
+| macOS | Untested — compiles but never run on real hardware |
 
 ## Configuration
 
 Edit `config.zig` and rebuild — [st](https://st.suckless.org/)-style, no runtime config files.
 
 ```zig
-pub const backend: Backend = .fbdev;  // .fbdev, .x11, .wayland, or .macos (set via -Dbackend)
-pub const keymap: Keymap = .us;       // .us or .jp (set via -Dkeymap; fbdev only, X11 uses XKB)
+pub const backend: Backend = .fbdev;  // set via -Dbackend
+pub const keymap: Keymap = .us;       // set via -Dkeymap (fbdev only)
 pub const default_fg: u8 = 7;        // white
 pub const default_bg: u8 = 0;        // black
-pub const font_width: u32 = 8;       // bitmap glyph width (half-width)
-pub const font_height: u32 = 16;     // bitmap glyph height
-pub const scale: u32 = 1;            // pixel scale factor: 1, 2, or 4 (set via -Dscale)
-pub const max_fps: u32 = 120;        // max frame rate: 0 = unlimited (set via -Dmax_fps)
-pub const frame_min_ns: u64 = ...;   // computed: 1_000_000_000 / max_fps (0 if unlimited)
-pub const pty_buf_size: u32 = ...;   // PTY read buffer in bytes (set via -Dpty_buf_kb, default 1024)
-pub const cell_width = font_width * scale;   // screen cell width
-pub const cell_height = font_height * scale; // screen cell height
-// shell: set via -Dshell= (default: /bin/sh)
+pub const font_width: u32 = 8;
+pub const font_height: u32 = 16;
+pub const scale: u32 = 1;            // set via -Dscale
+pub const max_fps: u32 = 120;        // set via -Dmax_fps (0 = unlimited)
 ```
 
 ## Font
 
-zt embeds a pre-compiled binary font blob at compile time via `@embedFile`. The default font includes 62,595 glyphs (Japanese, Nerd Fonts icons, emoji).
+Embeds a pre-compiled binary font blob at compile time. The default includes ~60K glyphs (Latin, Japanese, Nerd Fonts icons).
 
 ```sh
-# Download pre-built font (recommended)
 curl -Lo src/fonts/ufo-nf.bin https://github.com/midasdf/zt-fonts/raw/main/ufo-nf.bin
 ```
 
-See [zt-fonts](https://github.com/midasdf/zt-fonts) for BDF sources, build scripts, alternative fonts, and custom font creation.
+See [zt-fonts](https://github.com/midasdf/zt-fonts) for sources, build scripts, and custom fonts.
 
 ## Architecture
 
 ```
-epoll event loop (single-threaded, dynamic timeout)
-├── PTY reader (1MB buffer, drain loop)
-│   └── VT parser (byte-by-byte state machine)
-│       ├── ASCII fast path: SIMD 16-byte range check + bulk write to cells[]
-│       ├── UTF-8 fast path: direct decode, bypassing parser state machine
-│       └── Action executor → Cell grid mutations via row_map
-├── Input handler
-│   ├── evdev (fbdev) — raw keyboard events, compile-time keymap (US/JP)
-│   ├── X11 — XKB + XIM (lazy-initialized on first key press)
-│   └── Wayland — XKB + text-input-v3 (IME), client-side key repeat
-├── Term grid
-│   ├── row_map[logical] → physical: O(1) scroll via pointer rotation
-│   ├── Dirty bitmap (logical order) with O(1) hasDirty flag
-│   └── TrueColor sparse maps (physical keys, no shift on scroll)
-├── Renderer (frame-rate limited, -Dmax_fps=120 default)
-│   ├── hasDirty() O(1) flag check → skip if nothing changed
-│   ├── Frame limiter: skip render if < frame_min_ns since last frame
-│   ├── isRowDirty() → skip clean rows
-│   └── Per-cell: glyph lookup → scaled pixel composition (memcpy row duplication)
-├── Backend
-│   ├── fbdev: shadow buffer → dirty row memcpy to /dev/fb0 mmap
-│   ├── X11: double-buffered SHM → dirty region xcb_shm_put_image
-│   └── Wayland: double-buffered wl_shm → dirty region damage_buffer + commit
-├── Signal handling (signalfd: SIGCHLD, SIGTERM, SIGINT, SIGHUP)
-├── VT switching (fbdev: SIGUSR1/2 for console switch)
-├── Cursor blink (timerfd, 500ms interval)
-└── Write buffer (4KB, EPOLLOUT-driven retry on backpressure)
+epoll event loop (single-threaded)
+├── PTY reader → VT parser → cell grid
+│   ├── ASCII fast path (SIMD bulk write)
+│   └── UTF-8 fast path (direct decode)
+├── Input (evdev / XKB+XIM / XKB+text-input-v3)
+├── Renderer (dirty-region, frame-limited)
+├── Backend (fbdev mmap / X11 SHM / Wayland wl_shm)
+└── Signals, timers, write buffering
 ```
 
-### Source files
+## Tested Applications
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/vt.zig` | 2,524 | VT parser state machine + action executor, SIMD ASCII fast path, UTF-8 bulk path, OSC 52/8 |
-| `src/backend/x11.zig` | 950 | XCB window, double-buffered SHM, XKB + XIM (lazy init), ConfigureNotify coalescing |
-| `src/term.zig` | 1,400 | Cell grid with row_map indirection, O(1) dirty flag, scroll, erase, BCE, TrueColor + underline color + hyperlink maps |
-| `src/main.zig` | 1,002 | Event loop, frame limiter, signal/timer setup, PTY drain, write buffering, render orchestration, clipboard dispatch |
-| `src/input.zig` | 527 | Keymap (US/JP), evdev code translation, modifier handling |
-| `src/render.zig` | 520 | Pixel rendering with comptime scaling (BGRA32/RGB565/RGB24), 5 underline styles, memcpy row duplication |
-| `src/backend/wayland.zig` | 1,099 | Pure Zig Wayland client: wl_shm double buffer, xdg-shell, event dispatch, internal epoll |
-| `src/backend/wayland/*.zig` | 2,028 | Wire protocol, core/xdg-shell/seat/text-input-v3/clipboard/decoration modules |
-| `src/backend/fbdev.zig` | 319 | Framebuffer mmap, shadow buffer, evdev keyboard scan, VT switching |
-| `src/font.zig` | 353 | Binary blob loader, comptime ASCII cache, 256-slot runtime glyph cache |
-| `src/pty.zig` | 221 | PTY spawn, nonblocking I/O, resize (TIOCSWINSZ) |
-| `config.zig` | 38 | Compile-time configuration (backend, keymap, font, colors, scale, max_fps) |
-| `build.zig` | 109 | Build system with backend, keymap, scale, strip, and max_fps selection |
+vim, nano, micro, less, bat, top, btop, man, git, eza, tree, ripgrep, python3 REPL, fish, Claude Code
 
-## Supported escape sequences
+Some applications may have minor rendering issues due to missing features (see below).
+
+## Limitations
+
+- **No scrollback buffer** — only the current viewport
+- **No mouse support** — mouse tracking sequences are accepted but ignored
+- **No clipboard paste on fbdev** — X11/Wayland support Ctrl+Shift+V
+- **No inline pre-edit display** — IME uses its own popup window
+- **No font fallback** — single embedded font, no system font lookup
+- **No ligatures**
+- **No sixel/image protocol**
+- **Blink attribute** — parsed but not visually rendered
+- **fbdev keymap** — compile-time only (US/JP); X11/Wayland use XKB
 
 <details>
-<summary>Click to expand — CSI, SGR, DEC modes, OSC, DCS, VT52</summary>
+<summary>Supported escape sequences</summary>
 
 ### CSI sequences
 
@@ -328,28 +202,20 @@ epoll event loop (single-threaded, dynamic timeout)
 | `CSI n T` | SD | Scroll down |
 | `CSI n d` | VPA | Vertical position absolute |
 | `CSI n g` | TBC | Tab clear (0: current, 3: all) |
-| `CSI t;b r` | DECSTBM | Set scroll region (resets cursor to home) |
+| `CSI t;b r` | DECSTBM | Set scroll region |
 | `CSI s` | | Save cursor position |
 | `CSI u` | | Restore cursor position |
 | `CSI 5 n` | DSR | Device status report (OK) |
-| `CSI 6 n` | DSR | Device status report (cursor position) |
-| `CSI c` | DA1 | Device attributes (reports VT220) |
+| `CSI 6 n` | DSR | Cursor position report |
+| `CSI c` | DA1 | Device attributes |
 | `CSI > c` | DA2 | Secondary device attributes |
-| `CSI > 0 q` | XTVERSION | Terminal identification (responds with zt version) |
 | `CSI ! p` | DECSTR | Soft terminal reset |
 | `CSI Ps SP q` | DECSCUSR | Set cursor style |
-| `CSI Ps $ p` | DECRQM | Mode query (responds with mode status) |
-| `CSI " p` | DECSCL | Conformance level (silently accepted) |
-| `CSI " q` | DECSCA | Set character protection attribute |
-| `CSI Ps t` | XTWINOPS | Window operations (silently accepted) |
-| `CSI i` | MC | Media copy (silently accepted) |
+| `CSI Ps $ p` | DECRQM | Mode query |
 | `CSI 4 h/l` | IRM | Insert/replace mode |
-| `CSI 20 h/l` | LNM | Linefeed/newline mode |
-| `CSI ... m` | SGR | Select graphic rendition (see below) |
+| `CSI ... m` | SGR | Select graphic rendition |
 
-All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown private-marker sequences are silently ignored.
-
-### SGR (Select Graphic Rendition)
+### SGR
 
 | Code | Effect |
 |------|--------|
@@ -357,131 +223,46 @@ All CSI private markers (`?`, `>`, `<`, `=`) are correctly parsed. Unknown priva
 | 1 | Bold |
 | 2 | Dim |
 | 3 | Italic |
-| 4 | Underline (single) |
-| 4:0 | No underline |
-| 4:1 | Single underline |
-| 4:2 | Double underline |
-| 4:3 | Curly underline |
-| 4:4 | Dotted underline |
-| 4:5 | Dashed underline |
-| 5, 6 | Blink |
+| 4, 4:1-4:5 | Underline (single/double/curly/dotted/dashed) |
 | 7 | Reverse video |
-| 8 | Invisible |
 | 9 | Strikethrough |
-| 21 | Doubly-underlined |
-| 22 | Normal intensity |
-| 23 | Not italic |
-| 24 | Not underline |
-| 25 | Not blink |
-| 27 | Not reverse |
-| 28 | Not invisible |
-| 29 | Not strikethrough |
-| 30-37 | Foreground color (standard) |
-| 38;5;n | Foreground 256-color |
-| 38;2;r;g;b | Foreground 24-bit TrueColor |
-| 39 | Default foreground |
-| 40-47 | Background color (standard) |
-| 48;5;n | Background 256-color |
-| 48;2;r;g;b | Background 24-bit TrueColor |
-| 49 | Default background |
-| 58;5;n | Underline 256-color |
-| 58;2;r;g;b | Underline 24-bit TrueColor |
-| 59 | Default underline color |
-| 90-97 | Foreground bright |
-| 100-107 | Background bright |
+| 30-37, 90-97 | Foreground color |
+| 38;5;n | 256-color foreground |
+| 38;2;r;g;b | TrueColor foreground |
+| 40-47, 100-107 | Background color |
+| 48;5;n | 256-color background |
+| 48;2;r;g;b | TrueColor background |
+| 58;5;n / 58;2;r;g;b | Underline color |
 
 ### DEC private modes
 
-| Mode | Name | Description |
-|------|------|-------------|
-| `?1` | DECCKM | Application cursor keys |
-| `?6` | DECOM | Origin mode |
-| `?7` | DECAWM | Auto-wrap mode |
-| `?25` | DECTCEM | Cursor visible |
-| `?47` | | Alternate screen buffer |
-| `?1047` | | Alternate screen buffer |
-| `?1048` | | Save/restore cursor |
-| `?1049` | | Alternate screen + save/restore cursor |
-| `?2` | DECANM | VT52/VT100 mode switch |
-| `?67` | DECBKM | Backarrow key mode (BS vs DEL) |
-| `?2004` | | Bracketed paste mode |
-| `?2026` | | Synchronized update |
-| `?1000-1006` | | Mouse tracking modes (silently accepted) |
-| `?1004` | | Focus events (sends CSI I/O) |
-
-### VT52 mode
-
-Entered via `CSI ? 2 l` (DECANM reset). Exit via `ESC <`.
-
-| Sequence | Description |
-|----------|-------------|
-| `ESC A-D` | Cursor movement (up/down/right/left) |
-| `ESC H` | Home |
-| `ESC I` | Reverse line feed |
-| `ESC J` | Erase to end of screen |
-| `ESC K` | Erase to end of line |
-| `ESC F/G` | Enter/exit graphics mode |
-| `ESC Z` | Identify (responds `ESC / Z`) |
-| `ESC <` | Exit VT52, enter VT100 |
-
-### Escape sequences
-
-| Sequence | Name | Description |
-|----------|------|-------------|
-| `ESC 7` | DECSC | Save cursor + attributes + charset |
-| `ESC 8` | DECRC | Restore cursor + attributes + charset |
-| `ESC D` | IND | Index (line feed, scrolls at bottom) |
-| `ESC E` | NEL | Next line |
-| `ESC H` | HTS | Horizontal tab stop |
-| `ESC M` | RI | Reverse index |
-| `ESC Z` | DECID | Identify terminal |
-| `ESC F` | | Cursor to lower-left corner |
-| `ESC c` | RIS | Full reset |
-| `ESC n` | LS2 | Locking Shift 2 (activate G2) |
-| `ESC o` | LS3 | Locking Shift 3 (activate G3) |
-| `ESC =` | DECKPAM | Application keypad mode |
-| `ESC >` | DECKPNM | Normal keypad mode |
-| `ESC ( 0` | | G0 charset = DEC Special Graphics (line drawing) |
-| `ESC ( B` | | G0 charset = US ASCII |
-| `ESC % G` | | Select UTF-8 charset (silently accepted) |
-| `ESC # 8` | DECALN | Screen alignment test |
+| Mode | Description |
+|------|-------------|
+| `?1` | Application cursor keys |
+| `?7` | Auto-wrap |
+| `?25` | Cursor visible |
+| `?47`, `?1047`, `?1049` | Alternate screen |
+| `?2004` | Bracketed paste |
+| `?2026` | Synchronized update |
+| `?1004` | Focus events |
 
 ### OSC sequences
 
 | Sequence | Description |
 |----------|-------------|
-| `OSC 0 ; Pt` | Set window title + icon name |
-| `OSC 2 ; Pt` | Set window title |
-| `OSC 10 ; ?` | Query foreground color |
-| `OSC 11 ; ?` | Query background color |
-| `OSC 12 ; ?` | Query cursor color |
-| `OSC 8 ; params ; URI` | Hyperlinks — set/clear terminal hyperlink |
-| `OSC 52 ; Pc ; Pd` | Clipboard — base64-decode Pd, copy to system clipboard via xclip/wl-copy |
-| `OSC 104` | Reset colors (silently accepted) |
+| `OSC 0/2` | Set window title |
+| `OSC 8` | Hyperlinks (parsed, click not implemented) |
+| `OSC 52` | Clipboard copy (disabled by default) |
+| `OSC 10/11/12` | Query fg/bg/cursor color |
 
 ### DCS sequences
 
 | Sequence | Description |
 |----------|-------------|
-| `DCS + q` | XTGETTCAP — query terminal capabilities |
-| `DCS $ q` | DECRQSS — query status string (SGR, DECSTBM, DECSCUSR) |
+| `DCS + q` | XTGETTCAP |
+| `DCS $ q` | DECRQSS |
 
 </details>
-
-## Tested applications
-
-vim, nano, micro, less, bat, top, btop, man, git (log/diff/status), eza, tree, ripgrep, python3 REPL, fish (completions, history, Ctrl+C, Ctrl+L), Claude Code (Anthropic CLI)
-
-## Limitations
-
-- No scrollback buffer — only the current viewport is kept
-- No clipboard paste on fbdev (X11/Wayland support Ctrl+Shift+V paste; OSC 52 copy works on all backends with xclip/wl-copy)
-- No mouse support
-- fbdev keymap is compile-time only (US/JP); X11 uses XKB for any layout
-- No inline pre-edit display — IME candidate window is handled by the input method (fcitx5 default)
-- No font fallback chain — single embedded font
-- No ligatures
-- No sixel/image protocol support
 
 ## License
 
