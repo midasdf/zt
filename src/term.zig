@@ -913,7 +913,7 @@ pub const Term = struct {
     pub fn setScrollRegion(self: *Self, top: u32, bottom: u32) void {
         self.scroll_top = @min(top, self.rows -| 1);
         self.scroll_bottom = @min(bottom, self.rows -| 1);
-        if (self.scroll_top > self.scroll_bottom) {
+        if (self.scroll_top >= self.scroll_bottom) {
             self.scroll_top = 0;
             self.scroll_bottom = self.rows -| 1;
         }
@@ -1056,7 +1056,6 @@ pub const Term = struct {
         const bg_rgb_val: ?[3]u8 = self.current_bg_rgb;
         switch (mode) {
             0 => {
-                self.fixWideBoundaries(@as(usize, self.cursor_y) * cols + self.cursor_x, @as(usize, self.rows) * cols);
                 for (self.cursor_y..self.rows) |y| {
                     const phys = self.row_map[y];
                     const from: usize = if (y == self.cursor_y) self.cursor_x else 0;
@@ -1074,7 +1073,6 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = @as(usize, self.cursor_y) * cols + self.cursor_x, .end = @as(usize, self.rows) * cols });
             },
             1 => {
-                self.fixWideBoundaries(0, @as(usize, self.cursor_y) * cols + self.cursor_x + 1);
                 for (0..self.cursor_y + 1) |y| {
                     const phys = self.row_map[y];
                     const to: usize = if (y == self.cursor_y) self.cursor_x + 1 else cols;
@@ -1092,7 +1090,6 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cursor_y) * cols + self.cursor_x + 1 });
             },
             2 => {
-                self.fixWideBoundaries(0, @as(usize, self.cols) * @as(usize, self.rows));
                 for (0..self.rows) |y| {
                     const phys = self.row_map[y];
                     for (0..cols) |x| {
@@ -1121,7 +1118,6 @@ pub const Term = struct {
         const row_start = @as(usize, self.cursor_y) * cols;
         switch (mode) {
             0 => {
-                self.fixWideBoundaries(row_start + self.cursor_x, row_start + cols);
                 for (self.cursor_x..self.cols) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {
@@ -1135,7 +1131,6 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = row_start + self.cursor_x, .end = row_start + cols });
             },
             1 => {
-                self.fixWideBoundaries(row_start, row_start + self.cursor_x + 1);
                 for (0..self.cursor_x + 1) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {
@@ -1149,7 +1144,6 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + self.cursor_x + 1 });
             },
             2 => {
-                self.fixWideBoundaries(row_start, row_start + cols);
                 for (0..cols) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {

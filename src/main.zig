@@ -726,6 +726,11 @@ pub fn main() !void {
             for (events[0..n]) |ev| {
                 switch (ev.data.u32) {
                     @intFromEnum(EpollTag.pty) => {
+                        // Handle hangup/error when no EPOLLIN (child died)
+                        if (ev.events & (linux.EPOLL.HUP | linux.EPOLL.ERR) != 0 and ev.events & linux.EPOLL.IN == 0) {
+                            running = false;
+                            break;
+                        }
                         // Flush pending writes if EPOLLOUT
                         if (ev.events & linux.EPOLL.OUT != 0) {
                             if (!ptyFlushPending(&pty, &write_buf, &write_pending, evloop_fd)) {
@@ -883,7 +888,7 @@ pub fn main() !void {
         }
 
         // Extra PTY drain: data may have arrived during event processing.
-        // Capped at 1MB to prevent render starvation from infinite producers (yes, cat /dev/urandom).
+        // Capped at pty_buf_size*4 to prevent render starvation from infinite producers (yes, cat /dev/urandom).
         if (running) {
             var extra_total: usize = 0;
             while (extra_total < config.pty_buf_size * 4) {
@@ -929,6 +934,40 @@ pub fn main() !void {
         //          alongside committed IME text.
         if (config.backend == .wayland or config.backend == .x11) backend.flush();
 
+        // Handle BEL, title, and IME updates regardless of dirty state
+        if (term.bell_pending) {
+            term.bell_pending = false;
+            if (@hasDecl(Backend, "bell")) {
+                backend.bell();
+            }
+        }
+
+        // Update window title if changed by OSC 0/2
+        if (term.title_changed) {
+            term.title_changed = false;
+            if (@hasDecl(Backend, "updateTitle")) {
+                if (term.title_len > 0) {
+                    // Prefix with "zt — " so the version/app name stays visible
+                    var title_buf: [280]u8 = undefined;
+                    const prefix = "zt " ++ config.version ++ " — ";
+                    @memcpy(title_buf[0..prefix.len], prefix);
+                    const tlen: usize = term.title_len;
+                    @memcpy(title_buf[prefix.len..][0..tlen], term.title[0..tlen]);
+                    backend.updateTitle(title_buf[0 .. prefix.len + tlen]);
+                } else {
+                    backend.updateTitle("zt " ++ config.version);
+                }
+            }
+        }
+
+        // Update IME cursor position (X11 only)
+        if (@hasDecl(Backend, "updateImeCursorPos")) {
+            backend.updateImeCursorPos(
+                term.cursor_x * config.cell_width,
+                (term.cursor_y + 1) * config.cell_height,
+            );
+        }
+
         // Render dirty cells — skip entirely if nothing changed
         if (!term.hasDirty()) continue;
 
@@ -940,6 +979,7 @@ pub fn main() !void {
             } else if (loop_now - sync_update_start_ns > 3_000_000_000) {
                 term.sync_update = false;
                 sync_update_start_ns = 0;
+                last_render_ns = 0; // force immediate render after timeout
             } else {
                 continue;
             }
@@ -1034,42 +1074,8 @@ pub fn main() !void {
             if (!all_dirty) backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
         }
         term.clearDirty();
-        last_render_ns = loop_now;
+        last_render_ns = std.time.nanoTimestamp();
         bytes_since_render = 0;
-
-        // Handle BEL
-        if (term.bell_pending) {
-            term.bell_pending = false;
-            if (@hasDecl(Backend, "bell")) {
-                backend.bell();
-            }
-        }
-
-        // Update window title if changed by OSC 0/2
-        if (term.title_changed) {
-            term.title_changed = false;
-            if (@hasDecl(Backend, "updateTitle")) {
-                if (term.title_len > 0) {
-                    // Prefix with "zt — " so the version/app name stays visible
-                    var title_buf: [280]u8 = undefined;
-                    const prefix = "zt " ++ config.version ++ " — ";
-                    @memcpy(title_buf[0..prefix.len], prefix);
-                    const tlen: usize = term.title_len;
-                    @memcpy(title_buf[prefix.len..][0..tlen], term.title[0..tlen]);
-                    backend.updateTitle(title_buf[0 .. prefix.len + tlen]);
-                } else {
-                    backend.updateTitle("zt " ++ config.version);
-                }
-            }
-        }
-
-        // Update IME cursor position (X11 only)
-        if (@hasDecl(Backend, "updateImeCursorPos")) {
-            backend.updateImeCursorPos(
-                term.cursor_x * config.cell_width,
-                (term.cursor_y + 1) * config.cell_height,
-            );
-        }
 
         backend.present();
         backend.flush();
