@@ -386,7 +386,9 @@ pub const Connection = struct {
         const words: *const [2]u32 = @alignCast(@ptrCast(self.recv_buf[self.recv_consumed..].ptr));
         const hdr = decodeHeader(words);
         if (hdr.size < 8) return null; // malformed
-        if (avail < hdr.size) return null; // incomplete
+        // Check aligned size so consumeEvent can safely advance to next
+        // 4-byte boundary without overrunning the receive buffer.
+        if (avail < alignUp(hdr.size, 4)) return null; // incomplete
         return hdr;
     }
 
