@@ -1734,11 +1734,19 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             },
             1049 => {
                 if (set) {
+                    // Save cursor, scroll region, wrap state, and SGR drawing state
                     term.saved_cursor_x = term.cursor_x;
                     term.saved_cursor_y = term.cursor_y;
                     term.saved_scroll_top = term.scroll_top;
                     term.saved_scroll_bottom = term.scroll_bottom;
                     term.saved_wrap_next = term.wrap_next;
+                    term.saved_attrs = term.current_attrs;
+                    term.saved_fg = term.current_fg;
+                    term.saved_bg = term.current_bg;
+                    term.saved_fg_rgb = term.current_fg_rgb;
+                    term.saved_bg_rgb = term.current_bg_rgb;
+                    term.saved_ul_color_rgb = term.current_ul_color_rgb;
+                    term.saved_charset = term.charset;
                     term.switchScreen(true) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
@@ -1750,11 +1758,19 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.switchScreen(false) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
+                    // Restore cursor, scroll region, wrap state, and SGR drawing state
                     term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
                     term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
                     term.scroll_top = @min(term.saved_scroll_top, term.rows -| 1);
                     term.scroll_bottom = @min(term.saved_scroll_bottom, term.rows -| 1);
                     term.wrap_next = term.saved_wrap_next;
+                    term.current_attrs = term.saved_attrs;
+                    term.current_fg = term.saved_fg;
+                    term.current_bg = term.saved_bg;
+                    term.current_fg_rgb = term.saved_fg_rgb;
+                    term.current_bg_rgb = term.saved_bg_rgb;
+                    term.current_ul_color_rgb = term.saved_ul_color_rgb;
+                    term.charset = term.saved_charset;
                 }
             },
             2004 => term.bracketed_paste = set,
