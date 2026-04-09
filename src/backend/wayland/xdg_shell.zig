@@ -1,5 +1,4 @@
 /// XDG Shell protocol: xdg_wm_base, xdg_surface, xdg_toplevel.
-
 const std = @import("std");
 const wire = @import("wire.zig");
 

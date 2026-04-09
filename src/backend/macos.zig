@@ -593,40 +593,40 @@ fn registerZTViewClass() ?id {
     }
 
     // --- NSView overrides ---
-    _ = class_addMethod(new_class, sel("drawRect:"), @constCast(@ptrCast(&ztDrawRect)), "v@:{CGRect=dddd}");
-    _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @constCast(@ptrCast(&ztAcceptsFirstResponder)), "c@:");
-    _ = class_addMethod(new_class, sel("canBecomeKeyView"), @constCast(@ptrCast(&ztCanBecomeKeyView)), "c@:");
+    _ = class_addMethod(new_class, sel("drawRect:"), @ptrCast(@constCast(&ztDrawRect)), "v@:{CGRect=dddd}");
+    _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @ptrCast(@constCast(&ztAcceptsFirstResponder)), "c@:");
+    _ = class_addMethod(new_class, sel("canBecomeKeyView"), @ptrCast(@constCast(&ztCanBecomeKeyView)), "c@:");
 
     // --- Keyboard ---
-    _ = class_addMethod(new_class, sel("keyDown:"), @constCast(@ptrCast(&ztKeyDown)), "v@:@");
-    _ = class_addMethod(new_class, sel("flagsChanged:"), @constCast(@ptrCast(&ztFlagsChanged)), "v@:@");
+    _ = class_addMethod(new_class, sel("keyDown:"), @ptrCast(@constCast(&ztKeyDown)), "v@:@");
+    _ = class_addMethod(new_class, sel("flagsChanged:"), @ptrCast(@constCast(&ztFlagsChanged)), "v@:@");
     // doCommandBySelector: is called by interpretKeyEvents: for non-text
     // keys (Enter, Tab, arrows, Escape, etc.). Without this, the default
     // NSView implementation calls NSBeep() for every unhandled command.
     // We handle all keys through the evdev key event path, so this is a no-op.
-    _ = class_addMethod(new_class, sel("doCommandBySelector:"), @constCast(@ptrCast(&ztDoCommandBySelector)), "v@::");
+    _ = class_addMethod(new_class, sel("doCommandBySelector:"), @ptrCast(@constCast(&ztDoCommandBySelector)), "v@::");
 
     // --- NSTextInputClient ---
-    _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @constCast(@ptrCast(&ztInsertText)), "v@:@{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("hasMarkedText"), @constCast(@ptrCast(&ztHasMarkedText)), "c@:");
-    _ = class_addMethod(new_class, sel("setMarkedText:selectedRange:replacementRange:"), @constCast(@ptrCast(&ztSetMarkedText)), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("unmarkText"), @constCast(@ptrCast(&ztUnmarkText)), "v@:");
-    _ = class_addMethod(new_class, sel("validAttributesForMarkedText"), @constCast(@ptrCast(&ztValidAttributes)), "@@:");
-    _ = class_addMethod(new_class, sel("firstRectForCharacterRange:actualRange:"), @constCast(@ptrCast(&ztFirstRect)), "{CGRect=dddd}@:{_NSRange=QQ}^{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("characterIndexForPoint:"), @constCast(@ptrCast(&ztCharacterIndex)), "Q@:{CGPoint=dd}");
-    _ = class_addMethod(new_class, sel("attributedSubstringForProposedRange:actualRange:"), @constCast(@ptrCast(&ztAttributedSubstring)), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
-    _ = class_addMethod(new_class, sel("markedRange"), @constCast(@ptrCast(&ztMarkedRange)), "{_NSRange=QQ}@:");
-    _ = class_addMethod(new_class, sel("selectedRange"), @constCast(@ptrCast(&ztSelectedRange)), "{_NSRange=QQ}@:");
+    _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @ptrCast(@constCast(&ztInsertText)), "v@:@{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("hasMarkedText"), @ptrCast(@constCast(&ztHasMarkedText)), "c@:");
+    _ = class_addMethod(new_class, sel("setMarkedText:selectedRange:replacementRange:"), @ptrCast(@constCast(&ztSetMarkedText)), "v@:@{_NSRange=QQ}{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("unmarkText"), @ptrCast(@constCast(&ztUnmarkText)), "v@:");
+    _ = class_addMethod(new_class, sel("validAttributesForMarkedText"), @ptrCast(@constCast(&ztValidAttributes)), "@@:");
+    _ = class_addMethod(new_class, sel("firstRectForCharacterRange:actualRange:"), @ptrCast(@constCast(&ztFirstRect)), "{CGRect=dddd}@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("characterIndexForPoint:"), @ptrCast(@constCast(&ztCharacterIndex)), "Q@:{CGPoint=dd}");
+    _ = class_addMethod(new_class, sel("attributedSubstringForProposedRange:actualRange:"), @ptrCast(@constCast(&ztAttributedSubstring)), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
+    _ = class_addMethod(new_class, sel("markedRange"), @ptrCast(@constCast(&ztMarkedRange)), "{_NSRange=QQ}@:");
+    _ = class_addMethod(new_class, sel("selectedRange"), @ptrCast(@constCast(&ztSelectedRange)), "{_NSRange=QQ}@:");
 
     // --- NSWindowDelegate ---
-    _ = class_addMethod(new_class, sel("windowShouldClose:"), @constCast(@ptrCast(&ztWindowShouldClose)), "c@:@");
-    _ = class_addMethod(new_class, sel("windowDidBecomeKey:"), @constCast(@ptrCast(&ztWindowDidBecomeKey)), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidResignKey:"), @constCast(@ptrCast(&ztWindowDidResignKey)), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidResize:"), @constCast(@ptrCast(&ztWindowDidResize)), "v@:@");
-    _ = class_addMethod(new_class, sel("windowDidChangeOcclusionState:"), @constCast(@ptrCast(&ztWindowDidChangeOcclusion)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowShouldClose:"), @ptrCast(@constCast(&ztWindowShouldClose)), "c@:@");
+    _ = class_addMethod(new_class, sel("windowDidBecomeKey:"), @ptrCast(@constCast(&ztWindowDidBecomeKey)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidResignKey:"), @ptrCast(@constCast(&ztWindowDidResignKey)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidResize:"), @ptrCast(@constCast(&ztWindowDidResize)), "v@:@");
+    _ = class_addMethod(new_class, sel("windowDidChangeOcclusionState:"), @ptrCast(@constCast(&ztWindowDidChangeOcclusion)), "v@:@");
 
     // --- NSView backing properties ---
-    _ = class_addMethod(new_class, sel("viewDidChangeBackingProperties"), @constCast(@ptrCast(&ztViewDidChangeBackingProperties)), "v@:");
+    _ = class_addMethod(new_class, sel("viewDidChangeBackingProperties"), @ptrCast(@constCast(&ztViewDidChangeBackingProperties)), "v@:");
 
     objc_registerClassPair(new_class);
     zt_view_class_registered = new_class;
@@ -703,13 +703,32 @@ fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
     // or is a special key (arrows, F-keys, etc.) that must go through KeyEvent.
     // Only emit KeyEvent for non-text keys to avoid double output with insertText.
     const is_special = evdev_code != 0 and switch (evdev_code) {
-        input_mod.KEY.ESC, input_mod.KEY.ENTER, input_mod.KEY.BACKSPACE, input_mod.KEY.TAB,
-        input_mod.KEY.UP, input_mod.KEY.DOWN, input_mod.KEY.LEFT, input_mod.KEY.RIGHT,
-        input_mod.KEY.HOME, input_mod.KEY.END, input_mod.KEY.PAGEUP, input_mod.KEY.PAGEDOWN,
-        input_mod.KEY.INSERT, input_mod.KEY.DELETE,
-        input_mod.KEY.F1, input_mod.KEY.F2, input_mod.KEY.F3, input_mod.KEY.F4,
-        input_mod.KEY.F5, input_mod.KEY.F6, input_mod.KEY.F7, input_mod.KEY.F8,
-        input_mod.KEY.F9, input_mod.KEY.F10, input_mod.KEY.F11, input_mod.KEY.F12,
+        input_mod.KEY.ESC,
+        input_mod.KEY.ENTER,
+        input_mod.KEY.BACKSPACE,
+        input_mod.KEY.TAB,
+        input_mod.KEY.UP,
+        input_mod.KEY.DOWN,
+        input_mod.KEY.LEFT,
+        input_mod.KEY.RIGHT,
+        input_mod.KEY.HOME,
+        input_mod.KEY.END,
+        input_mod.KEY.PAGEUP,
+        input_mod.KEY.PAGEDOWN,
+        input_mod.KEY.INSERT,
+        input_mod.KEY.DELETE,
+        input_mod.KEY.F1,
+        input_mod.KEY.F2,
+        input_mod.KEY.F3,
+        input_mod.KEY.F4,
+        input_mod.KEY.F5,
+        input_mod.KEY.F6,
+        input_mod.KEY.F7,
+        input_mod.KEY.F8,
+        input_mod.KEY.F9,
+        input_mod.KEY.F10,
+        input_mod.KEY.F11,
+        input_mod.KEY.F12,
         => true,
         else => false,
     };

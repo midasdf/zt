@@ -7,7 +7,6 @@
 ///   - wl_data_offer.receive: payload = mime_type string only.
 ///     The fd argument is sent via SCM_RIGHTS and occupies ZERO bytes in payload.
 ///   - All event parsing advances through payload using wire.getString / wire.getUint.
-
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;

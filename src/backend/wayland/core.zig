@@ -2,7 +2,6 @@
 ///
 /// Handles wl_display, wl_registry, wl_compositor, wl_shm, wl_shm_pool,
 /// wl_buffer, and wl_surface interactions.
-
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;

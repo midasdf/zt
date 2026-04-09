@@ -8,7 +8,6 @@
 ///   - fd arguments occupy ZERO bytes in the payload (sent via SCM_RIGHTS only)
 ///   - Strings: 4-byte length (including null terminator) + bytes + null + padding
 ///   - Arrays: 4-byte length + data + padding to 4-byte boundary
-
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
@@ -254,7 +253,7 @@ pub const Connection = struct {
             const cmsg_space = std.mem.alignForward(usize, @sizeOf(cmsghdr) + fd_bytes.len, @alignOf(cmsghdr));
             var cmsg_buf: [std.mem.alignForward(usize, @sizeOf(cmsghdr) + 4 * @sizeOf(posix.fd_t), @alignOf(cmsghdr))]u8 align(@alignOf(cmsghdr)) = undefined;
 
-            const cmsg: *cmsghdr = @alignCast(@ptrCast(&cmsg_buf));
+            const cmsg: *cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
             cmsg.len = @intCast(@sizeOf(cmsghdr) + fd_bytes.len);
             cmsg.level = posix.SOL.SOCKET;
             cmsg.type = 1; // SCM_RIGHTS
@@ -354,11 +353,11 @@ pub const Connection = struct {
         if (msg.controllen > 0) {
             var cmsg_ptr: usize = 0;
             while (cmsg_ptr + @sizeOf(cmsghdr) <= msg.controllen) {
-                const cmsg: *const cmsghdr = @alignCast(@ptrCast(&cmsg_buf[cmsg_ptr]));
+                const cmsg: *const cmsghdr = @ptrCast(@alignCast(&cmsg_buf[cmsg_ptr]));
                 if (cmsg.level == posix.SOL.SOCKET and cmsg.type == 1) { // SCM_RIGHTS
                     const data_len = cmsg.len - @sizeOf(cmsghdr);
                     const n_fds = data_len / @sizeOf(posix.fd_t);
-                    const fd_ptr: [*]const posix.fd_t = @alignCast(@ptrCast(&cmsg_buf[cmsg_ptr + @sizeOf(cmsghdr)]));
+                    const fd_ptr: [*]const posix.fd_t = @ptrCast(@alignCast(&cmsg_buf[cmsg_ptr + @sizeOf(cmsghdr)]));
                     var i: usize = 0;
                     while (i < n_fds and self.recv_fd_count < self.recv_fds.len) : (i += 1) {
                         self.recv_fds[self.recv_fd_count] = fd_ptr[i];
@@ -383,7 +382,7 @@ pub const Connection = struct {
     pub fn nextEvent(self: *Connection) ?Header {
         const avail = self.recv_len - self.recv_consumed;
         if (avail < 8) return null;
-        const words: *const [2]u32 = @alignCast(@ptrCast(self.recv_buf[self.recv_consumed..].ptr));
+        const words: *const [2]u32 = @ptrCast(@alignCast(self.recv_buf[self.recv_consumed..].ptr));
         const hdr = decodeHeader(words);
         if (hdr.size < 8) return null; // malformed
         // Check aligned size so consumeEvent can safely advance to next
