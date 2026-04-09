@@ -960,7 +960,6 @@ pub const X11Backend = struct {
                                     return .{ .text = self.committed_text };
                                 }
                                 self.suppress_xim_result = false;
-                                return null;
                             }
                             if (self.has_forwarded_key) {
                                 self.has_forwarded_key = false;
@@ -968,9 +967,13 @@ pub const X11Backend = struct {
                                     return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
                                 }
                                 self.suppress_xim_result = false;
-                                return null;
                             }
-                            return null; // wait for async XIM response (one key at a time)
+                            // Continue draining XCB event queue — do NOT return null here.
+                            // xcb_poll_for_event may have buffered multiple events from
+                            // a single socket read; returning null would exit the caller's
+                            // while(pollEvents) loop, and epoll won't wake because the fd
+                            // has no new data (it's already in libxcb's internal buffer).
+                            continue;
                         }
                     }
                 }
