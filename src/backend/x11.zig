@@ -780,6 +780,10 @@ pub const X11Backend = struct {
                 self.has_pending_xim = false;
                 // Fall back to local XKB processing for the stuck key
                 if (!self.suppress_xim_result) {
+                    // Suppress the late XIM response that may arrive after
+                    // this timeout — without this, both the fallback ASCII
+                    // and the eventual IME commit would be emitted.
+                    self.suppress_xim_result = true;
                     const result = self.processKeycode(self.pending_xim_keycode, self.pending_xim_mods);
                     if (result != null) return result;
                 }
