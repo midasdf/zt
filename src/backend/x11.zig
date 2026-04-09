@@ -23,7 +23,7 @@ pub const Event = union(enum) {
 };
 
 pub const PasteEvent = struct {
-    data: [4096]u8 = undefined,
+    data: [65536]u8 = undefined,
     len: u32 = 0,
 
     pub fn slice(self: *const PasteEvent) []const u8 {
@@ -1056,7 +1056,7 @@ pub const X11Backend = struct {
                     const len: u32 = @intCast(c.xcb_get_property_value_length(reply));
                     if (len > 0) {
                         const data: [*]const u8 = @ptrCast(c.xcb_get_property_value(reply));
-                        const clamped = @min(len, 4096);
+                        const clamped = @min(len, 65536);
                         @memcpy(self.paste_buf.data[0..clamped], data[0..clamped]);
                         self.paste_buf.len = clamped;
                         return .{ .paste = self.paste_buf };

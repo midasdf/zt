@@ -71,7 +71,7 @@ pub const ClipboardState = struct {
 
     // Paste pipe (async read)
     paste_pipe_fd: posix.fd_t = -1,
-    paste_buf: [4096]u8 = undefined,
+    paste_buf: [65536]u8 = undefined,
     paste_len: usize = 0,
 };
 
