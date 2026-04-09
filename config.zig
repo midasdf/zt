@@ -40,3 +40,4 @@ pub const frame_min_ns: u64 = if (max_fps == 0) 0 else 1_000_000_000 / max_fps;
 pub const pty_buf_size: u32 = build_options.pty_buf_kb * 1024;
 
 pub const shell: [:0]const u8 = std.mem.span(@as([*:0]const u8, build_options.shell));
+pub const version: [:0]const u8 = std.mem.span(@as([*:0]const u8, build_options.version));
