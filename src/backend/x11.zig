@@ -102,7 +102,7 @@ pub const X11Backend = struct {
     last_ime_y: i16 = -1,
     pending_event: ?*c.xcb_generic_event_t = null, // event pushed back during coalescing
     keyboard_initialized: bool = false, // XKB + XIM lazy init on first key
-    paste_buf_data: [16384]u8 = undefined,
+    paste_buf_data: []u8 = &.{},
     paste_buf_len: u32 = 0,
     screen_id: c_int = 0,
     // XEmbed state (embedding into another window via -w)
@@ -590,6 +590,9 @@ pub const X11Backend = struct {
         if (self.xkb_state) |s| c.xkb_state_unref(s);
         if (self.xkb_keymap) |km| c.xkb_keymap_unref(km);
         if (self.xkb_ctx) |ctx| c.xkb_context_unref(ctx);
+        if (self.paste_buf_data.len > 0) {
+            std.heap.c_allocator.free(self.paste_buf_data);
+        }
         // Detach SHM from X server
         for (0..2) |i| {
             if (self.buffers[i].len > 0) {
@@ -1095,10 +1098,20 @@ pub const X11Backend = struct {
                     const len: u32 = @intCast(c.xcb_get_property_value_length(reply));
                     if (len > 0) {
                         const data: [*]const u8 = @ptrCast(c.xcb_get_property_value(reply));
-                        const clamped = @min(len, 16384);
-                        @memcpy(self.paste_buf_data[0..clamped], data[0..clamped]);
-                        self.paste_buf_len = clamped;
-                        return .{ .paste = .{ .ptr = &self.paste_buf_data, .len = clamped } };
+                        const needed: usize = len;
+                        if (self.paste_buf_data.len < needed) {
+                            if (self.paste_buf_data.len > 0) {
+                                std.heap.c_allocator.free(self.paste_buf_data);
+                            }
+                            self.paste_buf_data = std.heap.c_allocator.alloc(u8, needed) catch {
+                                self.paste_buf_data = &.{};
+                                self.paste_buf_len = 0;
+                                continue;
+                            };
+                        }
+                        @memcpy(self.paste_buf_data[0..needed], data[0..needed]);
+                        self.paste_buf_len = len;
+                        return .{ .paste = .{ .ptr = self.paste_buf_data.ptr, .len = len } };
                     }
                 }
                 continue; // property data empty — skip

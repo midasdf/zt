@@ -116,8 +116,7 @@ pub const WaylandBackend = struct {
     internal_epoll_fd: posix.fd_t = -1,
 
     // Event queue (pollEvents returns one event at a time)
-    pending_events: [32]Event = undefined,
-    pending_count: usize = 0,
+    pending_events: std.ArrayListUnmanaged(Event) = .{},
     pending_read: usize = 0,
 
     // Focus state
@@ -412,6 +411,7 @@ pub const WaylandBackend = struct {
 
     pub fn deinit(self: *Self) void {
         self.keyboard.deinit();
+        self.pending_events.deinit(std.heap.c_allocator);
         if (self.shm_buffers) |*bufs| {
             bufs.deinit();
         }
@@ -420,6 +420,9 @@ pub const WaylandBackend = struct {
         }
         if (self.clipboard.paste_pipe_fd >= 0) {
             posix.close(self.clipboard.paste_pipe_fd);
+        }
+        if (self.clipboard.paste_buf.len > 0) {
+            std.heap.c_allocator.free(self.clipboard.paste_buf);
         }
         self.conn.deinit();
     }
@@ -701,20 +704,19 @@ pub const WaylandBackend = struct {
     // ========================================================================
 
     fn queueEvent(self: *Self, event: Event) void {
-        if (self.pending_count < self.pending_events.len) {
-            self.pending_events[self.pending_count] = event;
-            self.pending_count += 1;
-        }
+        self.pending_events.append(std.heap.c_allocator, event) catch {
+            std.log.warn("dropping Wayland event due to OOM", .{});
+        };
     }
 
     fn dequeueEvent(self: *Self) ?Event {
-        if (self.pending_read < self.pending_count) {
-            const event = self.pending_events[self.pending_read];
+        if (self.pending_read < self.pending_events.items.len) {
+            const event = self.pending_events.items[self.pending_read];
             self.pending_read += 1;
             // Reset when fully consumed
-            if (self.pending_read >= self.pending_count) {
+            if (self.pending_read >= self.pending_events.items.len) {
                 self.pending_read = 0;
-                self.pending_count = 0;
+                self.pending_events.clearRetainingCapacity();
             }
             return event;
         }
@@ -795,10 +797,10 @@ pub const WaylandBackend = struct {
                     if (new_w != self.width or new_h != self.height) {
                         var replaced = false;
                         var i: usize = self.pending_read;
-                        while (i < self.pending_count) : (i += 1) {
-                            switch (self.pending_events[i]) {
+                        while (i < self.pending_events.items.len) : (i += 1) {
+                            switch (self.pending_events.items[i]) {
                                 .resize => {
-                                    self.pending_events[i] = .{ .resize = .{ .width = new_w, .height = new_h } };
+                                    self.pending_events.items[i] = .{ .resize = .{ .width = new_w, .height = new_h } };
                                     replaced = true;
                                     break;
                                 },

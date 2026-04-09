@@ -59,6 +59,8 @@ pub const ZWP_PRIMARY_SELECTION_OFFER_EVENT_OFFER: u16 = 0;
 // ============================================================================
 
 pub const ClipboardState = struct {
+    const max_paste_bytes = 1024 * 1024;
+
     // wl_data_device
     data_device_id: u32 = 0,
     current_offer_id: u32 = 0,
@@ -71,7 +73,7 @@ pub const ClipboardState = struct {
 
     // Paste pipe (async read)
     paste_pipe_fd: posix.fd_t = -1,
-    paste_buf: [16384]u8 = undefined,
+    paste_buf: []u8 = &.{},
     paste_len: usize = 0,
 };
 
@@ -138,6 +140,24 @@ pub fn closePastePipe(state: *ClipboardState, epoll_fd: posix.fd_t) void {
     }
 }
 
+fn ensurePasteCapacity(state: *ClipboardState, needed: usize) !void {
+    if (needed <= state.paste_buf.len) return;
+    if (needed > ClipboardState.max_paste_bytes) return error.PasteTooLarge;
+
+    var new_cap: usize = if (state.paste_buf.len == 0) 4096 else state.paste_buf.len;
+    while (new_cap < needed) {
+        new_cap = @min(new_cap * 2, ClipboardState.max_paste_bytes);
+        if (new_cap >= needed) break;
+        if (new_cap == ClipboardState.max_paste_bytes) return error.PasteTooLarge;
+    }
+
+    if (state.paste_buf.len == 0) {
+        state.paste_buf = try std.heap.c_allocator.alloc(u8, new_cap);
+    } else {
+        state.paste_buf = try std.heap.c_allocator.realloc(state.paste_buf, new_cap);
+    }
+}
+
 /// Request paste from the compositor: creates a pipe, sends data_offer.receive
 /// with the write end via SCM_RIGHTS, then stores the read end for async polling.
 ///
@@ -183,7 +203,8 @@ pub fn requestPaste(
 pub fn readPastePipe(state: *ClipboardState) bool {
     if (state.paste_pipe_fd < 0) return false;
 
-    while (state.paste_len < state.paste_buf.len) {
+    while (true) {
+        ensurePasteCapacity(state, state.paste_len + 1) catch return false;
         const remaining = state.paste_buf.len - state.paste_len;
         const n = posix.read(state.paste_pipe_fd, state.paste_buf[state.paste_len..][0..remaining]) catch |err| switch (err) {
             error.WouldBlock => return true, // no more data right now, but pipe still open
@@ -192,8 +213,6 @@ pub fn readPastePipe(state: *ClipboardState) bool {
         if (n == 0) return false; // EOF
         state.paste_len += n;
     }
-    // Buffer full — treat as done (truncate at 4096)
-    return false;
 }
 
 // ============================================================================
@@ -220,6 +239,7 @@ test "ClipboardState default initialization" {
     try std.testing.expect(!state.primary_has_text);
     try std.testing.expectEqual(@as(posix.fd_t, -1), state.paste_pipe_fd);
     try std.testing.expectEqual(@as(usize, 0), state.paste_len);
+    try std.testing.expectEqual(@as(usize, 0), state.paste_buf.len);
 }
 
 test "readPastePipe — EOF on empty pipe" {
@@ -228,6 +248,7 @@ test "readPastePipe — EOF on empty pipe" {
     posix.close(fds[1]); // close write end
 
     var state = ClipboardState{};
+    defer if (state.paste_buf.len > 0) std.heap.c_allocator.free(state.paste_buf);
     state.paste_pipe_fd = fds[0];
     state.paste_len = 0;
 
@@ -244,6 +265,7 @@ test "readPastePipe — reads data then EOF" {
     posix.close(fds[1]);
 
     var state = ClipboardState{};
+    defer if (state.paste_buf.len > 0) std.heap.c_allocator.free(state.paste_buf);
     state.paste_pipe_fd = fds[0];
     state.paste_len = 0;
 

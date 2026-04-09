@@ -350,8 +350,14 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
             // Use raw syscall to handle ECHILD gracefully (std.posix.waitpid panics on it).
             if (is_linux) {
                 while (true) {
-                    // Use raw syscall: waitid(P_ALL=0, 0, NULL, WEXITED|WNOHANG, NULL)
-                    const rc = linux.syscall4(.waitid, 0, 0, 0, linux.W.EXITED | linux.W.NOHANG);
+                    // Use raw syscall: wait4(-1, NULL, WNOHANG, NULL)
+                    const rc = linux.syscall4(
+                        .wait4,
+                        @as(usize, @bitCast(@as(isize, -1))),
+                        0,
+                        linux.W.NOHANG,
+                        0,
+                    );
                     const rc_isize: isize = @bitCast(rc);
                     if (rc_isize <= 0) break; // ECHILD or no more children
                 }

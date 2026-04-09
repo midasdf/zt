@@ -280,8 +280,8 @@ pub const Pty = struct {
         // Use WNOHANG: child may already be reaped by SIGCHLD handler.
         // Use raw syscall because std.posix.waitpid panics on ECHILD.
         if (is_linux) {
-            // waitid(P_PID=1, pid, NULL, WEXITED|WNOHANG)
-            _ = linux.syscall4(.waitid, 1, @as(usize, @intCast(self.child_pid)), 0, linux.W.EXITED | linux.W.NOHANG);
+            // wait4(pid, NULL, WNOHANG, NULL)
+            _ = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, linux.W.NOHANG, 0);
         } else {
             _ = std.c.waitpid(self.child_pid, null, 1); // WNOHANG=1
         }
