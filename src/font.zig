@@ -80,6 +80,7 @@ pub fn FontBlob(comptime blob: []const u8) type {
             if (codepoint < 128) return ascii_cache[codepoint];
 
             // Runtime cache for non-ASCII (function-local static via struct pattern)
+            // SAFETY: only called from single-threaded render path
             const S = struct {
                 const CACHE_SIZE: usize = 256;
                 // valid=false means empty slot (avoids confusion with codepoint 0)

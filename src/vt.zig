@@ -126,8 +126,11 @@ pub const Parser = struct {
             self.utf8_expected = 4;
             self.state = .utf8;
             return .none;
+        } else if (byte >= 0x80 and byte <= 0xBF) {
+            // Unexpected continuation byte — emit replacement character
+            return Action{ .print = 0xFFFD };
         } else {
-            // 0x7F (DEL) or invalid lead bytes — ignore
+            // 0x7F (DEL) or invalid lead bytes (0xF8-0xFF) — ignore
             return .none;
         }
     }
@@ -263,6 +266,10 @@ pub const Parser = struct {
             self.intermediate_count = 1;
             self.state = .csi_intermediate;
             return .none;
+        } else if (byte == 0x1B) {
+            // ESC aborts current CSI and transitions to escape state
+            self.state = .escape;
+            return .none;
         } else {
             return .none;
         }
@@ -324,6 +331,9 @@ pub const Parser = struct {
             // Malformed (but NOT 0x3A which is ':')
             self.state = .csi_ignore;
             return .none;
+        } else if (byte == 0x1B) {
+            self.state = .escape;
+            return .none;
         } else {
             return .none;
         }
@@ -339,6 +349,9 @@ pub const Parser = struct {
         } else if (byte >= 0x40 and byte <= 0x7E) {
             self.state = .ground;
             return Action{ .csi_dispatch = self.buildCsiAction(byte) };
+        } else if (byte == 0x1B) {
+            self.state = .escape;
+            return .none;
         } else {
             self.state = .csi_ignore;
             return .none;
@@ -348,6 +361,8 @@ pub const Parser = struct {
     fn handleCsiIgnore(self: *Parser, byte: u8) Action {
         if (byte >= 0x40 and byte <= 0x7E) {
             self.state = .ground;
+        } else if (byte == 0x1B) {
+            self.state = .escape;
         }
         return .none;
     }
@@ -617,7 +632,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         // Decode directly, bypassing per-byte parser state machine overhead.
         // Non-wide chars written directly to cells[] with batch dirty marking.
         if (parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE and
-            !term.insert_mode)
+            !term.insert_mode and term.charsets[term.charset] == .us_ascii)
         {
             const start_i = i;
             var dirty_run_start: usize = @as(usize, term.cursor_y) * @as(usize, term.cols) + term.cursor_x;
@@ -1259,14 +1274,24 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             term.moveCursorRel(-@as(i32, @intCast(n)), 0);
         },
-        'E' => { // CNL — cursor next line
+        'E' => { // CNL — cursor next line (respects scroll region)
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
-            term.moveCursorRel(0, @as(i32, @intCast(n)));
+            term.wrap_next = false;
+            const max_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
+                term.scroll_bottom
+            else
+                term.rows -| 1;
+            term.cursor_y = @min(term.cursor_y + n, max_y);
             term.cursor_x = 0;
         },
-        'F' => { // CPL — cursor preceding line
+        'F' => { // CPL — cursor preceding line (respects scroll region)
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
-            term.moveCursorRel(0, -@as(i32, @intCast(n)));
+            term.wrap_next = false;
+            const min_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
+                term.scroll_top
+            else
+                0;
+            term.cursor_y = if (term.cursor_y >= n) @max(term.cursor_y - n, min_y) else min_y;
             term.cursor_x = 0;
         },
         'G', '`' => { // CHA/HPA — cursor horizontal absolute (1-indexed)
@@ -1350,7 +1375,8 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                     term.queueResponse("\x1b[0n");
                 } else if (p[0] == 6) {
                     var buf: [32]u8 = undefined;
-                    const response = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ term.cursor_y + 1, term.cursor_x + 1 }) catch return;
+                    const report_row = if (term.origin_mode) term.cursor_y -| term.scroll_top + 1 else term.cursor_y + 1;
+                    const response = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ report_row, term.cursor_x + 1 }) catch return;
                     term.queueResponse(response);
                 }
             }
@@ -1367,8 +1393,8 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             const ch = term.last_printed_char;
             if (ch > 0) {
-                const count = @min(n, @as(u16, @intCast(term.cols)) *| @as(u16, @intCast(term.rows)));
-                var rep: u16 = 0;
+                const count = @min(@as(u32, n), @as(u32, term.cols) *| @as(u32, term.rows));
+                var rep: u32 = 0;
                 while (rep < count) : (rep += 1) {
                     handlePrint(ch, term);
                 }
@@ -1384,7 +1410,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                 const bot = if (pc > 1 and p[1] > 0) p[1] - 1 else @as(u16, @intCast(term.rows -| 1));
                 term.setScrollRegion(@intCast(top), @intCast(bot));
                 term.cursor_x = 0;
-                term.cursor_y = 0;
+                term.cursor_y = if (term.origin_mode) term.scroll_top else 0;
                 term.wrap_next = false;
             }
         },
@@ -1787,6 +1813,11 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.cursor_y = @min(term.alt_saved_cursor_y, term.rows -| 1);
                     term.scroll_top = @min(term.alt_saved_scroll_top, term.rows -| 1);
                     term.scroll_bottom = @min(term.alt_saved_scroll_bottom, term.rows -| 1);
+                    // Validate scroll region invariant after potential resize
+                    if (term.scroll_top >= term.scroll_bottom) {
+                        term.scroll_top = 0;
+                        term.scroll_bottom = term.rows -| 1;
+                    }
                     term.wrap_next = term.alt_saved_wrap_next;
                     term.current_attrs = term.alt_saved_attrs;
                     term.current_fg = term.alt_saved_fg;

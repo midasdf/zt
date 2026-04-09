@@ -263,6 +263,8 @@ fn ptyBufferedWrite(
         error.WouldBlock => {
             // Buffer everything — chunk if data exceeds buffer capacity
             const to_buf = @min(data.len, write_buf.len);
+            if (data.len > write_buf.len)
+                std.log.warn("PTY write truncated: {d} bytes dropped", .{data.len - write_buf.len});
             @memcpy(write_buf[0..to_buf], data[0..to_buf]);
             write_pending.* = to_buf;
             if (is_linux) {
@@ -279,6 +281,8 @@ fn ptyBufferedWrite(
     if (written < data.len) {
         const remaining = data.len - written;
         const to_buf = @min(remaining, write_buf.len);
+        if (remaining > write_buf.len)
+            std.log.warn("PTY write truncated: {d} bytes dropped", .{remaining - write_buf.len});
         @memcpy(write_buf[0..to_buf], data[written .. written + to_buf]);
         write_pending.* = to_buf;
         if (is_linux) {
