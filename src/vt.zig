@@ -410,6 +410,13 @@ pub const Parser = struct {
                 // Fall through to store the current byte
             }
         }
+        if (byte == 0x07) {
+            // BEL terminates DCS (like OSC)
+            const payload = self.osc_buf[0..self.osc_len];
+            self.osc_len = 0;
+            self.state = .ground;
+            return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
+        }
         if (byte == 0x1B) {
             // Could be start of ST (ESC \) — wait for next byte
             self.esc_in_osc = true;
@@ -511,6 +518,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                         term.cells[wide_idx] = term.blankCell();
                         term.fg_rgb[wide_idx] = null;
                         term.bg_rgb[wide_idx] = term.current_bg_rgb;
+                        term.ul_color_rgb[wide_idx] = null;
+                        term.hyperlink_ids[wide_idx] = 0;
                         const logical_wide = @as(usize, term.cursor_y) * @as(usize, cols) + term.cursor_x - 1;
                         term.markDirtyRange(.{ .start = logical_wide, .end = logical_wide + 1 });
                     }
@@ -522,6 +531,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                             term.cells[dummy_phys] = term.blankCell();
                             term.fg_rgb[dummy_phys] = null;
                             term.bg_rgb[dummy_phys] = term.current_bg_rgb;
+                            term.ul_color_rgb[dummy_phys] = null;
+                            term.hyperlink_ids[dummy_phys] = 0;
                             const logical_dummy = @as(usize, term.cursor_y) * @as(usize, cols) + dummy_x;
                             term.markDirtyRange(.{ .start = logical_dummy, .end = logical_dummy + 1 });
                         }
@@ -674,6 +685,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                         term.cells[wide_phys] = term.blankCell();
                         term.fg_rgb[wide_phys] = null;
                         term.bg_rgb[wide_phys] = term.current_bg_rgb;
+                        term.ul_color_rgb[wide_phys] = null;
+                        term.hyperlink_ids[wide_phys] = 0;
                         if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
                         term.markDirty(term.cursor_x - 1, term.cursor_y);
                     } else if (term.cells[phys_idx].attrs.wide and term.cursor_x + 1 < cols) {
@@ -681,6 +694,8 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                         term.cells[dummy_phys] = term.blankCell();
                         term.fg_rgb[dummy_phys] = null;
                         term.bg_rgb[dummy_phys] = term.current_bg_rgb;
+                        term.ul_color_rgb[dummy_phys] = null;
+                        term.hyperlink_ids[dummy_phys] = 0;
                         if (term.current_bg_rgb != null) term.has_truecolor_cells = true;
                         term.markDirty(term.cursor_x + 1, term.cursor_y);
                     }
@@ -1306,9 +1321,14 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             term.insertChars(@intCast(n));
         },
-        'd' => { // VPA — vertical position absolute (1-indexed)
+        'd' => { // VPA — vertical position absolute (1-indexed, DECOM-aware)
             const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
-            term.cursor_y = @min(@as(u32, @intCast(row)), term.rows -| 1);
+            if (term.origin_mode) {
+                const abs_row = term.scroll_top + @min(@as(u32, @intCast(row)), term.scroll_bottom -| term.scroll_top);
+                term.cursor_y = abs_row;
+            } else {
+                term.cursor_y = @min(@as(u32, @intCast(row)), term.rows -| 1);
+            }
             term.wrap_next = false;
         },
         'm' => {
@@ -1347,7 +1367,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             const ch = term.last_printed_char;
             if (ch > 0) {
-                const count = @min(n, term.cols);
+                const count = @min(n, @as(u16, @intCast(term.cols)) *| @as(u16, @intCast(term.rows)));
                 var rep: u16 = 0;
                 while (rep < count) : (rep += 1) {
                     handlePrint(ch, term);
@@ -1441,6 +1461,9 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                 term.current_attrs = .{};
                 term.current_fg_rgb = null;
                 term.current_bg_rgb = null;
+                term.current_ul_color_rgb = null;
+                term.current_hyperlink_id = 0;
+                term.vt52_mode = false;
                 term.charset = 0;
                 term.charsets = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii };
                 term.scroll_top = 0;
@@ -1480,7 +1503,9 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                 term.current_attrs.protected = (ps == 1);
             } else if (csi.private_marker == '>' and pc > 0 and p[0] == 0) {
                 // XTVERSION — respond with terminal identification
-                term.queueResponse("\x1bP>|zt(0.5.3)\x1b\\");
+                var xtver_buf: [64]u8 = undefined;
+                const xtver = std.fmt.bufPrint(&xtver_buf, "\x1bP>|zt({s})\x1b\\", .{@import("config").version}) catch return;
+                term.queueResponse(xtver);
             }
         },
         'i' => {}, // MC — Media Copy (printer control, silently accept)
@@ -1646,8 +1671,7 @@ fn parseColonColor(subs: []const u16, count: u3, term: *Term, target: ColorTarge
     } else if (color_type == 2) {
         // TrueColor: 38:2:r:g:b or 38:2::r:g:b (empty colorspace id)
         // Find r,g,b — skip optional colorspace param
-        var ri: u3 = 1;
-        if (count >= 5 and subs[1] == 0) ri = 2; // 38:2::r:g:b (empty colorspace)
+        const ri: u3 = if (count >= 5) 2 else 1; // 5+ params = colorspace present (38:2:cs:r:g:b)
         if (ri + 2 >= count) return;
         if (subs[ri] > 255 or subs[ri + 1] > 255 or subs[ri + 2] > 255) return;
         const r: u8 = @intCast(subs[ri]);
@@ -1836,6 +1860,7 @@ fn handleEsc(esc: EscAction, term: *Term) void {
             term.saved_bg_rgb = term.current_bg_rgb;
             term.saved_ul_color_rgb = term.current_ul_color_rgb;
             term.saved_charset = term.charset;
+            term.saved_charsets = term.charsets;
             term.saved_wrap_next = term.wrap_next;
             term.saved_origin_mode = term.origin_mode;
         },
@@ -1849,6 +1874,7 @@ fn handleEsc(esc: EscAction, term: *Term) void {
             term.current_bg_rgb = term.saved_bg_rgb;
             term.current_ul_color_rgb = term.saved_ul_color_rgb;
             term.charset = term.saved_charset;
+            term.charsets = term.saved_charsets;
             term.wrap_next = term.saved_wrap_next;
             term.origin_mode = term.saved_origin_mode;
         },
@@ -1992,13 +2018,23 @@ fn queryAnsiMode(term: *const Term, mode: u16) u8 {
 
 fn saveDECModes(csi: CsiAction, term: *Term) void {
     const pc = csi.param_count;
-    term.saved_dec_mode_count = 0;
     var i: u8 = 0;
-    while (i < pc and term.saved_dec_mode_count < 32) : (i += 1) {
+    while (i < pc) : (i += 1) {
         const mode = csi.params[i];
         const value = queryDecMode(term, mode) == 1;
-        term.saved_dec_modes[term.saved_dec_mode_count] = .{ .mode = mode, .value = value };
-        term.saved_dec_mode_count += 1;
+        // Update existing entry or insert new
+        var found = false;
+        for (0..term.saved_dec_mode_count) |idx| {
+            if (term.saved_dec_modes[idx].mode == mode) {
+                term.saved_dec_modes[idx].value = value;
+                found = true;
+                break;
+            }
+        }
+        if (!found and term.saved_dec_mode_count < 32) {
+            term.saved_dec_modes[term.saved_dec_mode_count] = .{ .mode = mode, .value = value };
+            term.saved_dec_mode_count += 1;
+        }
     }
 }
 

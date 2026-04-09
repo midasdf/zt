@@ -695,12 +695,43 @@ fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
 
     // Translate macOS keycode → evdev keycode
     const evdev_code = input_mod.macosToEvdev(@intCast(keycode & 0x7F));
-    if (evdev_code != 0) {
+
+    // Determine if this key produces text (will be handled by insertText via IME path)
+    // or is a special key (arrows, F-keys, etc.) that must go through KeyEvent.
+    // Only emit KeyEvent for non-text keys to avoid double output with insertText.
+    const is_special = evdev_code != 0 and switch (evdev_code) {
+        input_mod.KEY.ESC, input_mod.KEY.ENTER, input_mod.KEY.BACKSPACE, input_mod.KEY.TAB,
+        input_mod.KEY.UP, input_mod.KEY.DOWN, input_mod.KEY.LEFT, input_mod.KEY.RIGHT,
+        input_mod.KEY.HOME, input_mod.KEY.END, input_mod.KEY.PAGEUP, input_mod.KEY.PAGEDOWN,
+        input_mod.KEY.INSERT, input_mod.KEY.DELETE,
+        input_mod.KEY.F1, input_mod.KEY.F2, input_mod.KEY.F3, input_mod.KEY.F4,
+        input_mod.KEY.F5, input_mod.KEY.F6, input_mod.KEY.F7, input_mod.KEY.F8,
+        input_mod.KEY.F9, input_mod.KEY.F10, input_mod.KEY.F11, input_mod.KEY.F12,
+        => true,
+        else => false,
+    };
+
+    if (is_special) {
         backend.pushEvent(.{ .key = .{
             .keycode = evdev_code,
             .pressed = true,
             .modifiers = flagsToModifiers(flags),
         } });
+        return; // Special keys don't go through IME
+    }
+
+    // Text-producing keys: let IME path handle via interpretKeyEvents → insertText.
+    // Ctrl+key combos still need KeyEvent since insertText filters single-byte ASCII.
+    const mods = flagsToModifiers(flags);
+    if (mods.ctrl or mods.alt) {
+        if (evdev_code != 0) {
+            backend.pushEvent(.{ .key = .{
+                .keycode = evdev_code,
+                .pressed = true,
+                .modifiers = mods,
+            } });
+        }
+        return;
     }
 
     // Forward to input method for IME handling:
@@ -822,7 +853,10 @@ fn ztWindowShouldClose(self_view: id, _: SEL, _: id) callconv(.c) BOOL {
     if (MacosBackend.getBackendFromView(self_view)) |backend| {
         backend.pushEvent(.close);
     }
-    return YES;
+    // Return NO to prevent Cocoa from destroying the window before our
+    // event loop processes the .close event. The event loop will exit
+    // and cleanup happens via defer chains.
+    return NO;
 }
 
 fn ztWindowDidBecomeKey(self_view: id, _: SEL, _: id) callconv(.c) void {

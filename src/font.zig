@@ -117,6 +117,8 @@ pub fn FontBlob(comptime blob: []const u8) type {
                     const h = std.mem.readInt(u16, blob[entry_off + 6 ..][0..2], .little);
                     const bmp_off = std.mem.readInt(u32, blob[entry_off + 8 ..][0..4], .little);
                     const bmp_len = std.mem.readInt(u16, blob[entry_off + 12 ..][0..2], .little);
+                    // Bounds check: reject malformed blob entries
+                    if (bitmap_offset + bmp_off + bmp_len > blob.len) return null;
                     return .{
                         .codepoint = codepoint,
                         .width = w,

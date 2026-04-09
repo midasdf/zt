@@ -137,6 +137,9 @@ pub fn renderCell(
     const px_x = cell_x * font_w * scale;
     const px_y = cell_y * font_h * scale;
 
+    // Row-level bounds: prevent writing past row boundary for wide chars
+    if ((px_x + scaled_w) * bpp > stride) return;
+
     // 6. Fill background rect (scaled dimensions)
     if (!skip_bg and pixel_format == .bgra32) {
         const bg_packed = [4]u8{ bg_color.b, bg_color.g, bg_color.r, 0xFF };
@@ -249,12 +252,14 @@ pub fn renderCell(
             1 => drawUnderlineSingle(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),
             2 => {
                 // Double: two lines separated by scale pixels, both within cell
-                const dbl_start = if (ul_start + 2 * scale >= cell_bottom) ul_start -| (2 * scale) else ul_start;
+                const dbl_overflow = if (ul_start + 3 * scale > cell_bottom) (ul_start + 3 * scale) - cell_bottom else 0;
+                const dbl_start = ul_start -| dbl_overflow;
                 drawUnderlineDouble(buffer, stride, px_x, px_y, dbl_start, scaled_w, ul_color, max_offset, pixel_format, scale);
             },
             3 => {
                 // Curly: 3-pixel wave, shift up to stay in cell
-                const curly_start = if (ul_start + 3 * scale > cell_bottom) ul_start -| (3 * scale) else ul_start;
+                const curly_overflow = if (ul_start + 3 * scale > cell_bottom) (ul_start + 3 * scale) - cell_bottom else 0;
+                const curly_start = ul_start -| curly_overflow;
                 drawUnderlineCurly(buffer, stride, px_x, px_y, curly_start, scaled_w, ul_color, max_offset, pixel_format, scale);
             },
             4 => drawUnderlineDotted(buffer, stride, px_x, px_y, ul_start, scaled_w, ul_color, max_offset, pixel_format, scale),

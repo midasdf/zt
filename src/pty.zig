@@ -162,6 +162,8 @@ pub const Pty = struct {
             var path_env_buf: [1024]u8 = undefined;
             const path_env = std.fmt.bufPrintZ(&path_env_buf, "PATH={s}", .{path_val}) catch "PATH=/usr/local/bin:/usr/bin:/bin";
 
+            // Capacity 32 entries; currently max 15 used (10 base + 5 Linux display vars).
+            // If adding more entries, verify ei stays < 31 (last slot must be null sentinel).
             var env_arr: [32:null]?[*:0]const u8 = .{null} ** 32;
             var ei: usize = 0;
             env_arr[ei] = "TERM=xterm-256color";
@@ -264,7 +266,9 @@ pub const Pty = struct {
         posix.close(self.master_fd);
         // Kill child if still running
         posix.kill(self.child_pid, posix.SIG.TERM) catch {};
-        _ = posix.waitpid(self.child_pid, 0);
+        // Use WNOHANG: child may already be reaped by SIGCHLD handler
+        const WNOHANG: u32 = if (@import("builtin").os.tag == .linux) std.os.linux.W.NOHANG else 1;
+        _ = posix.waitpid(self.child_pid, WNOHANG);
     }
 
     pub fn read(self: *Pty, buf: []u8) !usize {
