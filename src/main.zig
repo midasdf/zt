@@ -1016,6 +1016,32 @@ pub fn main() !void {
         last_render_ns = loop_now;
         bytes_since_render = 0;
 
+        // Handle BEL
+        if (term.bell_pending) {
+            term.bell_pending = false;
+            if (@hasDecl(Backend, "bell")) {
+                backend.bell();
+            }
+        }
+
+        // Update window title if changed by OSC 0/2
+        if (term.title_changed) {
+            term.title_changed = false;
+            if (@hasDecl(Backend, "updateTitle")) {
+                if (term.title_len > 0) {
+                    // Prefix with "zt — " so the version/app name stays visible
+                    var title_buf: [280]u8 = undefined;
+                    const prefix = "zt " ++ config.version ++ " — ";
+                    @memcpy(title_buf[0..prefix.len], prefix);
+                    const tlen: usize = term.title_len;
+                    @memcpy(title_buf[prefix.len..][0..tlen], term.title[0..tlen]);
+                    backend.updateTitle(title_buf[0 .. prefix.len + tlen]);
+                } else {
+                    backend.updateTitle("zt " ++ config.version);
+                }
+            }
+        }
+
         // Update IME cursor position (X11 only)
         if (@hasDecl(Backend, "updateImeCursorPos")) {
             backend.updateImeCursorPos(

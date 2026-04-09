@@ -10,7 +10,8 @@ const testing = std.testing;
 
 pub const CsiAction = struct {
     params: [16]u16 = [_]u16{0} ** 16,
-    sub_params: [16]u16 = [_]u16{0} ** 16,
+    sub_params: [16][5]u16 = [_][5]u16{[_]u16{0} ** 5} ** 16,
+    sub_param_counts: [16]u3 = [_]u3{0} ** 16,
     has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     param_count: u8 = 0,
     intermediates: [2]u8 = [_]u8{0} ** 2,
@@ -62,7 +63,8 @@ pub const Parser = struct {
     intermediate_count: u8 = 0,
     private_marker: u8 = 0,
     in_subparam: bool = false,
-    sub_params: [16]u16 = [_]u16{0} ** 16,
+    sub_params: [16][5]u16 = [_][5]u16{[_]u16{0} ** 5} ** 16,
+    sub_param_counts: [16]u3 = [_]u3{0} ** 16,
     has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     // UTF-8 accumulator
     utf8_buf: [4]u8 = undefined,
@@ -269,10 +271,13 @@ pub const Parser = struct {
     fn handleCsiParam(self: *Parser, byte: u8) Action {
         if (byte >= '0' and byte <= '9') {
             if (self.in_subparam) {
-                // Accumulate first colon sub-parameter digit
+                // Accumulate colon sub-parameter digit
                 const idx = self.param_count;
                 if (idx < 16) {
-                    self.sub_params[idx] = self.sub_params[idx] *| 10 +| (byte - '0');
+                    const si = self.sub_param_counts[idx];
+                    if (si < 5) {
+                        self.sub_params[idx][si] = self.sub_params[idx][si] *| 10 +| (byte - '0');
+                    }
                 }
             } else {
                 const idx = self.param_count;
@@ -282,16 +287,20 @@ pub const Parser = struct {
             }
             return .none;
         } else if (byte == ':') {
-            // Colon sub-parameter separator (e.g., \e[4:3m)
+            // Colon sub-parameter separator (e.g., \e[4:3m, \e[38:2:r:g:bm)
+            const idx = self.param_count;
             if (!self.in_subparam) {
-                // First colon: mark this param as having a sub-param
-                const idx = self.param_count;
+                // First colon: mark this param as having sub-params
                 if (idx < 16) {
                     self.has_sub |= @as(u16, 1) << @intCast(idx);
                 }
                 self.in_subparam = true;
+            } else {
+                // Subsequent colon: advance to next sub-param slot
+                if (idx < 16 and self.sub_param_counts[idx] < 4) {
+                    self.sub_param_counts[idx] += 1;
+                }
             }
-            // Subsequent colons (e.g., 58:2::r:g:b) — ignore for now
             return .none;
         } else if (byte == ';') {
             // Next param — ends any sub-parameter
@@ -416,7 +425,8 @@ pub const Parser = struct {
 
     fn clearCsi(self: *Parser) void {
         self.params = [_]u16{0} ** 16;
-        self.sub_params = [_]u16{0} ** 16;
+        self.sub_params = [_][5]u16{[_]u16{0} ** 5} ** 16;
+        self.sub_param_counts = [_]u3{0} ** 16;
         self.has_sub = 0;
         self.param_count = 0;
         self.intermediates = [_]u8{0} ** 2;
@@ -429,6 +439,7 @@ pub const Parser = struct {
         return CsiAction{
             .params = self.params,
             .sub_params = self.sub_params,
+            .sub_param_counts = self.sub_param_counts,
             .has_sub = self.has_sub,
             .param_count = self.param_count,
             .intermediates = self.intermediates,
@@ -757,6 +768,7 @@ fn handleOsc(payload: []const u8, term: *Term) void {
             const len = @min(param.len, 255);
             @memcpy(term.title[0..len], param[0..len]);
             term.title_len = @intCast(len);
+            term.title_changed = true;
         },
         1 => {}, // Set icon name only — silently accept
         4 => {}, // Set color palette — silently accept
@@ -1199,7 +1211,7 @@ fn handleControl(c: u8, term: *Term) void {
             if (term.cursor_x > 0) term.cursor_x -= 1;
         },
         0x09 => term.tputtab(1), // HT — advance to next tab stop
-        0x07 => {}, // BEL — ignore
+        0x07 => term.bell_pending = true, // BEL
         0x0E => term.charset = 1, // SO (LS1 — Locking shift 1, activate G1)
         0x0F => term.charset = 0, // SI (LS0 — Locking shift 0, activate G0)
         else => {},
@@ -1514,7 +1526,7 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             4 => {
                 // Check for sub-param (4:N styled underline)
                 if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
-                    const style = csi.sub_params[i];
+                    const style = csi.sub_params[i][0];
                     term.current_attrs.underline_style = if (style <= 5) @intCast(style) else 1;
                 } else {
                     term.current_attrs.underline_style = 1; // single
@@ -1537,8 +1549,12 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             29 => term.current_attrs.strikethrough = false,
             30...37 => term.current_fg = @intCast(param - 30),
             38 => {
-                // Extended foreground
-                i = parseExtendedColor(p, pc, i, term, true);
+                // Extended foreground: colon form (38:2:r:g:b) or semicolon (38;2;r;g;b)
+                if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
+                    parseColonColor(csi.sub_params[i][0..], csi.sub_param_counts[i] + 1, term, .fg);
+                } else {
+                    i = parseExtendedColor(p, pc, i, term, true);
+                }
             },
             39 => {
                 term.current_fg = 7;
@@ -1546,16 +1562,24 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             },
             40...47 => term.current_bg = @intCast(param - 40),
             48 => {
-                // Extended background
-                i = parseExtendedColor(p, pc, i, term, false);
+                // Extended background: colon form (48:2:r:g:b) or semicolon (48;2;r;g;b)
+                if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
+                    parseColonColor(csi.sub_params[i][0..], csi.sub_param_counts[i] + 1, term, .bg);
+                } else {
+                    i = parseExtendedColor(p, pc, i, term, false);
+                }
             },
             49 => {
                 term.current_bg = 0;
                 term.current_bg_rgb = null;
             },
             58 => {
-                // Extended underline color (58;2;r;g;b or 58;5;n)
-                i = parseUnderlineColor(p, pc, i, term);
+                // Extended underline color: colon form (58:2:r:g:b) or semicolon (58;2;r;g;b)
+                if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
+                    parseColonColor(csi.sub_params[i][0..], csi.sub_param_counts[i] + 1, term, .ul);
+                } else {
+                    i = parseUnderlineColor(p, pc, i, term);
+                }
             },
             59 => term.current_ul_color_rgb = null,
             90...97 => term.current_fg = @intCast(param - 90 + 8),
@@ -1596,6 +1620,50 @@ fn parseExtendedColor(p: [16]u16, pc: u8, start: u8, term: *Term, is_fg: bool) u
         }
     }
     return i;
+}
+
+const ColorTarget = enum { fg, bg, ul };
+
+/// Parse colon-form extended color: sub-params are [type, ...values]
+/// Handles 2:r:g:b, 2::r:g:b (with empty colorspace), and 5:n
+fn parseColonColor(subs: []const u16, count: u3, term: *Term, target: ColorTarget) void {
+    if (count < 1) return;
+    const color_type = subs[0];
+    if (color_type == 5 and count >= 2) {
+        // 256-color: 38:5:n
+        if (subs[1] > 255) return;
+        const color: u8 = @intCast(subs[1]);
+        switch (target) {
+            .fg => {
+                term.current_fg = color;
+                term.current_fg_rgb = null;
+            },
+            .bg => {
+                term.current_bg = color;
+                term.current_bg_rgb = null;
+            },
+            .ul => {
+                const render = @import("render.zig");
+                const pal = render.palette[color];
+                term.current_ul_color_rgb = .{ pal.r, pal.g, pal.b };
+            },
+        }
+    } else if (color_type == 2) {
+        // TrueColor: 38:2:r:g:b or 38:2::r:g:b (empty colorspace id)
+        // Find r,g,b — skip optional colorspace param
+        var ri: u3 = 1;
+        if (count >= 5 and subs[1] == 0) ri = 2; // 38:2::r:g:b (empty colorspace)
+        if (ri + 2 >= count) return;
+        if (subs[ri] > 255 or subs[ri + 1] > 255 or subs[ri + 2] > 255) return;
+        const r: u8 = @intCast(subs[ri]);
+        const g: u8 = @intCast(subs[ri + 1]);
+        const b: u8 = @intCast(subs[ri + 2]);
+        switch (target) {
+            .fg => term.current_fg_rgb = .{ r, g, b },
+            .bg => term.current_bg_rgb = .{ r, g, b },
+            .ul => term.current_ul_color_rgb = .{ r, g, b },
+        }
+    }
 }
 
 fn resetSgr(term: *Term) void {
@@ -1670,11 +1738,20 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             },
             1049 => {
                 if (set) {
-                    term.saved_cursor_x = term.cursor_x;
-                    term.saved_cursor_y = term.cursor_y;
-                    term.saved_scroll_top = term.scroll_top;
-                    term.saved_scroll_bottom = term.scroll_bottom;
-                    term.saved_wrap_next = term.wrap_next;
+                    // Save to alt_saved_* (separate from DECSC/DECRC saved_*)
+                    term.alt_saved_cursor_x = term.cursor_x;
+                    term.alt_saved_cursor_y = term.cursor_y;
+                    term.alt_saved_scroll_top = term.scroll_top;
+                    term.alt_saved_scroll_bottom = term.scroll_bottom;
+                    term.alt_saved_wrap_next = term.wrap_next;
+                    term.alt_saved_attrs = term.current_attrs;
+                    term.alt_saved_fg = term.current_fg;
+                    term.alt_saved_bg = term.current_bg;
+                    term.alt_saved_fg_rgb = term.current_fg_rgb;
+                    term.alt_saved_bg_rgb = term.current_bg_rgb;
+                    term.alt_saved_ul_color_rgb = term.current_ul_color_rgb;
+                    term.alt_saved_charset = term.charset;
+                    term.alt_saved_charsets = term.charsets;
                     term.switchScreen(true) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
@@ -1686,11 +1763,20 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.switchScreen(false) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
-                    term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
-                    term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
-                    term.scroll_top = @min(term.saved_scroll_top, term.rows -| 1);
-                    term.scroll_bottom = @min(term.saved_scroll_bottom, term.rows -| 1);
-                    term.wrap_next = term.saved_wrap_next;
+                    // Restore from alt_saved_* (separate from DECSC/DECRC saved_*)
+                    term.cursor_x = @min(term.alt_saved_cursor_x, term.cols -| 1);
+                    term.cursor_y = @min(term.alt_saved_cursor_y, term.rows -| 1);
+                    term.scroll_top = @min(term.alt_saved_scroll_top, term.rows -| 1);
+                    term.scroll_bottom = @min(term.alt_saved_scroll_bottom, term.rows -| 1);
+                    term.wrap_next = term.alt_saved_wrap_next;
+                    term.current_attrs = term.alt_saved_attrs;
+                    term.current_fg = term.alt_saved_fg;
+                    term.current_bg = term.alt_saved_bg;
+                    term.current_fg_rgb = term.alt_saved_fg_rgb;
+                    term.current_bg_rgb = term.alt_saved_bg_rgb;
+                    term.current_ul_color_rgb = term.alt_saved_ul_color_rgb;
+                    term.charset = term.alt_saved_charset;
+                    term.charsets = term.alt_saved_charsets;
                 }
             },
             2004 => term.bracketed_paste = set,

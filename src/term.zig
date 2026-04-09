@@ -121,7 +121,7 @@ pub const Term = struct {
     current_hyperlink_id: u16 = 0,
 
     // VT response buffer — accumulated responses flushed by event loop via ptyBufferedWrite
-    vt_response_buf: [1024]u8 = undefined,
+    vt_response_buf: [4096]u8 = undefined,
     vt_response_len: u16 = 0,
 
     // OSC 52 clipboard output
@@ -170,6 +170,8 @@ pub const Term = struct {
     // Window/icon title (OSC 0/1/2)
     title: [256]u8 = undefined,
     title_len: u8 = 0,
+    title_changed: bool = false,
+    bell_pending: bool = false,
 
     // Focus event tracking (DECSET ?1004)
     focus_events: bool = false,
@@ -191,6 +193,22 @@ pub const Term = struct {
     saved_fg_rgb: ?[3]u8 = null,
     saved_bg_rgb: ?[3]u8 = null,
     saved_ul_color_rgb: ?[3]u8 = null,
+    saved_charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
+
+    // Separate save area for ?1049 alt screen (must not collide with DECSC/DECRC)
+    alt_saved_cursor_x: u32 = 0,
+    alt_saved_cursor_y: u32 = 0,
+    alt_saved_scroll_top: u32 = 0,
+    alt_saved_scroll_bottom: u32 = 0,
+    alt_saved_wrap_next: bool = false,
+    alt_saved_attrs: Cell.Attrs = .{},
+    alt_saved_fg: u8 = 7,
+    alt_saved_bg: u8 = 0,
+    alt_saved_fg_rgb: ?[3]u8 = null,
+    alt_saved_bg_rgb: ?[3]u8 = null,
+    alt_saved_ul_color_rgb: ?[3]u8 = null,
+    alt_saved_charset: u2 = 0,
+    alt_saved_charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);

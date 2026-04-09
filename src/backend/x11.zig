@@ -23,7 +23,7 @@ pub const Event = union(enum) {
 };
 
 pub const PasteEvent = struct {
-    data: [4096]u8 = undefined,
+    data: [16384]u8 = undefined,
     len: u32 = 0,
 
     pub fn slice(self: *const PasteEvent) []const u8 {
@@ -77,6 +77,7 @@ pub const X11Backend = struct {
     clipboard_atom: c.xcb_atom_t = 0,
     utf8_string_atom: c.xcb_atom_t = 0,
     zt_paste_atom: c.xcb_atom_t = 0, // property for receiving paste data
+    net_wm_name_atom: c.xcb_atom_t = 0,
     // XKB (keyboard layout)
     xkb_ctx: ?*c.xkb_context = null,
     xkb_keymap: ?*c.xkb_keymap = null,
@@ -201,6 +202,7 @@ pub const X11Backend = struct {
         const clipboard_cookie = c.xcb_intern_atom(connection, 0, 9, "CLIPBOARD");
         const utf8_cookie = c.xcb_intern_atom(connection, 0, 11, "UTF8_STRING");
         const paste_cookie = c.xcb_intern_atom(connection, 0, 8, "ZT_PASTE");
+        const net_wm_name_cookie = c.xcb_intern_atom(connection, 0, 12, "_NET_WM_NAME");
         const xembed_cookie = c.xcb_intern_atom(connection, 0, 7, "_XEMBED");
         const xembed_info_cookie = c.xcb_intern_atom(connection, 0, 12, "_XEMBED_INFO");
 
@@ -244,6 +246,11 @@ pub const X11Backend = struct {
         if (clipboard_reply) |r| clipboard_atom = r.*.atom;
         if (utf8_reply) |r| utf8_string_atom = r.*.atom;
         if (paste_reply) |r| zt_paste_atom = r.*.atom;
+
+        const net_wm_name_reply = c.xcb_intern_atom_reply(connection, net_wm_name_cookie, null);
+        defer if (net_wm_name_reply) |r| std.c.free(r);
+        var net_wm_name_atom: c.xcb_atom_t = 0;
+        if (net_wm_name_reply) |r| net_wm_name_atom = r.*.atom;
 
         const xembed_reply = c.xcb_intern_atom_reply(connection, xembed_cookie, null);
         defer if (xembed_reply) |r| std.c.free(r);
@@ -317,6 +324,7 @@ pub const X11Backend = struct {
             .clipboard_atom = clipboard_atom,
             .utf8_string_atom = utf8_string_atom,
             .zt_paste_atom = zt_paste_atom,
+            .net_wm_name_atom = net_wm_name_atom,
             .screen_id = screen_num,
             .embed_parent = embed_window,
             .xembed_atom = xembed_atom,
@@ -633,6 +641,38 @@ pub const X11Backend = struct {
 
     pub fn getBpp(_: *Self) u32 {
         return 4;
+    }
+
+    /// Ring the X11 bell (urgency hint).
+    pub fn bell(self: *Self) void {
+        _ = c.xcb_bell(self.connection, 0);
+    }
+
+    /// Update the X11 window title (WM_NAME + _NET_WM_NAME for UTF-8).
+    pub fn updateTitle(self: *Self, title: []const u8) void {
+        _ = c.xcb_change_property(
+            self.connection,
+            c.XCB_PROP_MODE_REPLACE,
+            self.window,
+            c.XCB_ATOM_WM_NAME,
+            c.XCB_ATOM_STRING,
+            8,
+            @intCast(title.len),
+            title.ptr,
+        );
+        // Also set _NET_WM_NAME with UTF8_STRING for proper Unicode support
+        if (self.net_wm_name_atom != 0 and self.utf8_string_atom != 0) {
+            _ = c.xcb_change_property(
+                self.connection,
+                c.XCB_PROP_MODE_REPLACE,
+                self.window,
+                self.net_wm_name_atom,
+                self.utf8_string_atom,
+                8,
+                @intCast(title.len),
+                title.ptr,
+            );
+        }
     }
 
     /// Update IME candidate window position to follow the terminal cursor.
@@ -990,12 +1030,14 @@ pub const X11Backend = struct {
                 } };
             },
             c.XCB_KEY_RELEASE => {
+                // Update XKB state on release so modifier tracking stays in sync.
+                // Use update_key(UP) instead of update_mask because the X11
+                // state field in a release event reflects the PRE-release state.
                 const key: *c.xcb_key_release_event_t = @ptrCast(@alignCast(event));
-                return .{ .key = .{
-                    .keycode = key.*.detail -| 8,
-                    .pressed = false,
-                    .modifiers = xcbStateToMods(key.*.state),
-                } };
+                if (self.xkb_state) |state| {
+                    _ = c.xkb_state_update_key(state, key.*.detail, c.XKB_KEY_UP);
+                }
+                continue;
             },
             c.XCB_CONFIGURE_NOTIFY => {
                 const cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(event));
@@ -1042,7 +1084,7 @@ pub const X11Backend = struct {
                     const len: u32 = @intCast(c.xcb_get_property_value_length(reply));
                     if (len > 0) {
                         const data: [*]const u8 = @ptrCast(c.xcb_get_property_value(reply));
-                        const clamped = @min(len, 4096);
+                        const clamped = @min(len, 16384);
                         @memcpy(self.paste_buf.data[0..clamped], data[0..clamped]);
                         self.paste_buf.len = clamped;
                         return .{ .paste = self.paste_buf };
@@ -1090,8 +1132,28 @@ pub const X11Backend = struct {
                 continue;
             },
             c.XCB_DESTROY_NOTIFY => return .close,
-            c.XCB_FOCUS_IN => return .focus_in,
-            c.XCB_FOCUS_OUT => return .focus_out,
+            c.XCB_FOCUS_IN => {
+                // Re-establish XIM IC focus so the IM server accepts forwarded keys
+                if (self.xim) |xim| {
+                    if (self.xim_connected and self.xic != 0) {
+                        _ = c.xcb_xim_set_ic_focus(xim, self.xic);
+                    }
+                }
+                return .focus_in;
+            },
+            c.XCB_FOCUS_OUT => {
+                // Clear stale XIM pending state — the IM server will not
+                // respond to a key forwarded before focus was lost.
+                self.has_pending_xim = false;
+                self.suppress_xim_result = false;
+                // Notify IM server that IC lost focus
+                if (self.xim) |xim| {
+                    if (self.xim_connected and self.xic != 0) {
+                        _ = c.xcb_xim_unset_ic_focus(xim, self.xic);
+                    }
+                }
+                return .focus_out;
+            },
             else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
         }
         } // while (true)

@@ -221,7 +221,7 @@ pub const Event = union(enum) {
 };
 
 pub const PasteEvent = struct {
-    data: [4096]u8 = undefined,
+    data: [16384]u8 = undefined,
     len: u32 = 0,
 
     pub fn slice(self: *const PasteEvent) []const u8 {

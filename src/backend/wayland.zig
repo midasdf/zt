@@ -28,7 +28,7 @@ pub const Event = union(enum) {
 };
 
 pub const PasteEvent = struct {
-    data: [4096]u8 = undefined,
+    data: [16384]u8 = undefined,
     len: u32 = 0,
 
     pub fn slice(self: *const PasteEvent) []const u8 {
@@ -630,6 +630,13 @@ pub const WaylandBackend = struct {
 
     pub fn flush(self: *Self) void {
         self.conn.flush() catch {};
+    }
+
+    /// Update the Wayland window title via xdg_toplevel.set_title.
+    pub fn updateTitle(self: *Self, title: []const u8) void {
+        // Clamp to 251 bytes — putString uses 4 (len) + N + 1 (NUL) + padding in 256-byte payload
+        const clamped = title[0..@min(title.len, 251)];
+        xdg_shell.setTitle(&self.conn, self.toplevel_id, clamped) catch {};
     }
 
     // ========================================================================
