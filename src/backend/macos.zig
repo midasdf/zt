@@ -221,11 +221,12 @@ pub const Event = union(enum) {
 };
 
 pub const PasteEvent = struct {
-    data: [16384]u8 = undefined,
+    ptr: [*]const u8 = undefined,
     len: u32 = 0,
 
     pub fn slice(self: *const PasteEvent) []const u8 {
-        return self.data[0..self.len];
+        if (self.len == 0) return &.{};
+        return self.ptr[0..self.len];
     }
 };
 
@@ -277,6 +278,8 @@ pub const MacosBackend = struct {
     event_queue: [QUEUE_SIZE]Event = undefined,
     event_head: u32 = 0,
     event_tail: u32 = 0,
+
+    paste_buf_data: [16384]u8 = undefined,
 
     has_marked_text: bool = false,
 
@@ -928,11 +931,9 @@ fn handlePaste(backend: *MacosBackend) void {
     const len = std.mem.len(cstr);
     if (len == 0) return;
 
-    var paste_event: PasteEvent = .{};
-    const copy_len = @min(len, paste_event.data.len);
-    @memcpy(paste_event.data[0..copy_len], cstr[0..copy_len]);
-    paste_event.len = @intCast(copy_len);
-    backend.pushEvent(.{ .paste = paste_event });
+    const copy_len = @min(len, backend.paste_buf_data.len);
+    @memcpy(backend.paste_buf_data[0..copy_len], cstr[0..copy_len]);
+    backend.pushEvent(.{ .paste = .{ .ptr = &backend.paste_buf_data, .len = @intCast(copy_len) } });
 }
 
 fn createNSString(str: [*:0]const u8) id {

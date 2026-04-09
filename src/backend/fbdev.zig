@@ -172,7 +172,7 @@ pub const FbdevBackend = struct {
             var c_path: [32:0]u8 = undefined;
             @memcpy(c_path[0..path.len], path);
             c_path[path.len] = 0;
-            const fd = std.posix.open(&c_path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
+            const fd = std.posix.open(c_path[0..path.len :0], .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
 
             // Check if it's a keyboard
             var key_bits: [96]u8 = [_]u8{0} ** 96;

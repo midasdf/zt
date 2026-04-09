@@ -347,10 +347,20 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
         SIG_CHLD => blk: {
             // Reap zombie children (clipboard helpers, etc.) without exiting.
             // PTY child death is detected by read() returning 0 in the event loop.
-            const WNOHANG: u32 = if (is_linux) linux.W.NOHANG else 1; // WNOHANG=1 on macOS/BSD too
-            while (true) {
-                const result = std.posix.waitpid(-1, WNOHANG);
-                if (result.pid <= 0) break; // no more children to reap
+            // Use raw syscall to handle ECHILD gracefully (std.posix.waitpid panics on it).
+            if (is_linux) {
+                while (true) {
+                    // Use raw syscall: waitid(P_ALL=0, 0, NULL, WEXITED|WNOHANG, NULL)
+                    const rc = linux.syscall4(.waitid, 0, 0, 0, linux.W.EXITED | linux.W.NOHANG);
+                    const rc_isize: isize = @bitCast(rc);
+                    if (rc_isize <= 0) break; // ECHILD or no more children
+                }
+            } else {
+                // macOS: use std.c.waitpid which returns -1/ECHILD safely
+                while (true) {
+                    const rc = std.c.waitpid(-1, null, 1); // WNOHANG=1
+                    if (rc <= 0) break;
+                }
             }
             break :blk true;
         },
@@ -500,7 +510,7 @@ fn handleBackendEvent(
                 term.resize(new_cols, new_rows) catch |err| {
                     std.log.err("term resize: {}", .{err});
                 };
-                pty_ptr.resize(@intCast(new_cols), @intCast(new_rows)) catch |err| {
+                pty_ptr.resize(@intCast(@min(new_cols, 65535)), @intCast(@min(new_rows, 65535))) catch |err| {
                     std.log.err("pty resize: {}", .{err});
                 };
                 backend.resize(rsz.width, rsz.height) catch |err| {
@@ -673,7 +683,7 @@ pub fn main() !void {
             const new_rows = actual.h / config.cell_height;
             if (new_cols > 0 and new_rows > 0) {
                 term.resize(new_cols, new_rows) catch {};
-                pty.resize(@intCast(new_cols), @intCast(new_rows)) catch {};
+                pty.resize(@intCast(@min(new_cols, 65535)), @intCast(@min(new_rows, 65535))) catch {};
                 backend.resize(actual.w, actual.h) catch {};
             }
         }

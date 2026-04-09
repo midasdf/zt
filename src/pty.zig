@@ -277,9 +277,14 @@ pub const Pty = struct {
         // Kill child first, then close — avoids SIGHUP+SIGTERM race
         posix.kill(self.child_pid, posix.SIG.TERM) catch {};
         posix.close(self.master_fd);
-        // Use WNOHANG: child may already be reaped by SIGCHLD handler
-        const WNOHANG: u32 = if (@import("builtin").os.tag == .linux) std.os.linux.W.NOHANG else 1;
-        _ = posix.waitpid(self.child_pid, WNOHANG);
+        // Use WNOHANG: child may already be reaped by SIGCHLD handler.
+        // Use raw syscall because std.posix.waitpid panics on ECHILD.
+        if (is_linux) {
+            // waitid(P_PID=1, pid, NULL, WEXITED|WNOHANG)
+            _ = linux.syscall4(.waitid, 1, @as(usize, @intCast(self.child_pid)), 0, linux.W.EXITED | linux.W.NOHANG);
+        } else {
+            _ = std.c.waitpid(self.child_pid, null, 1); // WNOHANG=1
+        }
     }
 
     pub fn read(self: *Pty, buf: []u8) !usize {

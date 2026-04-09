@@ -51,11 +51,12 @@ pub const WL_POINTER_SET_CURSOR: u16 = 0;
 pub const WP_CURSOR_SHAPE_MANAGER_GET_POINTER: u16 = 1;
 
 // wp_cursor_shape_device_v1 requests
-pub const WP_CURSOR_SHAPE_DEVICE_SET_SHAPE: u16 = 0;
+// opcode 0 = destroy, opcode 1 = set_shape
+pub const WP_CURSOR_SHAPE_DEVICE_SET_SHAPE: u16 = 1;
 
-// Cursor shape: default (text cursor would be 24/xterm, but default=1 for general)
+// wp_cursor_shape_device_v1 shape enum values (from cursor-shape-v1.xml)
 pub const CURSOR_DEFAULT: u32 = 1;
-pub const CURSOR_TEXT: u32 = 24;
+pub const CURSOR_TEXT: u32 = 9;
 
 // ============================================================================
 // KeyboardState

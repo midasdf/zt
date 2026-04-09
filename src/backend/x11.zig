@@ -23,11 +23,12 @@ pub const Event = union(enum) {
 };
 
 pub const PasteEvent = struct {
-    data: [16384]u8 = undefined,
+    ptr: [*]const u8 = undefined,
     len: u32 = 0,
 
     pub fn slice(self: *const PasteEvent) []const u8 {
-        return self.data[0..self.len];
+        if (self.len == 0) return &.{};
+        return self.ptr[0..self.len];
     }
 };
 
@@ -101,7 +102,8 @@ pub const X11Backend = struct {
     last_ime_y: i16 = -1,
     pending_event: ?*c.xcb_generic_event_t = null, // event pushed back during coalescing
     keyboard_initialized: bool = false, // XKB + XIM lazy init on first key
-    paste_buf: PasteEvent = .{},
+    paste_buf_data: [16384]u8 = undefined,
+    paste_buf_len: u32 = 0,
     screen_id: c_int = 0,
     // XEmbed state (embedding into another window via -w)
     embed_parent: u32 = 0,
@@ -1088,9 +1090,9 @@ pub const X11Backend = struct {
                     if (len > 0) {
                         const data: [*]const u8 = @ptrCast(c.xcb_get_property_value(reply));
                         const clamped = @min(len, 16384);
-                        @memcpy(self.paste_buf.data[0..clamped], data[0..clamped]);
-                        self.paste_buf.len = clamped;
-                        return .{ .paste = self.paste_buf };
+                        @memcpy(self.paste_buf_data[0..clamped], data[0..clamped]);
+                        self.paste_buf_len = clamped;
+                        return .{ .paste = .{ .ptr = &self.paste_buf_data, .len = clamped } };
                     }
                 }
                 continue; // property data empty — skip

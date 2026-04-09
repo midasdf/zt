@@ -28,11 +28,12 @@ pub const Event = union(enum) {
 };
 
 pub const PasteEvent = struct {
-    data: [16384]u8 = undefined,
+    ptr: [*]const u8 = undefined,
     len: u32 = 0,
 
     pub fn slice(self: *const PasteEvent) []const u8 {
-        return self.data[0..self.len];
+        if (self.len == 0) return &.{};
+        return self.ptr[0..self.len];
     }
 };
 
@@ -115,7 +116,7 @@ pub const WaylandBackend = struct {
     internal_epoll_fd: posix.fd_t = -1,
 
     // Event queue (pollEvents returns one event at a time)
-    pending_events: [128]Event = undefined,
+    pending_events: [32]Event = undefined,
     pending_count: usize = 0,
     pending_read: usize = 0,
 
@@ -1290,12 +1291,9 @@ pub const WaylandBackend = struct {
                         self.clipboard.paste_pipe_fd = -1;
                     }
                     if (self.clipboard.paste_len > 0) {
-                        var paste_ev = PasteEvent{};
-                        const len: u32 = @intCast(@min(self.clipboard.paste_len, paste_ev.data.len));
-                        @memcpy(paste_ev.data[0..len], self.clipboard.paste_buf[0..len]);
-                        paste_ev.len = len;
+                        const len: u32 = @intCast(@min(self.clipboard.paste_len, self.clipboard.paste_buf.len));
+                        self.queueEvent(.{ .paste = .{ .ptr = &self.clipboard.paste_buf, .len = len } });
                         self.clipboard.paste_len = 0;
-                        self.queueEvent(.{ .paste = paste_ev });
                     }
                 }
             }

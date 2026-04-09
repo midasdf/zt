@@ -710,10 +710,9 @@ pub const Term = struct {
     /// Queue a VT response to be flushed by the event loop (avoids direct write to non-blocking fd)
     pub fn queueResponse(self: *Self, data: []const u8) void {
         const avail = self.vt_response_buf.len - self.vt_response_len;
-        const len = @min(data.len, avail);
-        if (len == 0) return;
-        @memcpy(self.vt_response_buf[self.vt_response_len..][0..len], data[0..len]);
-        self.vt_response_len += @intCast(len);
+        if (data.len > avail) return; // Drop entire response rather than partial write
+        @memcpy(self.vt_response_buf[self.vt_response_len..][0..data.len], data);
+        self.vt_response_len += @intCast(data.len);
     }
 
     pub fn moveCursorTo(self: *Self, x: u32, y: u32) void {

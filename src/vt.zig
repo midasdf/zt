@@ -860,9 +860,16 @@ fn handleOsc8(param: []const u8, term: *Term) void {
 
     // Allocate new entry (ring buffer)
     const slot = (term.hyperlink_next_id - 1) % 64;
+    // Invalidate cells referencing the old slot before reuse
+    const old_id: u16 = @intCast(slot + 1);
+    if (term.hyperlink_table[slot].len > 0) {
+        for (term.hyperlink_ids) |*hid| {
+            if (hid.* == old_id) hid.* = 0;
+        }
+    }
     term.hyperlink_table[slot].len = @intCast(max_len);
     @memcpy(term.hyperlink_table[slot].url[0..max_len], uri[0..max_len]);
-    term.current_hyperlink_id = slot + 1;
+    term.current_hyperlink_id = old_id;
     term.hyperlink_next_id +%= 1;
     if (term.hyperlink_next_id == 0) term.hyperlink_next_id = 1;
 }
@@ -1393,7 +1400,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             const n = if (pc > 0 and p[0] > 0) p[0] else 1;
             const ch = term.last_printed_char;
             if (ch > 0) {
-                const count = @min(@as(u32, n), @as(u32, term.cols) *| @as(u32, term.rows));
+                const count = @min(@as(u32, n), @as(u32, term.cols) * 2);
                 var rep: u32 = 0;
                 while (rep < count) : (rep += 1) {
                     handlePrint(ch, term);
@@ -1528,10 +1535,8 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                 const ps = if (pc > 0) p[0] else 0;
                 term.current_attrs.protected = (ps == 1);
             } else if (csi.private_marker == '>' and pc > 0 and p[0] == 0) {
-                // XTVERSION — respond with terminal identification
-                var xtver_buf: [64]u8 = undefined;
-                const xtver = std.fmt.bufPrint(&xtver_buf, "\x1bP>|zt({s})\x1b\\", .{@import("config").version}) catch return;
-                term.queueResponse(xtver);
+                // XTVERSION — disabled by default to prevent terminal fingerprinting.
+                // Malicious programs can use this to identify terminal type and version.
             }
         },
         'i' => {}, // MC — Media Copy (printer control, silently accept)
