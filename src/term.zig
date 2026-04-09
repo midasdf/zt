@@ -195,6 +195,21 @@ pub const Term = struct {
     saved_ul_color_rgb: ?[3]u8 = null,
     saved_charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
 
+    // Separate save area for ?1049 alt screen (must not collide with DECSC/DECRC)
+    alt_saved_cursor_x: u32 = 0,
+    alt_saved_cursor_y: u32 = 0,
+    alt_saved_scroll_top: u32 = 0,
+    alt_saved_scroll_bottom: u32 = 0,
+    alt_saved_wrap_next: bool = false,
+    alt_saved_attrs: Cell.Attrs = .{},
+    alt_saved_fg: u8 = 7,
+    alt_saved_bg: u8 = 0,
+    alt_saved_fg_rgb: ?[3]u8 = null,
+    alt_saved_bg_rgb: ?[3]u8 = null,
+    alt_saved_ul_color_rgb: ?[3]u8 = null,
+    alt_saved_charset: u2 = 0,
+    alt_saved_charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
+
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
         const cells = try allocator.alloc(Cell, total);

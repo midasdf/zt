@@ -634,8 +634,8 @@ pub const WaylandBackend = struct {
 
     /// Update the Wayland window title via xdg_toplevel.set_title.
     pub fn updateTitle(self: *Self, title: []const u8) void {
-        // Clamp to 240 bytes — putString needs 4-byte length + string + NUL + padding
-        const clamped = title[0..@min(title.len, 240)];
+        // Clamp to 251 bytes — putString uses 4 (len) + N + 1 (NUL) + padding in 256-byte payload
+        const clamped = title[0..@min(title.len, 251)];
         xdg_shell.setTitle(&self.conn, self.toplevel_id, clamped) catch {};
     }
 
