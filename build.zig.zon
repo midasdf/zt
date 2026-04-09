@@ -1,6 +1,6 @@
 .{
     .name = .zt,
-    .version = "0.5.8",
+    .version = "0.5.9",
     .fingerprint = 0xc36136a6af00f24b,
     .paths = .{
         "build.zig",
