@@ -279,8 +279,8 @@ pub const FbdevBackend = struct {
         if (evdev_index >= self.evdev_count) return null;
         const fd = self.evdev_fds[evdev_index];
         const InputEventRaw = extern struct {
-            tv_sec: i64,
-            tv_usec: i64,
+            tv_sec: std.c.time_t, // C `long` — 4 bytes on 32-bit, 8 on 64-bit
+            tv_usec: isize, // suseconds_t is C `long`
             type: u16,
             code: u16,
             value: i32,

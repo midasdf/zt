@@ -771,15 +771,16 @@ pub fn main() !void {
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                            const wp_before = write_pending;
+                            var had_input = false;
                             while (backend.pollEvents()) |event| {
+                                if (event == .key or event == .text or event == .paste) had_input = true;
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                                     running = false;
                                     break;
                                 }
                             }
-                            // Reset cursor blink on input activity (data was written to PTY)
-                            if (write_pending != wp_before) cursor_visible_blink = true;
+                            // Reset cursor blink on input activity
+                            if (had_input) cursor_visible_blink = true;
                         }
                     },
                     else => {
@@ -857,14 +858,15 @@ pub fn main() !void {
                     } else if (kev.udata == @intFromEnum(KqueueTag.backend)) {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                            const wp_before = write_pending;
+                            var had_input = false;
                             while (backend.pollEvents()) |event| {
+                                if (event == .key or event == .text or event == .paste) had_input = true;
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                                     running = false;
                                     break;
                                 }
                             }
-                            if (write_pending != wp_before) cursor_visible_blink = true;
+                            if (had_input) cursor_visible_blink = true;
                         }
                     }
                 } else if (kev.filter == std.c.EVFILT.WRITE) {
