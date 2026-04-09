@@ -29,7 +29,7 @@ for i in $(seq 0 39); do
   r=$(( 255 - i * 6 ))
   g=$(( i * 6 ))
   b=$(( 128 + i * 3 ))
-  printf "\e[48;2;${r};${g};${b}m "
+  printf "\e[48;2;%d;%d;%dm " "$r" "$g" "$b"
 done
 printf '\e[0m\n'
 printf '  '
@@ -37,7 +37,7 @@ for i in $(seq 0 39); do
   r=$(( i * 6 ))
   g=$(( 128 + i * 3 ))
   b=$(( 255 - i * 6 ))
-  printf "\e[48;2;${r};${g};${b}m "
+  printf "\e[48;2;%d;%d;%dm " "$r" "$g" "$b"
 done
 printf '\e[0m\n'
 echo ""
@@ -45,7 +45,7 @@ echo ""
 # 256 colors (first 16)
 printf '  '
 for i in $(seq 0 15); do
-  printf "\e[48;5;${i}m  "
+  printf "\e[48;5;%dm  " "$i"
 done
 printf '\e[0m\n'
 echo ""
