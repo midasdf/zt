@@ -122,6 +122,7 @@ pub const WaylandBackend = struct {
     pending_events: [256]Event = undefined,
     pending_count: usize = 0,
     pending_read: usize = 0,
+    pending_overflow_warned: bool = false,
 
     // Focus state
     focused: bool = false,
@@ -705,7 +706,10 @@ pub const WaylandBackend = struct {
 
     fn queueEvent(self: *Self, event: Event) void {
         if (self.pending_count >= self.pending_events.len) {
-            std.log.warn("Wayland event queue full; dropping event", .{});
+            if (!self.pending_overflow_warned) {
+                std.log.warn("Wayland event queue full; dropping event", .{});
+                self.pending_overflow_warned = true;
+            }
             return;
         }
         self.pending_events[self.pending_count] = event;
@@ -720,6 +724,7 @@ pub const WaylandBackend = struct {
             if (self.pending_read >= self.pending_count) {
                 self.pending_read = 0;
                 self.pending_count = 0;
+                self.pending_overflow_warned = false;
             }
             return event;
         }
