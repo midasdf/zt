@@ -10,7 +10,8 @@ const testing = std.testing;
 
 pub const CsiAction = struct {
     params: [16]u16 = [_]u16{0} ** 16,
-    sub_params: [16]u16 = [_]u16{0} ** 16,
+    sub_params: [16][5]u16 = [_][5]u16{[_]u16{0} ** 5} ** 16,
+    sub_param_counts: [16]u3 = [_]u3{0} ** 16,
     has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     param_count: u8 = 0,
     intermediates: [2]u8 = [_]u8{0} ** 2,
@@ -62,7 +63,8 @@ pub const Parser = struct {
     intermediate_count: u8 = 0,
     private_marker: u8 = 0,
     in_subparam: bool = false,
-    sub_params: [16]u16 = [_]u16{0} ** 16,
+    sub_params: [16][5]u16 = [_][5]u16{[_]u16{0} ** 5} ** 16,
+    sub_param_counts: [16]u3 = [_]u3{0} ** 16,
     has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     // UTF-8 accumulator
     utf8_buf: [4]u8 = undefined,
@@ -269,10 +271,13 @@ pub const Parser = struct {
     fn handleCsiParam(self: *Parser, byte: u8) Action {
         if (byte >= '0' and byte <= '9') {
             if (self.in_subparam) {
-                // Accumulate first colon sub-parameter digit
+                // Accumulate colon sub-parameter digit
                 const idx = self.param_count;
                 if (idx < 16) {
-                    self.sub_params[idx] = self.sub_params[idx] *| 10 +| (byte - '0');
+                    const si = self.sub_param_counts[idx];
+                    if (si < 5) {
+                        self.sub_params[idx][si] = self.sub_params[idx][si] *| 10 +| (byte - '0');
+                    }
                 }
             } else {
                 const idx = self.param_count;
@@ -282,16 +287,20 @@ pub const Parser = struct {
             }
             return .none;
         } else if (byte == ':') {
-            // Colon sub-parameter separator (e.g., \e[4:3m)
+            // Colon sub-parameter separator (e.g., \e[4:3m, \e[38:2:r:g:bm)
+            const idx = self.param_count;
             if (!self.in_subparam) {
-                // First colon: mark this param as having a sub-param
-                const idx = self.param_count;
+                // First colon: mark this param as having sub-params
                 if (idx < 16) {
                     self.has_sub |= @as(u16, 1) << @intCast(idx);
                 }
                 self.in_subparam = true;
+            } else {
+                // Subsequent colon: advance to next sub-param slot
+                if (idx < 16 and self.sub_param_counts[idx] < 4) {
+                    self.sub_param_counts[idx] += 1;
+                }
             }
-            // Subsequent colons (e.g., 58:2::r:g:b) — ignore for now
             return .none;
         } else if (byte == ';') {
             // Next param — ends any sub-parameter
@@ -416,7 +425,8 @@ pub const Parser = struct {
 
     fn clearCsi(self: *Parser) void {
         self.params = [_]u16{0} ** 16;
-        self.sub_params = [_]u16{0} ** 16;
+        self.sub_params = [_][5]u16{[_]u16{0} ** 5} ** 16;
+        self.sub_param_counts = [_]u3{0} ** 16;
         self.has_sub = 0;
         self.param_count = 0;
         self.intermediates = [_]u8{0} ** 2;
@@ -429,6 +439,7 @@ pub const Parser = struct {
         return CsiAction{
             .params = self.params,
             .sub_params = self.sub_params,
+            .sub_param_counts = self.sub_param_counts,
             .has_sub = self.has_sub,
             .param_count = self.param_count,
             .intermediates = self.intermediates,
@@ -1515,7 +1526,7 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             4 => {
                 // Check for sub-param (4:N styled underline)
                 if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
-                    const style = csi.sub_params[i];
+                    const style = csi.sub_params[i][0];
                     term.current_attrs.underline_style = if (style <= 5) @intCast(style) else 1;
                 } else {
                     term.current_attrs.underline_style = 1; // single
@@ -1538,8 +1549,12 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             29 => term.current_attrs.strikethrough = false,
             30...37 => term.current_fg = @intCast(param - 30),
             38 => {
-                // Extended foreground
-                i = parseExtendedColor(p, pc, i, term, true);
+                // Extended foreground: colon form (38:2:r:g:b) or semicolon (38;2;r;g;b)
+                if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
+                    parseColonColor(csi.sub_params[i][0..], csi.sub_param_counts[i] + 1, term, .fg);
+                } else {
+                    i = parseExtendedColor(p, pc, i, term, true);
+                }
             },
             39 => {
                 term.current_fg = 7;
@@ -1547,16 +1562,24 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             },
             40...47 => term.current_bg = @intCast(param - 40),
             48 => {
-                // Extended background
-                i = parseExtendedColor(p, pc, i, term, false);
+                // Extended background: colon form (48:2:r:g:b) or semicolon (48;2;r;g;b)
+                if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
+                    parseColonColor(csi.sub_params[i][0..], csi.sub_param_counts[i] + 1, term, .bg);
+                } else {
+                    i = parseExtendedColor(p, pc, i, term, false);
+                }
             },
             49 => {
                 term.current_bg = 0;
                 term.current_bg_rgb = null;
             },
             58 => {
-                // Extended underline color (58;2;r;g;b or 58;5;n)
-                i = parseUnderlineColor(p, pc, i, term);
+                // Extended underline color: colon form (58:2:r:g:b) or semicolon (58;2;r;g;b)
+                if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
+                    parseColonColor(csi.sub_params[i][0..], csi.sub_param_counts[i] + 1, term, .ul);
+                } else {
+                    i = parseUnderlineColor(p, pc, i, term);
+                }
             },
             59 => term.current_ul_color_rgb = null,
             90...97 => term.current_fg = @intCast(param - 90 + 8),
@@ -1597,6 +1620,46 @@ fn parseExtendedColor(p: [16]u16, pc: u8, start: u8, term: *Term, is_fg: bool) u
         }
     }
     return i;
+}
+
+const ColorTarget = enum { fg, bg, ul };
+
+/// Parse colon-form extended color: sub-params are [type, ...values]
+/// Handles 2:r:g:b, 2::r:g:b (with empty colorspace), and 5:n
+fn parseColonColor(subs: []const u16, count: u3, term: *Term, target: ColorTarget) void {
+    if (count < 1) return;
+    const color_type = subs[0];
+    if (color_type == 5 and count >= 2) {
+        // 256-color: 38:5:n
+        if (subs[1] > 255) return;
+        const color: u8 = @intCast(subs[1]);
+        switch (target) {
+            .fg => {
+                term.current_fg = color;
+                term.current_fg_rgb = null;
+            },
+            .bg => {
+                term.current_bg = color;
+                term.current_bg_rgb = null;
+            },
+            .ul => {},
+        }
+    } else if (color_type == 2) {
+        // TrueColor: 38:2:r:g:b or 38:2::r:g:b (empty colorspace id)
+        // Find r,g,b — skip optional colorspace param
+        var ri: u3 = 1;
+        if (count >= 5 and subs[1] == 0) ri = 2; // 38:2::r:g:b (empty colorspace)
+        if (ri + 2 >= count) return;
+        if (subs[ri] > 255 or subs[ri + 1] > 255 or subs[ri + 2] > 255) return;
+        const r: u8 = @intCast(subs[ri]);
+        const g: u8 = @intCast(subs[ri + 1]);
+        const b: u8 = @intCast(subs[ri + 2]);
+        switch (target) {
+            .fg => term.current_fg_rgb = .{ r, g, b },
+            .bg => term.current_bg_rgb = .{ r, g, b },
+            .ul => term.current_ul_color_rgb = .{ r, g, b },
+        }
+    }
 }
 
 fn resetSgr(term: *Term) void {
