@@ -785,6 +785,10 @@ pub const X11Backend = struct {
             if (now - self.xim_pending_ns > 5_000_000_000) {
                 self.has_pending_xim = false;
                 self.suppress_xim_result = false;
+                // Mark XIM as disconnected so subsequent keys fall back to
+                // local XKB instead of being forwarded into a dead IM server.
+                self.xim_connected = false;
+                self.xic = 0;
             }
         }
 
@@ -856,11 +860,19 @@ pub const X11Backend = struct {
 
                 // Sync XKB modifier state from X server. Using update_mask (not
                 // update_key) avoids state desync when XIM consumes key releases.
-                // Decompose X11 state bits: CapsLock (LockMask=0x02) and NumLock
-                // (Mod2Mask=0x10) are lock modifiers, not depressed modifiers.
+                // Decompose X11 state bits: CapsLock (LockMask=0x02) is always a
+                // lock modifier. NumLock's real modifier bit is resolved dynamically
+                // via xkb_keymap_mod_get_index (typically Mod2=0x10 but not guaranteed).
                 if (self.xkb_state) |state| {
                     const x_state: u32 = key.*.state;
-                    const lock_bits: u32 = x_state & (0x02 | 0x10); // LockMask | Mod2Mask
+                    var lock_mask: u32 = 0x02; // LockMask (CapsLock) is always bit 1
+                    if (self.xkb_keymap) |km| {
+                        const num_idx = c.xkb_keymap_mod_get_index(km, "Mod2");
+                        if (num_idx != c.XKB_MOD_INVALID) {
+                            lock_mask |= @as(u32, 1) << @intCast(num_idx);
+                        }
+                    }
+                    const lock_bits: u32 = x_state & lock_mask;
                     _ = c.xkb_state_update_mask(
                         state,
                         x_state & ~lock_bits, // depressed (Shift, Ctrl, Alt, etc.)
