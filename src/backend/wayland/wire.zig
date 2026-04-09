@@ -178,12 +178,17 @@ pub const Connection = struct {
 
     /// Connect to the Wayland compositor's UNIX socket.
     /// Reads $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY (defaults to "wayland-0").
+    /// If WAYLAND_DISPLAY is an absolute path, it is used directly (per Wayland spec).
     pub fn connect() !Connection {
-        const runtime_dir = std.posix.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntimeDir;
         const display = std.posix.getenv("WAYLAND_DISPLAY") orelse "wayland-0";
 
         var path_buf: [256]u8 = undefined;
-        const path = std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ runtime_dir, display }) catch return error.PathTooLong;
+        const path = if (display.len > 0 and display[0] == '/')
+            std.fmt.bufPrintZ(&path_buf, "{s}", .{display}) catch return error.PathTooLong
+        else blk: {
+            const runtime_dir = std.posix.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntimeDir;
+            break :blk std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ runtime_dir, display }) catch return error.PathTooLong;
+        };
 
         const sock_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK, 0);
         errdefer posix.close(sock_fd);
@@ -381,7 +386,9 @@ pub const Connection = struct {
         const words: *const [2]u32 = @alignCast(@ptrCast(self.recv_buf[self.recv_consumed..].ptr));
         const hdr = decodeHeader(words);
         if (hdr.size < 8) return null; // malformed
-        if (avail < hdr.size) return null; // incomplete
+        // Check aligned size so consumeEvent can safely advance to next
+        // 4-byte boundary without overrunning the receive buffer.
+        if (avail < alignUp(hdr.size, 4)) return null; // incomplete
         return hdr;
     }
 
@@ -391,7 +398,10 @@ pub const Connection = struct {
         const start = self.recv_consumed + 8;
         const end = self.recv_consumed + size;
         const payload = self.recv_buf[start..end];
-        self.recv_consumed += size;
+        // Align to 4-byte boundary (Wayland wire protocol requirement).
+        // Sizes should always be 4-aligned per spec, but guard against
+        // malformed messages to prevent misaligned pointer in nextEvent.
+        self.recv_consumed += alignUp(size, 4);
         return payload;
     }
 
