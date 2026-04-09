@@ -577,7 +577,9 @@ pub const Term = struct {
 
             // Initialize new alt buffers then copy existing content BEFORE freeing old
             if (new_alt_cells) |nac| @memset(nac, Cell{});
-            if (new_alt_row_map) |narm| for (0..new_rows) |i| { narm[i] = @intCast(i); };
+            if (new_alt_row_map) |narm| for (0..new_rows) |i| {
+                narm[i] = @intCast(i);
+            };
             if (new_alt_fg) |nfg| @memset(nfg, null);
             if (new_alt_bg) |nbg| @memset(nbg, null);
             if (new_alt_ul) |nul| @memset(nul, null);

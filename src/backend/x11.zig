@@ -398,12 +398,32 @@ pub const X11Backend = struct {
     fn isSpecialKey(evdev_keycode: u16) bool {
         const K = input_mod.KEY;
         return switch (evdev_keycode) {
-            K.ESC, K.ENTER, K.BACKSPACE, K.TAB,
-            K.UP, K.DOWN, K.LEFT, K.RIGHT,
-            K.HOME, K.END, K.INSERT, K.DELETE,
-            K.PAGEUP, K.PAGEDOWN,
-            K.F1, K.F2, K.F3, K.F4, K.F5, K.F6,
-            K.F7, K.F8, K.F9, K.F10, K.F11, K.F12,
+            K.ESC,
+            K.ENTER,
+            K.BACKSPACE,
+            K.TAB,
+            K.UP,
+            K.DOWN,
+            K.LEFT,
+            K.RIGHT,
+            K.HOME,
+            K.END,
+            K.INSERT,
+            K.DELETE,
+            K.PAGEUP,
+            K.PAGEDOWN,
+            K.F1,
+            K.F2,
+            K.F3,
+            K.F4,
+            K.F5,
+            K.F6,
+            K.F7,
+            K.F8,
+            K.F9,
+            K.F10,
+            K.F11,
+            K.F12,
             => true,
             else => false,
         };
@@ -467,21 +487,21 @@ pub const X11Backend = struct {
         // Static lifetime — xcb_xim_set_im_callback stores the pointer
         const S = struct {
             var callbacks = c.xcb_xim_im_callback{
-            .set_event_mask = null,
-            .forward_event = forwardEventCallback,
-            .commit_string = commitStringCallback,
-            .geometry = null,
-            .preedit_start = null,
-            .preedit_draw = null,
-            .preedit_caret = null,
-            .preedit_done = null,
-            .status_start = null,
-            .status_draw_text = null,
-            .status_draw_bitmap = null,
-            .status_done = null,
-            .sync = null,
-            .disconnected = disconnectedCallback,
-        };
+                .set_event_mask = null,
+                .forward_event = forwardEventCallback,
+                .commit_string = commitStringCallback,
+                .geometry = null,
+                .preedit_start = null,
+                .preedit_draw = null,
+                .preedit_caret = null,
+                .preedit_done = null,
+                .status_start = null,
+                .status_draw_text = null,
+                .status_draw_bitmap = null,
+                .status_done = null,
+                .sync = null,
+                .disconnected = disconnectedCallback,
+            };
         };
         c.xcb_xim_set_im_callback(xim.?, &S.callbacks, @ptrCast(self));
 
@@ -856,317 +876,320 @@ pub const X11Backend = struct {
         // Unhandled event types (ReparentNotify, MapNotify, etc.) are skipped
         // so they don't block processing of subsequent events like ConfigureNotify.
         while (true) {
-        const event = if (self.pending_event) |pe| blk: {
-            self.pending_event = null;
-            break :blk pe;
-        } else c.xcb_poll_for_event(self.connection) orelse {
-            return null;
-        };
-        defer std.c.free(event);
+            const event = if (self.pending_event) |pe| blk: {
+                self.pending_event = null;
+                break :blk pe;
+            } else c.xcb_poll_for_event(self.connection) orelse {
+                return null;
+            };
+            defer std.c.free(event);
 
-        // Let XIM filter the event first — MUST run even before xim_connected
-        // because xcb-imdkit uses this to process the XIM protocol handshake
-        if (self.xim) |xim| {
-            if (c.xcb_xim_filter_event(xim, event)) {
-                // XIM consumed the event — check if it produced committed text
-                if (self.has_committed) {
-                    self.has_committed = false;
-                    if (self.suppress_xim_result) {
-                        self.suppress_xim_result = false;
-                    } else {
-                        return .{ .text = self.committed_text };
-                    }
-                }
-                if (self.has_forwarded_key) {
-                    self.has_forwarded_key = false;
-                    if (self.suppress_xim_result) {
-                        self.suppress_xim_result = false;
-                    } else {
-                        return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
-                    }
-                }
-                continue; // XIM consumed event but produced nothing, try next
-            }
-        }
-
-        const event_type = event.*.response_type & 0x7F;
-        switch (event_type) {
-            c.XCB_KEY_PRESS => {
-                // Lazy-init XKB+XIM on first key press (not on non-key events,
-                // so transient XIM failures don't permanently disable IME)
-                self.ensureKeyboardInit();
-                const key: *c.xcb_key_press_event_t = @ptrCast(@alignCast(event));
-                const mods = xcbStateToMods(key.*.state);
-                const evdev_keycode = key.*.detail -| 8;
-                const xcb_keycode: u32 = key.*.detail;
-
-                // Sync XKB modifier state from X server. Using update_mask (not
-                // update_key) avoids state desync when XIM consumes key releases.
-                // Decompose X11 state bits: CapsLock (LockMask=0x02) is always a
-                // lock modifier. NumLock's real modifier bit is resolved dynamically
-                // via xkb_keymap_mod_get_index (typically Mod2=0x10 but not guaranteed).
-                if (self.xkb_state) |state| {
-                    const x_state: u32 = key.*.state;
-                    var lock_mask: u32 = 0x02; // LockMask (CapsLock) is always bit 1
-                    if (self.xkb_keymap) |km| {
-                        const num_idx = c.xkb_keymap_mod_get_index(km, "Mod2");
-                        if (num_idx != c.XKB_MOD_INVALID) {
-                            lock_mask |= @as(u32, 1) << @intCast(num_idx);
-                        }
-                    }
-                    const lock_bits: u32 = x_state & lock_mask;
-                    _ = c.xkb_state_update_mask(
-                        state,
-                        x_state & ~lock_bits, // depressed (Shift, Ctrl, Alt, etc.)
-                        0, // latched
-                        lock_bits, // locked (CapsLock, NumLock)
-                        0, 0, 0, // group: base, latched, locked
-                    );
-                }
-
-                // Ctrl+Shift+V → paste from clipboard
-                if (evdev_keycode == 47 and mods.ctrl and mods.shift and !mods.alt) {
-                    self.requestPaste();
-                    continue; // don't return null — drain remaining XCB events
-                }
-
-                // Forward key to XIM if IC is active — IM server processes
-                // and replies via commit_string or forward_event callback.
-                // Skip XIM for Ctrl-modified keys: XIM is for text composition,
-                // and Ctrl+letter must produce control characters (e.g. Ctrl+P = 0x10)
-                // without IM interference.
-                if (!mods.ctrl) {
-                    if (self.xim) |xim| {
-                        if (self.xim_connected and self.xic != 0) {
-                            // Shift+Space → let fcitx5 toggle IME, but suppress
-                            // the leaked space character it sends back.
-                            // For any other key, clear stale suppress flag so
-                            // committed text from actual input isn't discarded.
-                            const is_ime_toggle = evdev_keycode == 57 and mods.shift and !mods.alt and !mods.meta;
-                            if (is_ime_toggle) {
-                                self.suppress_xim_result = true;
-                            } else {
-                                self.suppress_xim_result = false;
-                            }
-
-                            // Save pending key for fallback if IM doesn't respond
-                            self.pending_xim_keycode = key.*.detail;
-                            self.pending_xim_mods = xcbStateToMods(key.*.state);
-                            self.has_pending_xim = true;
-                            self.xim_pending_ns = std.time.nanoTimestamp();
-                            _ = c.xcb_xim_forward_event(xim, self.xic, key);
-                            // Flush immediately so the IM server receives the
-                            // forwarded key. Without this, the key sits in libxcb's
-                            // output buffer until end-of-loop flush, and the IM
-                            // server cannot fire the commit/forward callback —
-                            // leaving has_pending_xim stuck true indefinitely.
-                            _ = c.xcb_flush(self.connection);
-                            // Check if forwarding produced immediate results
-                            if (self.has_committed) {
-                                self.has_committed = false;
-                                if (!self.suppress_xim_result) {
-                                    return .{ .text = self.committed_text };
-                                }
-                                self.suppress_xim_result = false;
-                            }
-                            if (self.has_forwarded_key) {
-                                self.has_forwarded_key = false;
-                                if (!self.suppress_xim_result) {
-                                    return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
-                                }
-                                self.suppress_xim_result = false;
-                            }
-                            // Continue draining XCB event queue — do NOT return null here.
-                            // xcb_poll_for_event may have buffered multiple events from
-                            // a single socket read; returning null would exit the caller's
-                            // while(pollEvents) loop, and epoll won't wake because the fd
-                            // has no new data (it's already in libxcb's internal buffer).
-                            continue;
-                        }
-                    }
-                }
-
-                // Suppress IME toggle keys (Shift+Space) — don't produce text
-                if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt) {
-                    continue; // don't return null — drain remaining XCB events
-                }
-
-                // Special keys (Enter, Backspace, arrows, Fn...) → KeyEvent for escape sequence handling
-                if (isSpecialKey(evdev_keycode)) {
-                    return .{ .key = .{
-                        .keycode = evdev_keycode,
-                        .pressed = true,
-                        .modifiers = mods,
-                    } };
-                }
-
-                // Ctrl+letter → KeyEvent (for ctrl sequences like Ctrl+C)
-                if (mods.ctrl) {
-                    return .{ .key = .{
-                        .keycode = evdev_keycode,
-                        .pressed = true,
-                        .modifiers = mods,
-                    } };
-                }
-
-                // Use XKB for layout-aware text translation
-                if (self.xkb_state) |state| {
-                    var xkb_buf: [128]u8 = undefined;
-                    const len = c.xkb_state_key_get_utf8(state, xcb_keycode, &xkb_buf, xkb_buf.len);
-                    if (len > 0) {
-                        const ulen: u32 = @intCast(len);
-                        var text_ev: TextEvent = .{};
-                        if (mods.alt) {
-                            // Alt+key → prefix with ESC
-                            text_ev.data[0] = 0x1b;
-                            const clamped = @min(ulen, 127);
-                            @memcpy(text_ev.data[1 .. 1 + clamped], xkb_buf[0..clamped]);
-                            text_ev.len = clamped + 1;
+            // Let XIM filter the event first — MUST run even before xim_connected
+            // because xcb-imdkit uses this to process the XIM protocol handshake
+            if (self.xim) |xim| {
+                if (c.xcb_xim_filter_event(xim, event)) {
+                    // XIM consumed the event — check if it produced committed text
+                    if (self.has_committed) {
+                        self.has_committed = false;
+                        if (self.suppress_xim_result) {
+                            self.suppress_xim_result = false;
                         } else {
-                            const clamped = @min(ulen, 128);
-                            @memcpy(text_ev.data[0..clamped], xkb_buf[0..clamped]);
-                            text_ev.len = clamped;
+                            return .{ .text = self.committed_text };
                         }
-                        return .{ .text = text_ev };
                     }
-                    // XKB returned nothing (modifier-only key etc.) → ignore
-                    continue; // don't return null — drain remaining XCB events
+                    if (self.has_forwarded_key) {
+                        self.has_forwarded_key = false;
+                        if (self.suppress_xim_result) {
+                            self.suppress_xim_result = false;
+                        } else {
+                            return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
+                        }
+                    }
+                    continue; // XIM consumed event but produced nothing, try next
                 }
+            }
 
-                // Fallback: no XKB → use hardcoded keymap via KeyEvent
-                return .{ .key = .{
-                    .keycode = evdev_keycode,
-                    .pressed = true,
-                    .modifiers = mods,
-                } };
-            },
-            c.XCB_KEY_RELEASE => {
-                // Update XKB state on release so modifier tracking stays in sync.
-                // Use update_key(UP) instead of update_mask because the X11
-                // state field in a release event reflects the PRE-release state.
-                const key: *c.xcb_key_release_event_t = @ptrCast(@alignCast(event));
-                if (self.xkb_state) |state| {
-                    _ = c.xkb_state_update_key(state, key.*.detail, c.XKB_KEY_UP);
-                }
-                continue;
-            },
-            c.XCB_CONFIGURE_NOTIFY => {
-                const cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(event));
-                var latest_w: u32 = cfg.*.width;
-                var latest_h: u32 = cfg.*.height;
-                // Coalesce: drain all queued ConfigureNotify, keep only last size
-                while (c.xcb_poll_for_queued_event(self.connection)) |next| {
-                    const next_type = next.*.response_type & 0x7F;
-                    if (next_type == c.XCB_CONFIGURE_NOTIFY) {
-                        const next_cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(next));
-                        latest_w = next_cfg.*.width;
-                        latest_h = next_cfg.*.height;
-                        std.c.free(next);
-                    } else {
-                        // Non-ConfigureNotify event — store for next pollEvents call.
-                        // Free any previously stored event to avoid memory leak.
-                        if (self.pending_event) |old| std.c.free(old);
-                        self.pending_event = next;
-                        break;
-                    }
-                }
-                if (latest_w != self.width or latest_h != self.height) {
-                    return .{ .resize = .{ .width = latest_w, .height = latest_h } };
-                }
-                continue;
-            },
-            c.XCB_SELECTION_NOTIFY => {
-                const sel: *c.xcb_selection_notify_event_t = @ptrCast(@alignCast(event));
-                if (sel.*.property == 0) continue; // selection request failed
+            const event_type = event.*.response_type & 0x7F;
+            switch (event_type) {
+                c.XCB_KEY_PRESS => {
+                    // Lazy-init XKB+XIM on first key press (not on non-key events,
+                    // so transient XIM failures don't permanently disable IME)
+                    self.ensureKeyboardInit();
+                    const key: *c.xcb_key_press_event_t = @ptrCast(@alignCast(event));
+                    const mods = xcbStateToMods(key.*.state);
+                    const evdev_keycode = key.*.detail -| 8;
+                    const xcb_keycode: u32 = key.*.detail;
 
-                // Read the property data
-                const prop_cookie = c.xcb_get_property(
-                    self.connection,
-                    1, // delete after reading
-                    self.window,
-                    sel.*.property,
-                    c.XCB_ATOM_ANY,
-                    0,
-                    1024 * 1024, // max 1MB
-                );
-                const prop_reply = c.xcb_get_property_reply(self.connection, prop_cookie, null);
-                if (prop_reply) |reply| {
-                    defer std.c.free(reply);
-                    const len: u32 = @intCast(c.xcb_get_property_value_length(reply));
-                    if (len > 0) {
-                        const data: [*]const u8 = @ptrCast(c.xcb_get_property_value(reply));
-                        const clamped = @min(len, 16384);
-                        @memcpy(self.paste_buf_data[0..clamped], data[0..clamped]);
-                        self.paste_buf_len = clamped;
-                        return .{ .paste = .{ .ptr = &self.paste_buf_data, .len = clamped } };
+                    // Sync XKB modifier state from X server. Using update_mask (not
+                    // update_key) avoids state desync when XIM consumes key releases.
+                    // Decompose X11 state bits: CapsLock (LockMask=0x02) is always a
+                    // lock modifier. NumLock's real modifier bit is resolved dynamically
+                    // via xkb_keymap_mod_get_index (typically Mod2=0x10 but not guaranteed).
+                    if (self.xkb_state) |state| {
+                        const x_state: u32 = key.*.state;
+                        var lock_mask: u32 = 0x02; // LockMask (CapsLock) is always bit 1
+                        if (self.xkb_keymap) |km| {
+                            const num_idx = c.xkb_keymap_mod_get_index(km, "Mod2");
+                            if (num_idx != c.XKB_MOD_INVALID) {
+                                lock_mask |= @as(u32, 1) << @intCast(num_idx);
+                            }
+                        }
+                        const lock_bits: u32 = x_state & lock_mask;
+                        _ = c.xkb_state_update_mask(
+                            state,
+                            x_state & ~lock_bits, // depressed (Shift, Ctrl, Alt, etc.)
+                            0, // latched
+                            lock_bits, // locked (CapsLock, NumLock)
+                            0,
+                            0,
+                            0, // group: base, latched, locked
+                        );
                     }
-                }
-                continue; // property data empty — skip
-            },
-            c.XCB_EXPOSE => {
-                // Window (re-)exposed — tell main loop to force full redraw.
-                // Don't present() here: after a resize the SHM buffer is zeroed,
-                // and presenting it would flash a black frame.
-                return .expose;
-            },
-            c.XCB_CLIENT_MESSAGE => {
-                const msg: *c.xcb_client_message_event_t = @ptrCast(@alignCast(event));
-                // XEmbed messages: type == _XEMBED, code in data32[1]
-                if (self.xembed_atom != 0 and msg.*.@"type" == self.xembed_atom) {
-                    const xembed_msg = msg.*.data.data32[1];
-                    switch (xembed_msg) {
-                        0 => { // XEMBED_EMBEDDED_NOTIFY
-                            self.embedder_window = msg.*.data.data32[3];
-                            self.xembed_version = 0;
-                        },
-                        1 => { // XEMBED_WINDOW_ACTIVATE
-                            self.xembed_active = true;
-                        },
-                        2 => { // XEMBED_WINDOW_DEACTIVATE
-                            self.xembed_active = false;
-                        },
-                        4 => { // XEMBED_FOCUS_IN
-                            return .focus_in;
-                        },
-                        5 => { // XEMBED_FOCUS_OUT
-                            return .focus_out;
-                        },
-                        10, 11 => {}, // MODALITY_ON/OFF — no-op
-                        else => {},
+
+                    // Ctrl+Shift+V → paste from clipboard
+                    if (evdev_keycode == 47 and mods.ctrl and mods.shift and !mods.alt) {
+                        self.requestPaste();
+                        continue; // don't return null — drain remaining XCB events
+                    }
+
+                    // Forward key to XIM if IC is active — IM server processes
+                    // and replies via commit_string or forward_event callback.
+                    // Skip XIM for Ctrl-modified keys: XIM is for text composition,
+                    // and Ctrl+letter must produce control characters (e.g. Ctrl+P = 0x10)
+                    // without IM interference.
+                    if (!mods.ctrl) {
+                        if (self.xim) |xim| {
+                            if (self.xim_connected and self.xic != 0) {
+                                // Shift+Space → let fcitx5 toggle IME, but suppress
+                                // the leaked space character it sends back.
+                                // For any other key, clear stale suppress flag so
+                                // committed text from actual input isn't discarded.
+                                const is_ime_toggle = evdev_keycode == 57 and mods.shift and !mods.alt and !mods.meta;
+                                if (is_ime_toggle) {
+                                    self.suppress_xim_result = true;
+                                } else {
+                                    self.suppress_xim_result = false;
+                                }
+
+                                // Save pending key for fallback if IM doesn't respond
+                                self.pending_xim_keycode = key.*.detail;
+                                self.pending_xim_mods = xcbStateToMods(key.*.state);
+                                self.has_pending_xim = true;
+                                self.xim_pending_ns = std.time.nanoTimestamp();
+                                _ = c.xcb_xim_forward_event(xim, self.xic, key);
+                                // Flush immediately so the IM server receives the
+                                // forwarded key. Without this, the key sits in libxcb's
+                                // output buffer until end-of-loop flush, and the IM
+                                // server cannot fire the commit/forward callback —
+                                // leaving has_pending_xim stuck true indefinitely.
+                                _ = c.xcb_flush(self.connection);
+                                // Check if forwarding produced immediate results
+                                if (self.has_committed) {
+                                    self.has_committed = false;
+                                    if (!self.suppress_xim_result) {
+                                        return .{ .text = self.committed_text };
+                                    }
+                                    self.suppress_xim_result = false;
+                                }
+                                if (self.has_forwarded_key) {
+                                    self.has_forwarded_key = false;
+                                    if (!self.suppress_xim_result) {
+                                        return self.processKeycode(self.forwarded_keycode, self.forwarded_mods);
+                                    }
+                                    self.suppress_xim_result = false;
+                                }
+                                // Continue draining XCB event queue — do NOT return null here.
+                                // xcb_poll_for_event may have buffered multiple events from
+                                // a single socket read; returning null would exit the caller's
+                                // while(pollEvents) loop, and epoll won't wake because the fd
+                                // has no new data (it's already in libxcb's internal buffer).
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Suppress IME toggle keys (Shift+Space) — don't produce text
+                    // Only when IME is actually connected; otherwise Shift+Space should work normally
+                    if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt and self.xim_connected and self.xic != 0) {
+                        continue; // don't return null — drain remaining XCB events
+                    }
+
+                    // Special keys (Enter, Backspace, arrows, Fn...) → KeyEvent for escape sequence handling
+                    if (isSpecialKey(evdev_keycode)) {
+                        return .{ .key = .{
+                            .keycode = evdev_keycode,
+                            .pressed = true,
+                            .modifiers = mods,
+                        } };
+                    }
+
+                    // Ctrl+letter → KeyEvent (for ctrl sequences like Ctrl+C)
+                    if (mods.ctrl) {
+                        return .{ .key = .{
+                            .keycode = evdev_keycode,
+                            .pressed = true,
+                            .modifiers = mods,
+                        } };
+                    }
+
+                    // Use XKB for layout-aware text translation
+                    if (self.xkb_state) |state| {
+                        var xkb_buf: [128]u8 = undefined;
+                        const len = c.xkb_state_key_get_utf8(state, xcb_keycode, &xkb_buf, xkb_buf.len);
+                        if (len > 0) {
+                            const ulen: u32 = @intCast(len);
+                            var text_ev: TextEvent = .{};
+                            if (mods.alt) {
+                                // Alt+key → prefix with ESC
+                                text_ev.data[0] = 0x1b;
+                                const clamped = @min(ulen, 127);
+                                @memcpy(text_ev.data[1 .. 1 + clamped], xkb_buf[0..clamped]);
+                                text_ev.len = clamped + 1;
+                            } else {
+                                const clamped = @min(ulen, 128);
+                                @memcpy(text_ev.data[0..clamped], xkb_buf[0..clamped]);
+                                text_ev.len = clamped;
+                            }
+                            return .{ .text = text_ev };
+                        }
+                        // XKB returned nothing (modifier-only key etc.) → ignore
+                        continue; // don't return null — drain remaining XCB events
+                    }
+
+                    // Fallback: no XKB → use hardcoded keymap via KeyEvent
+                    return .{ .key = .{
+                        .keycode = evdev_keycode,
+                        .pressed = true,
+                        .modifiers = mods,
+                    } };
+                },
+                c.XCB_KEY_RELEASE => {
+                    // Update XKB state on release so modifier tracking stays in sync.
+                    // Use update_key(UP) instead of update_mask because the X11
+                    // state field in a release event reflects the PRE-release state.
+                    const key: *c.xcb_key_release_event_t = @ptrCast(@alignCast(event));
+                    if (self.xkb_state) |state| {
+                        _ = c.xkb_state_update_key(state, key.*.detail, c.XKB_KEY_UP);
                     }
                     continue;
-                }
-                // WM_DELETE_WINDOW (top-level mode)
-                if (msg.*.data.data32[0] == self.wm_delete_atom) {
-                    return .close;
-                }
-                continue;
-            },
-            c.XCB_DESTROY_NOTIFY => return .close,
-            c.XCB_FOCUS_IN => {
-                // Re-establish XIM IC focus so the IM server accepts forwarded keys
-                if (self.xim) |xim| {
-                    if (self.xim_connected and self.xic != 0) {
-                        _ = c.xcb_xim_set_ic_focus(xim, self.xic);
+                },
+                c.XCB_CONFIGURE_NOTIFY => {
+                    const cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(event));
+                    var latest_w: u32 = cfg.*.width;
+                    var latest_h: u32 = cfg.*.height;
+                    // Coalesce: drain all queued ConfigureNotify, keep only last size
+                    while (c.xcb_poll_for_queued_event(self.connection)) |next| {
+                        const next_type = next.*.response_type & 0x7F;
+                        if (next_type == c.XCB_CONFIGURE_NOTIFY) {
+                            const next_cfg: *c.xcb_configure_notify_event_t = @ptrCast(@alignCast(next));
+                            latest_w = next_cfg.*.width;
+                            latest_h = next_cfg.*.height;
+                            std.c.free(next);
+                        } else {
+                            // Non-ConfigureNotify event — store for next pollEvents call.
+                            // Free any previously stored event to avoid memory leak.
+                            if (self.pending_event) |old| std.c.free(old);
+                            self.pending_event = next;
+                            break;
+                        }
                     }
-                }
-                return .focus_in;
-            },
-            c.XCB_FOCUS_OUT => {
-                // Clear stale XIM pending state — the IM server will not
-                // respond to a key forwarded before focus was lost.
-                self.has_pending_xim = false;
-                self.suppress_xim_result = false;
-                // Notify IM server that IC lost focus
-                if (self.xim) |xim| {
-                    if (self.xim_connected and self.xic != 0) {
-                        _ = c.xcb_xim_unset_ic_focus(xim, self.xic);
+                    if (latest_w != self.width or latest_h != self.height) {
+                        return .{ .resize = .{ .width = latest_w, .height = latest_h } };
                     }
-                }
-                return .focus_out;
-            },
-            else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
-        }
+                    continue;
+                },
+                c.XCB_SELECTION_NOTIFY => {
+                    const sel: *c.xcb_selection_notify_event_t = @ptrCast(@alignCast(event));
+                    if (sel.*.property == 0) continue; // selection request failed
+
+                    // Read the property data
+                    const prop_cookie = c.xcb_get_property(
+                        self.connection,
+                        1, // delete after reading
+                        self.window,
+                        sel.*.property,
+                        c.XCB_ATOM_ANY,
+                        0,
+                        1024 * 1024, // max 1MB
+                    );
+                    const prop_reply = c.xcb_get_property_reply(self.connection, prop_cookie, null);
+                    if (prop_reply) |reply| {
+                        defer std.c.free(reply);
+                        const len: u32 = @intCast(c.xcb_get_property_value_length(reply));
+                        if (len > 0) {
+                            const data: [*]const u8 = @ptrCast(c.xcb_get_property_value(reply));
+                            const clamped = @min(len, 16384);
+                            @memcpy(self.paste_buf_data[0..clamped], data[0..clamped]);
+                            self.paste_buf_len = clamped;
+                            return .{ .paste = .{ .ptr = &self.paste_buf_data, .len = clamped } };
+                        }
+                    }
+                    continue; // property data empty — skip
+                },
+                c.XCB_EXPOSE => {
+                    // Window (re-)exposed — tell main loop to force full redraw.
+                    // Don't present() here: after a resize the SHM buffer is zeroed,
+                    // and presenting it would flash a black frame.
+                    return .expose;
+                },
+                c.XCB_CLIENT_MESSAGE => {
+                    const msg: *c.xcb_client_message_event_t = @ptrCast(@alignCast(event));
+                    // XEmbed messages: type == _XEMBED, code in data32[1]
+                    if (self.xembed_atom != 0 and msg.*.type == self.xembed_atom) {
+                        const xembed_msg = msg.*.data.data32[1];
+                        switch (xembed_msg) {
+                            0 => { // XEMBED_EMBEDDED_NOTIFY
+                                self.embedder_window = msg.*.data.data32[3];
+                                self.xembed_version = 0;
+                            },
+                            1 => { // XEMBED_WINDOW_ACTIVATE
+                                self.xembed_active = true;
+                            },
+                            2 => { // XEMBED_WINDOW_DEACTIVATE
+                                self.xembed_active = false;
+                            },
+                            4 => { // XEMBED_FOCUS_IN
+                                return .focus_in;
+                            },
+                            5 => { // XEMBED_FOCUS_OUT
+                                return .focus_out;
+                            },
+                            10, 11 => {}, // MODALITY_ON/OFF — no-op
+                            else => {},
+                        }
+                        continue;
+                    }
+                    // WM_DELETE_WINDOW (top-level mode)
+                    if (msg.*.data.data32[0] == self.wm_delete_atom) {
+                        return .close;
+                    }
+                    continue;
+                },
+                c.XCB_DESTROY_NOTIFY => return .close,
+                c.XCB_FOCUS_IN => {
+                    // Re-establish XIM IC focus so the IM server accepts forwarded keys
+                    if (self.xim) |xim| {
+                        if (self.xim_connected and self.xic != 0) {
+                            _ = c.xcb_xim_set_ic_focus(xim, self.xic);
+                        }
+                    }
+                    return .focus_in;
+                },
+                c.XCB_FOCUS_OUT => {
+                    // Clear stale XIM pending state — the IM server will not
+                    // respond to a key forwarded before focus was lost.
+                    self.has_pending_xim = false;
+                    self.suppress_xim_result = false;
+                    // Notify IM server that IC lost focus
+                    if (self.xim) |xim| {
+                        if (self.xim_connected and self.xic != 0) {
+                            _ = c.xcb_xim_unset_ic_focus(xim, self.xic);
+                        }
+                    }
+                    return .focus_out;
+                },
+                else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
+            }
         } // while (true)
     }
 

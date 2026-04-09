@@ -1103,7 +1103,6 @@ pub fn main() !void {
                         render.renderCell(buf, stride, x, y, render_cell, fg_rgb, bg_rgb, ul_rgb, glyph, config.font_width, config.font_height, .bgra32, false, config.scale, false);
                     }
                 }
-
             }
             // Mark dirty once per row instead of per cell
             if (!all_dirty) backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);

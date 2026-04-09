@@ -312,7 +312,11 @@ pub const Pty = struct {
 };
 
 test "Pty: spawn and read echo output" {
-    var pty = try Pty.spawn(80, 24, "/bin/echo", null);
+    // Skip when /dev/ptmx (Linux) is missing or invisible (e.g. restricted CI/sandbox).
+    var pty = Pty.spawn(80, 24, "/bin/echo", null) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => |e| return e,
+    };
     defer pty.deinit();
 
     // Wait for output

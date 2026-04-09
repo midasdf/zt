@@ -140,9 +140,12 @@ pub const FbdevBackend = struct {
         {
             std.log.err("fbdev: unsupported pixel format (need 32bpp BGRA, got {d}bpp R@{d}/{d} G@{d}/{d} B@{d}/{d})", .{
                 vinfo.bits_per_pixel,
-                vinfo.red.offset,   vinfo.red.length,
-                vinfo.green.offset, vinfo.green.length,
-                vinfo.blue.offset,  vinfo.blue.length,
+                vinfo.red.offset,
+                vinfo.red.length,
+                vinfo.green.offset,
+                vinfo.green.length,
+                vinfo.blue.offset,
+                vinfo.blue.length,
             });
             return error.UnsupportedPixelFormat;
         }

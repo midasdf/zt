@@ -1,5 +1,4 @@
 /// zxdg_decoration_manager_v1 and zxdg_toplevel_decoration_v1 protocol.
-
 const wire = @import("wire.zig");
 
 // ============================================================================

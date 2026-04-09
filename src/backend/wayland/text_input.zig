@@ -2,7 +2,6 @@
 ///
 /// Handles preedit string (composition preview), commit string (final text),
 /// and done events for input method integration.
-
 const std = @import("std");
 const wire = @import("wire.zig");
 
