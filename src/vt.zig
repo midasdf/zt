@@ -1642,7 +1642,11 @@ fn parseColonColor(subs: []const u16, count: u3, term: *Term, target: ColorTarge
                 term.current_bg = color;
                 term.current_bg_rgb = null;
             },
-            .ul => {},
+            .ul => {
+                const render = @import("render.zig");
+                const pal = render.palette[color];
+                term.current_ul_color_rgb = .{ pal.r, pal.g, pal.b };
+            },
         }
     } else if (color_type == 2) {
         // TrueColor: 38:2:r:g:b or 38:2::r:g:b (empty colorspace id)
@@ -1747,6 +1751,7 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.saved_bg_rgb = term.current_bg_rgb;
                     term.saved_ul_color_rgb = term.current_ul_color_rgb;
                     term.saved_charset = term.charset;
+                    term.saved_charsets = term.charsets;
                     term.switchScreen(true) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
@@ -1771,6 +1776,7 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.current_bg_rgb = term.saved_bg_rgb;
                     term.current_ul_color_rgb = term.saved_ul_color_rgb;
                     term.charset = term.saved_charset;
+                    term.charsets = term.saved_charsets;
                 }
             },
             2004 => term.bracketed_paste = set,

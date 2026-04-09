@@ -193,6 +193,7 @@ pub const Term = struct {
     saved_fg_rgb: ?[3]u8 = null,
     saved_bg_rgb: ?[3]u8 = null,
     saved_ul_color_rgb: ?[3]u8 = null,
+    saved_charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
