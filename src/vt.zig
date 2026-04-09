@@ -1211,7 +1211,7 @@ fn handleControl(c: u8, term: *Term) void {
             if (term.cursor_x > 0) term.cursor_x -= 1;
         },
         0x09 => term.tputtab(1), // HT — advance to next tab stop
-        0x07 => {}, // BEL — ignore
+        0x07 => term.bell_pending = true, // BEL
         0x0E => term.charset = 1, // SO (LS1 — Locking shift 1, activate G1)
         0x0F => term.charset = 0, // SI (LS0 — Locking shift 0, activate G0)
         else => {},

@@ -1016,6 +1016,14 @@ pub fn main() !void {
         last_render_ns = loop_now;
         bytes_since_render = 0;
 
+        // Handle BEL
+        if (term.bell_pending) {
+            term.bell_pending = false;
+            if (@hasDecl(Backend, "bell")) {
+                backend.bell();
+            }
+        }
+
         // Update window title if changed by OSC 0/2
         if (term.title_changed) {
             term.title_changed = false;

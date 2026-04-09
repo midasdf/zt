@@ -635,6 +635,11 @@ pub const X11Backend = struct {
         return 4;
     }
 
+    /// Ring the X11 bell (urgency hint).
+    pub fn bell(self: *Self) void {
+        _ = c.xcb_bell(self.connection, 0);
+    }
+
     /// Update the X11 window title (WM_NAME property).
     pub fn updateTitle(self: *Self, title: []const u8) void {
         _ = c.xcb_change_property(
