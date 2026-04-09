@@ -643,10 +643,13 @@ pub const WaylandBackend = struct {
     /// Sends set_cursor_rectangle + commit so the compositor repositions
     /// the candidate window near the text cursor.
     pub fn updateImeCursorPos(self: *Self, x: u32, y: u32) void {
-        self.ime_cursor_x = @intCast(x);
-        self.ime_cursor_y = @intCast(y);
+        const new_x: i32 = @intCast(x);
+        const new_y: i32 = @intCast(y);
+        if (new_x == self.ime_cursor_x and new_y == self.ime_cursor_y) return;
+        self.ime_cursor_x = new_x;
+        self.ime_cursor_y = new_y;
         if (self.text_input.id != 0 and self.text_input.enabled) {
-            text_input_mod.setCursorRectangle(&self.conn, self.text_input.id, self.ime_cursor_x, self.ime_cursor_y, 1, self.ime_cursor_h) catch {};
+            text_input_mod.setCursorRectangle(&self.conn, self.text_input.id, new_x, new_y, 1, self.ime_cursor_h) catch {};
             text_input_mod.commit(&self.conn, self.text_input.id) catch {};
         }
     }
