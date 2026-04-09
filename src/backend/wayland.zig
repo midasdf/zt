@@ -139,6 +139,11 @@ pub const WaylandBackend = struct {
     // Clipboard
     clipboard: clipboard_mod.ClipboardState = .{},
 
+    // IME cursor position (surface-local pixels)
+    ime_cursor_x: i32 = 0,
+    ime_cursor_y: i32 = 0,
+    ime_cursor_h: i32 = 16,
+
     // Seat capabilities captured during init (processed in postInit)
     init_seat_caps: u32 = 0,
 
@@ -532,6 +537,7 @@ pub const WaylandBackend = struct {
                 if (self.text_input.id != 0) {
                     text_input_mod.enable(&self.conn, self.text_input.id) catch {};
                     text_input_mod.setContentType(&self.conn, self.text_input.id, 0, 0) catch {};
+                    text_input_mod.setCursorRectangle(&self.conn, self.text_input.id, self.ime_cursor_x, self.ime_cursor_y, 1, self.ime_cursor_h) catch {};
                     text_input_mod.commit(&self.conn, self.text_input.id) catch {};
                     self.text_input.enabled = true;
                     self.conn.flush() catch {};
@@ -631,6 +637,18 @@ pub const WaylandBackend = struct {
 
     pub fn flush(self: *Self) void {
         self.conn.flush() catch {};
+    }
+
+    /// Update IME cursor position (surface-local pixels).
+    /// Sends set_cursor_rectangle + commit so the compositor repositions
+    /// the candidate window near the text cursor.
+    pub fn updateImeCursorPos(self: *Self, x: u32, y: u32) void {
+        self.ime_cursor_x = @intCast(x);
+        self.ime_cursor_y = @intCast(y);
+        if (self.text_input.id != 0 and self.text_input.enabled) {
+            text_input_mod.setCursorRectangle(&self.conn, self.text_input.id, self.ime_cursor_x, self.ime_cursor_y, 1, self.ime_cursor_h) catch {};
+            text_input_mod.commit(&self.conn, self.text_input.id) catch {};
+        }
     }
 
     /// Update the Wayland window title via xdg_toplevel.set_title.
@@ -906,6 +924,7 @@ pub const WaylandBackend = struct {
                 if (self.text_input.id != 0) {
                     text_input_mod.enable(&self.conn, self.text_input.id) catch {};
                     text_input_mod.setContentType(&self.conn, self.text_input.id, 0, 0) catch {};
+                    text_input_mod.setCursorRectangle(&self.conn, self.text_input.id, self.ime_cursor_x, self.ime_cursor_y, 1, self.ime_cursor_h) catch {};
                     text_input_mod.commit(&self.conn, self.text_input.id) catch {};
                     self.text_input.enabled = true;
                     self.conn.flush() catch {};

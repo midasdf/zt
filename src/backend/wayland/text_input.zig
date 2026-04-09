@@ -89,6 +89,18 @@ pub fn setContentType(conn: *wire.Connection, text_input_id: u32, hint: u32, pur
     try conn.sendMessage(text_input_id, ZWP_TEXT_INPUT_SET_CONTENT_TYPE, payload[0..pos], &.{});
 }
 
+/// Send zwp_text_input_v3.set_cursor_rectangle(x, y, width, height).
+/// Coordinates are surface-local pixels. Must be sent before commit.
+pub fn setCursorRectangle(conn: *wire.Connection, text_input_id: u32, x: i32, y: i32, w: i32, h: i32) !void {
+    var payload: [16]u8 = undefined;
+    var pos: usize = 0;
+    wire.putInt(&payload, &pos, x);
+    wire.putInt(&payload, &pos, y);
+    wire.putInt(&payload, &pos, w);
+    wire.putInt(&payload, &pos, h);
+    try conn.sendMessage(text_input_id, ZWP_TEXT_INPUT_SET_CURSOR_RECTANGLE, payload[0..pos], &.{});
+}
+
 /// Send zwp_text_input_v3.commit.
 pub fn commit(conn: *wire.Connection, text_input_id: u32) !void {
     try conn.sendMessage(text_input_id, ZWP_TEXT_INPUT_COMMIT, &.{}, &.{});

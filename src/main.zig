@@ -784,9 +784,14 @@ pub fn main() !void {
                     },
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
+                        // Batch-limited to ensure timer/signal fds are serviced.
+                        // Without this, a flood of X11 events (MotionNotify, XIM
+                        // protocol) can starve the event loop and freeze input/blink.
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             var had_input = false;
-                            while (backend.pollEvents()) |event| {
+                            var batch: u32 = 0;
+                            while (batch < 256) : (batch += 1) {
+                                const event = backend.pollEvents() orelse break;
                                 if (event == .key or event == .text or event == .paste) had_input = true;
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
                                     running = false;
@@ -984,7 +989,7 @@ pub fn main() !void {
             }
         }
 
-        // Update IME cursor position (X11 only)
+        // Update IME cursor position (X11 and Wayland)
         if (@hasDecl(Backend, "updateImeCursorPos")) {
             backend.updateImeCursorPos(
                 term.cursor_x * config.cell_width,

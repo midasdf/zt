@@ -955,6 +955,12 @@ pub const X11Backend = struct {
                             self.has_pending_xim = true;
                             self.xim_pending_ns = std.time.nanoTimestamp();
                             _ = c.xcb_xim_forward_event(xim, self.xic, key);
+                            // Flush immediately so the IM server receives the
+                            // forwarded key. Without this, the key sits in libxcb's
+                            // output buffer until end-of-loop flush, and the IM
+                            // server cannot fire the commit/forward callback —
+                            // leaving has_pending_xim stuck true indefinitely.
+                            _ = c.xcb_flush(self.connection);
                             // Check if forwarding produced immediate results
                             if (self.has_committed) {
                                 self.has_committed = false;
@@ -1057,9 +1063,9 @@ pub const X11Backend = struct {
                         latest_h = next_cfg.*.height;
                         std.c.free(next);
                     } else {
-                        // Non-ConfigureNotify event — push it back by processing later
-                        // We can't push back, so just handle it and break
-                        // Store this event for next pollEvents call
+                        // Non-ConfigureNotify event — store for next pollEvents call.
+                        // Free any previously stored event to avoid memory leak.
+                        if (self.pending_event) |old| std.c.free(old);
                         self.pending_event = next;
                         break;
                     }
