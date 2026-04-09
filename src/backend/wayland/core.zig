@@ -341,8 +341,8 @@ pub const ShmBuffer = struct {
         // 2. Grow pool if needed
         if (new_total_size > self.pool_capacity) {
             try posix.ftruncate(self.fd, @intCast(new_total_size));
-            posix.munmap(self.data);
-            self.data = try posix.mmap(
+            // mmap new region BEFORE munmap to avoid dangling pointer on failure
+            const new_data = try posix.mmap(
                 null,
                 new_total_size,
                 posix.PROT.READ | posix.PROT.WRITE,
@@ -350,6 +350,8 @@ pub const ShmBuffer = struct {
                 self.fd,
                 0,
             );
+            posix.munmap(self.data);
+            self.data = new_data;
             var payload: [4]u8 = undefined;
             var pos: usize = 0;
             wire.putInt(&payload, &pos, @intCast(new_total_size));

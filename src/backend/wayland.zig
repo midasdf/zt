@@ -262,7 +262,7 @@ pub const WaylandBackend = struct {
                 const payload = conn.consumeEvent(header.size);
                 if (header.object_id == sync_callback_id and header.opcode == core.WL_CALLBACK_EVENT_DONE) {
                     sync_done = true;
-                } else if (header.object_id == globals.shm and header.opcode == core.WL_SHM_EVENT_FORMAT) {
+                } else if (globals.shm != 0 and header.object_id == globals.shm and header.opcode == core.WL_SHM_EVENT_FORMAT) {
                     var pos: usize = 0;
                     const format = wire.getUint(payload, &pos);
                     if (format == core.SHM_FORMAT_ARGB8888) {
@@ -332,7 +332,7 @@ pub const WaylandBackend = struct {
                     const serial = wire.getUint(payload, &pos);
                     try xdg_shell.ackConfigure(&conn, xdg_surface_id, serial);
                     got_configure = true;
-                } else if (header.object_id == globals.xdg_wm_base and header.opcode == xdg_shell.XDG_WM_BASE_EVENT_PING) {
+                } else if (globals.xdg_wm_base != 0 and header.object_id == globals.xdg_wm_base and header.opcode == xdg_shell.XDG_WM_BASE_EVENT_PING) {
                     var pos: usize = 0;
                     const serial = wire.getUint(payload, &pos);
                     try xdg_shell.pong(&conn, globals.xdg_wm_base, serial);
@@ -479,7 +479,7 @@ pub const WaylandBackend = struct {
                     // wl_display.delete_id later, and dispatchEvent handles it.
                     // Releasing here causes double-free on the ID free list,
                     // leading to two objects sharing the same ID → protocol error.
-                } else if (header.object_id == self.globals.xdg_wm_base and header.opcode == xdg_shell.XDG_WM_BASE_EVENT_PING) {
+                } else if (self.globals.xdg_wm_base != 0 and header.object_id == self.globals.xdg_wm_base and header.opcode == xdg_shell.XDG_WM_BASE_EVENT_PING) {
                     var pos: usize = 0;
                     const serial = wire.getUint(payload, &pos);
                     xdg_shell.pong(&self.conn, self.globals.xdg_wm_base, serial) catch {};
