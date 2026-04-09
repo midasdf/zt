@@ -30,7 +30,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev
 
       - name: Format check
-        run: zig fmt --check src/ config.zig build.zig
+        run: zig fmt --check .
 
       - name: Build
         run: zig build -Dbackend=x11

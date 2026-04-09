@@ -1009,7 +1009,8 @@ pub const X11Backend = struct {
                     }
 
                     // Suppress IME toggle keys (Shift+Space) — don't produce text
-                    if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt) {
+                    // Only when IME is actually connected; otherwise Shift+Space should work normally
+                    if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt and self.xim_connected and self.xic != 0) {
                         continue; // don't return null — drain remaining XCB events
                     }
 
