@@ -774,20 +774,16 @@ pub const X11Backend = struct {
             return .close;
         }
 
-        // XIM timeout: if IM server hasn't responded within 500ms, fall back to local XKB
+        // XIM timeout: if IM server hasn't responded within 5 seconds,
+        // assume it crashed and clear pending state. Do NOT emit a fallback
+        // character — during Japanese romaji composition, consonants sit in
+        // the preedit buffer for extended periods waiting for the next key
+        // to disambiguate (e.g., "n" waits to see if "a" follows for "な"
+        // or "n" follows for "ん"). Emitting a fallback would leak raw ASCII.
         if (self.has_pending_xim) {
             const now = std.time.nanoTimestamp();
-            if (now - self.xim_pending_ns > 500_000_000) {
+            if (now - self.xim_pending_ns > 5_000_000_000) {
                 self.has_pending_xim = false;
-                // Fall back to local XKB processing for the stuck key
-                if (!self.suppress_xim_result) {
-                    // Suppress the late XIM response that may arrive after
-                    // this timeout — without this, both the fallback ASCII
-                    // and the eventual IME commit would be emitted.
-                    self.suppress_xim_result = true;
-                    const result = self.processKeycode(self.pending_xim_keycode, self.pending_xim_mods);
-                    if (result != null) return result;
-                }
                 self.suppress_xim_result = false;
             }
         }
@@ -858,15 +854,18 @@ pub const X11Backend = struct {
                 const evdev_keycode = key.*.detail -| 8;
                 const xcb_keycode: u32 = key.*.detail;
 
-                // Sync XKB modifier state from X server so Shift/CapsLock are
-                // reflected in xkb_state_key_get_utf8. Using update_mask (not
+                // Sync XKB modifier state from X server. Using update_mask (not
                 // update_key) avoids state desync when XIM consumes key releases.
+                // Decompose X11 state bits: CapsLock (LockMask=0x02) and NumLock
+                // (Mod2Mask=0x10) are lock modifiers, not depressed modifiers.
                 if (self.xkb_state) |state| {
+                    const x_state: u32 = key.*.state;
+                    const lock_bits: u32 = x_state & (0x02 | 0x10); // LockMask | Mod2Mask
                     _ = c.xkb_state_update_mask(
                         state,
-                        key.*.state, // depressed (base) modifiers from X server
+                        x_state & ~lock_bits, // depressed (Shift, Ctrl, Alt, etc.)
                         0, // latched
-                        0, // locked
+                        lock_bits, // locked (CapsLock, NumLock)
                         0, 0, 0, // group: base, latched, locked
                     );
                 }
