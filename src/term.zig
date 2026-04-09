@@ -200,6 +200,7 @@ pub const Term = struct {
     alt_saved_cursor_y: u32 = 0,
     alt_saved_scroll_top: u32 = 0,
     alt_saved_scroll_bottom: u32 = 0,
+    alt_has_truecolor_cells: bool = false,
     alt_saved_wrap_next: bool = false,
     alt_saved_attrs: Cell.Attrs = .{},
     alt_saved_fg: u8 = 7,
@@ -553,6 +554,10 @@ pub const Term = struct {
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
+        // Clamp alt-screen saved scroll region to new dimensions
+        self.alt_saved_scroll_top = @min(self.alt_saved_scroll_top, new_rows -| 1);
+        self.alt_saved_scroll_bottom = @min(self.alt_saved_scroll_bottom, new_rows -| 1);
+
         // Resize alt buffer if allocated — allocate all new buffers first,
         // then free old ones, so OOM leaves the old buffers intact (no UAF).
         if (self.alt_cells != null or self.alt_row_map != null or self.alt_dirty != null or self.alt_fg_rgb != null or self.alt_bg_rgb != null) {
@@ -692,6 +697,11 @@ pub const Term = struct {
         const tmp_hl = self.hyperlink_ids;
         self.hyperlink_ids = self.alt_hyperlink_ids.?;
         self.alt_hyperlink_ids = tmp_hl;
+
+        // Swap truecolor tracking flag between screens
+        const tmp_tc = self.has_truecolor_cells;
+        self.has_truecolor_cells = self.alt_has_truecolor_cells;
+        self.alt_has_truecolor_cells = tmp_tc;
 
         self.is_alt_screen = alt;
         self.markDirtyRange(.{ .start = 0, .end = total });

@@ -46,10 +46,15 @@ pub const Pty = struct {
             // O_RDWR=2, O_NOCTTY=0x20000 on macOS
             const fd = c.posix_openpt(@as(c_int, 2 | 0x20000));
             if (fd < 0) return error.OpenFailed;
+            // Set CLOEXEC to prevent master_fd leaking to child processes
+            if (c.fcntl(fd, @as(c_int, 2), @as(c_int, 1)) < 0) { // F_SETFD=2, FD_CLOEXEC=1
+                _ = c.close(fd);
+                return error.OpenFailed;
+            }
             break :blk @intCast(fd);
         } else try posix.open(
             "/dev/ptmx",
-            .{ .ACCMODE = .RDWR, .NOCTTY = true },
+            .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true },
             0,
         );
         errdefer posix.close(master_fd);
@@ -106,6 +111,12 @@ pub const Pty = struct {
                 _ = std.c.setsid();
             } else {
                 _ = linux.syscall0(.setsid);
+            }
+
+            // Reset signal mask — parent may have blocked signals for signalfd
+            if (is_linux) {
+                var empty_set = linux.sigemptyset();
+                _ = linux.sigprocmask(linux.SIG.SETMASK, &empty_set, null);
             }
 
             // b. Open slave fd
@@ -263,9 +274,9 @@ pub const Pty = struct {
     }
 
     pub fn deinit(self: *Pty) void {
-        posix.close(self.master_fd);
-        // Kill child if still running
+        // Kill child first, then close — avoids SIGHUP+SIGTERM race
         posix.kill(self.child_pid, posix.SIG.TERM) catch {};
+        posix.close(self.master_fd);
         // Use WNOHANG: child may already be reaped by SIGCHLD handler
         const WNOHANG: u32 = if (@import("builtin").os.tag == .linux) std.os.linux.W.NOHANG else 1;
         _ = posix.waitpid(self.child_pid, WNOHANG);

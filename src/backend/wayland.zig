@@ -671,7 +671,7 @@ pub const WaylandBackend = struct {
     // ========================================================================
 
     pub fn getFd(self: *Self) ?posix.fd_t {
-        return self.conn.fd;
+        return self.internal_epoll_fd;
     }
 
     // ========================================================================
