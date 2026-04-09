@@ -1031,7 +1031,7 @@ pub fn main() !void {
                 if (term.title_len > 0) {
                     // Prefix with "zt — " so the version/app name stays visible
                     var title_buf: [280]u8 = undefined;
-                    const prefix = "zt — ";
+                    const prefix = "zt " ++ config.version ++ " — ";
                     @memcpy(title_buf[0..prefix.len], prefix);
                     const tlen: usize = term.title_len;
                     @memcpy(title_buf[prefix.len..][0..tlen], term.title[0..tlen]);
