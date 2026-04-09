@@ -121,7 +121,7 @@ pub const Term = struct {
     current_hyperlink_id: u16 = 0,
 
     // VT response buffer — accumulated responses flushed by event loop via ptyBufferedWrite
-    vt_response_buf: [1024]u8 = undefined,
+    vt_response_buf: [4096]u8 = undefined,
     vt_response_len: u16 = 0,
 
     // OSC 52 clipboard output
@@ -171,6 +171,7 @@ pub const Term = struct {
     title: [256]u8 = undefined,
     title_len: u8 = 0,
     title_changed: bool = false,
+    bell_pending: bool = false,
 
     // Focus event tracking (DECSET ?1004)
     focus_events: bool = false,
