@@ -1016,6 +1016,14 @@ pub fn main() !void {
         last_render_ns = loop_now;
         bytes_since_render = 0;
 
+        // Update window title if changed by OSC 0/2
+        if (term.title_changed) {
+            term.title_changed = false;
+            if (@hasDecl(Backend, "updateTitle")) {
+                backend.updateTitle(term.title[0..term.title_len]);
+            }
+        }
+
         // Update IME cursor position (X11 only)
         if (@hasDecl(Backend, "updateImeCursorPos")) {
             backend.updateImeCursorPos(

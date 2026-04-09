@@ -757,6 +757,7 @@ fn handleOsc(payload: []const u8, term: *Term) void {
             const len = @min(param.len, 255);
             @memcpy(term.title[0..len], param[0..len]);
             term.title_len = @intCast(len);
+            term.title_changed = true;
         },
         1 => {}, // Set icon name only — silently accept
         4 => {}, // Set color palette — silently accept

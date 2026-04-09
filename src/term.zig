@@ -170,6 +170,7 @@ pub const Term = struct {
     // Window/icon title (OSC 0/1/2)
     title: [256]u8 = undefined,
     title_len: u8 = 0,
+    title_changed: bool = false,
 
     // Focus event tracking (DECSET ?1004)
     focus_events: bool = false,

@@ -632,6 +632,11 @@ pub const WaylandBackend = struct {
         self.conn.flush() catch {};
     }
 
+    /// Update the Wayland window title via xdg_toplevel.set_title.
+    pub fn updateTitle(self: *Self, title: []const u8) void {
+        xdg_shell.setTitle(&self.conn, self.toplevel_id, title) catch {};
+    }
+
     // ========================================================================
     // Resize
     // ========================================================================

@@ -635,6 +635,20 @@ pub const X11Backend = struct {
         return 4;
     }
 
+    /// Update the X11 window title (WM_NAME property).
+    pub fn updateTitle(self: *Self, title: []const u8) void {
+        _ = c.xcb_change_property(
+            self.connection,
+            c.XCB_PROP_MODE_REPLACE,
+            self.window,
+            c.XCB_ATOM_WM_NAME,
+            c.XCB_ATOM_STRING,
+            8,
+            @intCast(title.len),
+            title.ptr,
+        );
+    }
+
     /// Update IME candidate window position to follow the terminal cursor.
     /// Uses set_ic_values with XNSpotLocation (standard XIM protocol).
     /// Only sends when position changes to avoid IME instability.
