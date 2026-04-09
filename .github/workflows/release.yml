@@ -99,13 +99,12 @@ jobs:
           mv zt-aarch64-linux/zt zt-aarch64-linux-x11
           chmod +x zt-*-linux-x11
 
-      - name: Create release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --generate-notes \
-            zt-x86_64-linux-x11 \
-            zt-aarch64-linux-x11
+          # Create release if it doesn't exist; skip if already created manually
+          gh release create "${TAG}" --title "${TAG}" --generate-notes 2>/dev/null || true
+          # Upload binaries (--clobber overwrites if re-run)
+          gh release upload "${TAG}" zt-x86_64-linux-x11 zt-aarch64-linux-x11 --clobber
