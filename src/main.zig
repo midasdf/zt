@@ -400,10 +400,31 @@ fn dispatchClipboardCopy(data: []const u8) void {
         std.posix.close(pipe_fds[0]);
         std.posix.close(pipe_fds[1]);
 
+        // Use minimal environment to avoid LD_PRELOAD/PATH hijacking
+        var display_env_buf: [128]u8 = undefined;
+        var wayland_env_buf: [128]u8 = undefined;
+        var xdg_env_buf: [256]u8 = undefined;
+        var clip_env: [8:null]?[*:0]const u8 = .{null} ** 8;
+        var ci: usize = 0;
+        clip_env[ci] = "PATH=/usr/local/bin:/usr/bin:/bin";
+        ci += 1;
+        if (std.posix.getenv("DISPLAY")) |v| {
+            clip_env[ci] = (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{v}) catch null);
+            if (clip_env[ci] != null) ci += 1;
+        }
+        if (std.posix.getenv("WAYLAND_DISPLAY")) |v| {
+            clip_env[ci] = (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{v}) catch null);
+            if (clip_env[ci] != null) ci += 1;
+        }
+        if (std.posix.getenv("XDG_RUNTIME_DIR")) |v| {
+            clip_env[ci] = (std.fmt.bufPrintZ(&xdg_env_buf, "XDG_RUNTIME_DIR={s}", .{v}) catch null);
+            if (clip_env[ci] != null) ci += 1;
+        }
+        const clip_envp: [*:null]const ?[*:0]const u8 = &clip_env;
         _ = std.posix.execvpeZ(
             argv[0].?,
             argv,
-            @ptrCast(std.c.environ),
+            clip_envp,
         ) catch {};
         std.posix.exit(1);
     }

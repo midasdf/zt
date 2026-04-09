@@ -765,9 +765,15 @@ fn handleOsc(payload: []const u8, term: *Term) void {
 
     switch (cmd) {
         0, 2 => { // Set window title (+ icon name for 0)
-            const len = @min(param.len, 255);
-            @memcpy(term.title[0..len], param[0..len]);
-            term.title_len = @intCast(len);
+            // Sanitize: strip control characters to prevent UI spoofing
+            var len: u8 = 0;
+            for (param[0..@min(param.len, 255)]) |ch| {
+                if (ch >= 0x20 and ch != 0x7F) {
+                    term.title[len] = ch;
+                    len += 1;
+                }
+            }
+            term.title_len = len;
             term.title_changed = true;
         },
         1 => {}, // Set icon name only — silently accept
@@ -792,28 +798,10 @@ fn handleOsc(payload: []const u8, term: *Term) void {
     }
 }
 
-fn handleOsc52(param: []const u8, term: *Term) void {
-    // OSC 52 ; Pc ; Pd ST
-    // Pc = clipboard selection (c, p, s, etc.), Pd = base64 data or "?" for query
-    const sep = std.mem.indexOfScalar(u8, param, ';');
-    const b64_data = if (sep) |s| param[s + 1 ..] else param;
-
-    // Query ("?") — not supported for security reasons
-    if (b64_data.len == 1 and b64_data[0] == '?') return;
-    // Clear ("") — clear clipboard
-    if (b64_data.len == 0) {
-        term.osc52_len = 0;
-        term.osc52_pending = true;
-        return;
-    }
-
-    // Base64 decode
-    const decoder = std.base64.standard.Decoder;
-    const decoded_len = decoder.calcSizeForSlice(b64_data) catch return;
-    if (decoded_len > term.osc52_buf.len) return; // too large
-    decoder.decode(&term.osc52_buf, b64_data) catch return;
-    term.osc52_len = @intCast(decoded_len);
-    term.osc52_pending = true;
+fn handleOsc52(_: []const u8, _: *Term) void {
+    // OSC 52 clipboard write is disabled by default for security — a malicious
+    // program (via cat, curl, SSH) can silently overwrite the user's clipboard.
+    // TODO: add a CLI flag (e.g. --allow-osc52) to opt in.
 }
 
 fn handleOsc8(param: []const u8, term: *Term) void {
@@ -897,6 +885,13 @@ fn respondXtgettcap(term: *Term, hex_name: []const u8) void {
     }
 
     // Unknown capability: DCS 0 + r <name> ST
+    // Validate hex_name contains only hex chars to prevent injection
+    for (hex_name) |ch| {
+        switch (ch) {
+            '0'...'9', 'a'...'f', 'A'...'F' => {},
+            else => return,
+        }
+    }
     const prefix = "\x1bP0+r";
     const suffix = "\x1b\\";
     if (prefix.len + hex_name.len + suffix.len <= resp_buf.len) {
@@ -1276,7 +1271,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             }
         },
         'J' => { // ED / DECSED — erase display
-            const mode: u8 = if (pc > 0) @intCast(p[0]) else 0;
+            const mode: u8 = if (pc > 0 and p[0] <= 255) @intCast(p[0]) else 0;
             if (csi.private_marker == '?') {
                 term.selectiveEraseDisplay(mode);
             } else {
@@ -1284,7 +1279,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             }
         },
         'K' => { // EL / DECSEL — erase line
-            const mode: u8 = if (pc > 0) @intCast(p[0]) else 0;
+            const mode: u8 = if (pc > 0 and p[0] <= 255) @intCast(p[0]) else 0;
             if (csi.private_marker == '?') {
                 term.selectiveEraseLine(mode);
             } else {
@@ -1478,7 +1473,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
         'q' => {
             if (csi.intermediate_count > 0 and csi.intermediates[0] == ' ') {
                 // DECSCUSR — Set Cursor Style
-                term.cursor_style = if (pc > 0) @intCast(p[0]) else 0;
+                term.cursor_style = if (pc > 0 and p[0] <= 6) @intCast(p[0]) else 0;
             } else if (csi.intermediate_count > 0 and csi.intermediates[0] == '"') {
                 // DECSCA — Set Character Protection Attribute
                 const ps = if (pc > 0) p[0] else 0;
@@ -2415,7 +2410,7 @@ test "Executor: wide char overwrite clears orphaned dummy" {
     try testing.expect(!term.cells[base + 6].attrs.wide_dummy);
 }
 
-test "OSC 52: base64 decode sets clipboard buffer" {
+test "OSC 52: clipboard write is disabled by default" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
     var parser = Parser{};
@@ -2427,9 +2422,8 @@ test "OSC 52: base64 decode sets clipboard buffer" {
         executeAction(action, &term);
     }
 
-    try testing.expect(term.osc52_pending);
-    try testing.expectEqual(@as(u16, 5), term.osc52_len);
-    try testing.expectEqualSlices(u8, "Hello", term.osc52_buf[0..term.osc52_len]);
+    // OSC 52 write is disabled for security — clipboard should not be set
+    try testing.expect(!term.osc52_pending);
 }
 
 test "SGR 4:3 sets curly underline style" {
