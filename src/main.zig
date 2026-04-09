@@ -899,10 +899,14 @@ pub fn main() !void {
         prev_cursor_x = term.cursor_x;
         prev_cursor_y = term.cursor_y;
 
-        // Flush Wayland protocol responses (pong, ack_configure) every iteration,
-        // even when we skip rendering. Without this, the compositor marks us
-        // "not responding" because pong sits in the send buffer.
-        if (config.backend == .wayland) backend.flush();
+        // Flush protocol responses every iteration, even when we skip rendering.
+        // Wayland: without this, the compositor marks us "not responding"
+        //          because pong sits in the send buffer.
+        // X11:     without this, XIM forward_event messages sit in the XCB
+        //          output buffer until the next render, causing 0-500ms input
+        //          latency and XIM timeout fallback that leaks raw ASCII
+        //          alongside committed IME text.
+        if (config.backend == .wayland or config.backend == .x11) backend.flush();
 
         // Render dirty cells — skip entirely if nothing changed
         if (!term.hasDirty()) continue;

@@ -171,6 +171,7 @@ pub const X11Backend = struct {
 
         // 5. Set WM_CLASS and WM_NAME (skip in embedded mode)
         if (embed_window == 0) {
+            const wm_name = "zt " ++ config.version;
             _ = c.xcb_change_property(
                 connection,
                 c.XCB_PROP_MODE_REPLACE,
@@ -178,8 +179,8 @@ pub const X11Backend = struct {
                 c.XCB_ATOM_WM_NAME,
                 c.XCB_ATOM_STRING,
                 8,
-                2,
-                "zt",
+                wm_name.len,
+                wm_name,
             );
             // WM_CLASS: "zt\0zt\0" (instance\0class\0)
             _ = c.xcb_change_property(
@@ -780,6 +781,10 @@ pub const X11Backend = struct {
                 self.has_pending_xim = false;
                 // Fall back to local XKB processing for the stuck key
                 if (!self.suppress_xim_result) {
+                    // Suppress the late XIM response that may arrive after
+                    // this timeout — without this, both the fallback ASCII
+                    // and the eventual IME commit would be emitted.
+                    self.suppress_xim_result = true;
                     const result = self.processKeycode(self.pending_xim_keycode, self.pending_xim_mods);
                     if (result != null) return result;
                 }
