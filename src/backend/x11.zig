@@ -1132,8 +1132,28 @@ pub const X11Backend = struct {
                 continue;
             },
             c.XCB_DESTROY_NOTIFY => return .close,
-            c.XCB_FOCUS_IN => return .focus_in,
-            c.XCB_FOCUS_OUT => return .focus_out,
+            c.XCB_FOCUS_IN => {
+                // Re-establish XIM IC focus so the IM server accepts forwarded keys
+                if (self.xim) |xim| {
+                    if (self.xim_connected and self.xic != 0) {
+                        _ = c.xcb_xim_set_ic_focus(xim, self.xic);
+                    }
+                }
+                return .focus_in;
+            },
+            c.XCB_FOCUS_OUT => {
+                // Clear stale XIM pending state — the IM server will not
+                // respond to a key forwarded before focus was lost.
+                self.has_pending_xim = false;
+                self.suppress_xim_result = false;
+                // Notify IM server that IC lost focus
+                if (self.xim) |xim| {
+                    if (self.xim_connected and self.xic != 0) {
+                        _ = c.xcb_xim_unset_ic_focus(xim, self.xic);
+                    }
+                }
+                return .focus_out;
+            },
             else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
         }
         } // while (true)
