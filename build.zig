@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(u32, "max_fps", max_fps_opt);
     options.addOption(u32, "pty_buf_kb", pty_buf_kb_opt);
     options.addOption([:0]const u8, "shell", shell_opt);
-    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.5.9") catch @panic("OOM"));
+    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.5.10") catch @panic("OOM"));
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
