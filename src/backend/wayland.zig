@@ -115,10 +115,14 @@ pub const WaylandBackend = struct {
     // Internal epoll (wraps wayland socket + key repeat timer + clipboard pipe)
     internal_epoll_fd: posix.fd_t = -1,
 
-    // Event queue (pollEvents returns one event at a time)
-    pending_events: [32]Event = undefined,
+    // Event queue (pollEvents returns one event at a time).
+    // Large enough for IME bursts + fast typing; small queues silently dropped
+    // events and caused lost keys (main ignores key releases, which used to
+    // consume half the slots).
+    pending_events: [256]Event = undefined,
     pending_count: usize = 0,
     pending_read: usize = 0,
+    pending_overflow_warned: bool = false,
 
     // Focus state
     focused: bool = false,
@@ -701,10 +705,15 @@ pub const WaylandBackend = struct {
     // ========================================================================
 
     fn queueEvent(self: *Self, event: Event) void {
-        if (self.pending_count < self.pending_events.len) {
-            self.pending_events[self.pending_count] = event;
-            self.pending_count += 1;
+        if (self.pending_count >= self.pending_events.len) {
+            if (!self.pending_overflow_warned) {
+                std.log.warn("Wayland event queue full; dropping event", .{});
+                self.pending_overflow_warned = true;
+            }
+            return;
         }
+        self.pending_events[self.pending_count] = event;
+        self.pending_count += 1;
     }
 
     fn dequeueEvent(self: *Self) ?Event {
@@ -715,6 +724,7 @@ pub const WaylandBackend = struct {
             if (self.pending_read >= self.pending_count) {
                 self.pending_read = 0;
                 self.pending_count = 0;
+                self.pending_overflow_warned = false;
             }
             return event;
         }
@@ -1065,17 +1075,15 @@ pub const WaylandBackend = struct {
                         .modifiers = mods,
                     } });
                 } else {
-                    // Key released
+                    // Key released — update repeat state only. Do not queue a KeyEvent:
+                    // main.zig only handles pressed==true for PTY output, so releases
+                    // wasted queue slots and could overflow the small pending buffer,
+                    // dropping real keypress/text events.
                     if (self.keyboard.repeat_key) |rk| {
                         if (rk == key) {
                             self.keyboard.stopRepeat();
                         }
                     }
-                    self.queueEvent(.{ .key = .{
-                        .keycode = evdev_keycode,
-                        .pressed = false,
-                        .modifiers = mods,
-                    } });
                 }
             },
             seat_mod.WL_KEYBOARD_EVENT_MODIFIERS => {

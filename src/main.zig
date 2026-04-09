@@ -790,13 +790,18 @@ pub fn main() !void {
                     },
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
-                        // Batch-limited to ensure timer/signal fds are serviced.
-                        // Without this, a flood of X11 events (MotionNotify, XIM
-                        // protocol) can starve the event loop and freeze input/blink.
+                        // Drain pollEvents until the backend queue is empty (same as
+                        // the macOS kqueue path). On Linux+X11, libxcb often reads the
+                        // whole socket into an internal queue; if we stop after a fixed
+                        // number of delivered events while messages remain, the FD is
+                        // no longer readable and epoll will not wake again — input
+                        // appears stuck or very laggy until unrelated X traffic arrives.
+                        // Cap avoids infinite loops if a backend misbehaves; 8k is far
+                        // above normal bursts but still bounded for timer/signal latency.
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             var had_input = false;
-                            var batch: u32 = 0;
-                            while (batch < 256) : (batch += 1) {
+                            var drain: u32 = 0;
+                            while (drain < 8192) : (drain += 1) {
                                 const event = backend.pollEvents() orelse break;
                                 if (event == .key or event == .text or event == .paste) had_input = true;
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
@@ -804,7 +809,6 @@ pub fn main() !void {
                                     break;
                                 }
                             }
-                            // Reset cursor blink on input activity
                             if (had_input) cursor_visible_blink = true;
                         }
                     },
