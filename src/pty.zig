@@ -47,7 +47,10 @@ pub const Pty = struct {
             const fd = c.posix_openpt(@as(c_int, 2 | 0x20000));
             if (fd < 0) return error.OpenFailed;
             // Set CLOEXEC to prevent master_fd leaking to child processes
-            _ = c.fcntl(fd, @as(c_int, 2), @as(c_int, 1)); // F_SETFD=2, FD_CLOEXEC=1
+            if (c.fcntl(fd, @as(c_int, 2), @as(c_int, 1)) < 0) { // F_SETFD=2, FD_CLOEXEC=1
+                _ = c.close(fd);
+                return error.OpenFailed;
+            }
             break :blk @intCast(fd);
         } else try posix.open(
             "/dev/ptmx",

@@ -466,8 +466,10 @@ pub fn translateKey(keycode: u16, mods: Modifiers, decckm: bool, decbkm: bool) [
             }
 
             // Ctrl+symbol → C0 control characters (Ctrl+[ = ESC, Ctrl+\ = FS, Ctrl+] = GS, etc.)
-            if (mods.ctrl and entry.normal >= '@' and entry.normal <= '_') {
-                const ctrl_char: u8 = entry.normal - '@';
+            // Use shifted value when Shift is held (e.g., Ctrl+Shift+2 → '@' → NUL)
+            const ctrl_source: u8 = if (mods.shift) entry.shifted else entry.normal;
+            if (mods.ctrl and ctrl_source >= '@' and ctrl_source <= '_') {
+                const ctrl_char: u8 = ctrl_source - '@';
                 if (mods.alt) {
                     S.buf[0] = 0x1b;
                     S.buf[1] = ctrl_char;
