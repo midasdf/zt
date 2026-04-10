@@ -474,6 +474,11 @@ fn handleBackendEvent(
     write_buf: *[65536]u8,
     write_pending: *usize,
     evloop_fd: i32,
+    cursor_visible_blink: *bool,
+    cursor_blink_active: *bool,
+    last_input_ns: *i128,
+    last_render_ns: *i128,
+    backend_focused: *bool,
 ) bool {
     switch (event.*) {
         .key => |key_ev| {
@@ -530,6 +535,14 @@ fn handleBackendEvent(
             term.all_dirty = true;
         },
         .focus_in => {
+            // Restore blink + input clock so idle-timeout does not stay "stuck" across focus changes.
+            // Mark cursor dirty and drop frame throttle so the first paint after refocus is immediate.
+            backend_focused.* = true;
+            cursor_visible_blink.* = true;
+            cursor_blink_active.* = true;
+            last_input_ns.* = std.time.nanoTimestamp();
+            last_render_ns.* = 0;
+            term.markDirty(term.cursor_x, term.cursor_y);
             if (term.focus_events) {
                 if (!ptyBufferedWrite(pty_ptr, "\x1b[I", write_buf, write_pending, evloop_fd)) {
                     return false;
@@ -537,6 +550,10 @@ fn handleBackendEvent(
             }
         },
         .focus_out => {
+            backend_focused.* = false;
+            cursor_blink_active.* = false;
+            cursor_visible_blink.* = true;
+            term.markDirty(term.cursor_x, term.cursor_y);
             if (term.focus_events) {
                 if (!ptyBufferedWrite(pty_ptr, "\x1b[O", write_buf, write_pending, evloop_fd)) {
                     return false;
@@ -701,6 +718,10 @@ pub fn main() !void {
     var mod_state: input.Modifiers = .{};
     var pty_buf: [config.pty_buf_size]u8 = undefined;
     var cursor_visible_blink = true;
+    var cursor_blink_active = true; // false after idle timeout — stops blink rendering
+    // false while unfocused: skip cursor timer toggles (avoids stale idle blink + extra wakeups)
+    var backend_focused = true;
+    var last_input_ns: i128 = std.time.nanoTimestamp();
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
     var write_buf: [65536]u8 = undefined;
@@ -784,9 +805,25 @@ pub fn main() !void {
                         // Read timer to acknowledge
                         var exp: u64 = 0;
                         _ = std.posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
-                        cursor_visible_blink = !cursor_visible_blink;
-                        // Mark cursor cell dirty for redraw
-                        term.markDirty(term.cursor_x, term.cursor_y);
+                        if (!backend_focused) {
+                            // Unfocused: do not toggle cursor or mark dirty (compositor may throttle us anyway).
+                            continue;
+                        }
+                        // Stop blinking after 5 seconds of no input (like other terminals).
+                        // This avoids continuous rendering during idle, which can trigger
+                        // XCB connection issues and wastes CPU/GPU.
+                        const idle_ns = loop_now - last_input_ns;
+                        if (idle_ns > 5_000_000_000) {
+                            if (cursor_blink_active) {
+                                cursor_blink_active = false;
+                                cursor_visible_blink = true; // show cursor solid
+                                term.markDirty(term.cursor_x, term.cursor_y);
+                            }
+                        } else {
+                            cursor_blink_active = true;
+                            cursor_visible_blink = !cursor_visible_blink;
+                            term.markDirty(term.cursor_x, term.cursor_y);
+                        }
                     },
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
@@ -804,12 +841,16 @@ pub fn main() !void {
                             while (drain < 8192) : (drain += 1) {
                                 const event = backend.pollEvents() orelse break;
                                 if (event == .key or event == .text or event == .paste) had_input = true;
-                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
                                     running = false;
                                     break;
                                 }
                             }
-                            if (had_input) cursor_visible_blink = true;
+                            if (had_input) {
+                                cursor_visible_blink = true;
+                                cursor_blink_active = true;
+                                last_input_ns = loop_now;
+                            }
                         }
                     },
                     else => {
@@ -846,7 +887,11 @@ pub fn main() !void {
                                     },
                                 }
                             }
-                            if (had_input) cursor_visible_blink = true;
+                            if (had_input) {
+                                cursor_visible_blink = true;
+                                cursor_blink_active = true;
+                                last_input_ns = loop_now;
+                            }
                         }
                     },
                 }
@@ -890,12 +935,16 @@ pub fn main() !void {
                             var had_input = false;
                             while (backend.pollEvents()) |event| {
                                 if (event == .key or event == .text or event == .paste) had_input = true;
-                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
                                     running = false;
                                     break;
                                 }
                             }
-                            if (had_input) cursor_visible_blink = true;
+                            if (had_input) {
+                                cursor_visible_blink = true;
+                                cursor_blink_active = true;
+                                last_input_ns = loop_now;
+                            }
                         }
                     }
                 } else if (kev.filter == std.c.EVFILT.WRITE) {
@@ -907,8 +956,21 @@ pub fn main() !void {
                 } else if (kev.filter == std.c.EVFILT.SIGNAL) {
                     running = handleSignal(-1, @intCast(kev.ident), &backend);
                 } else if (kev.filter == std.c.EVFILT.TIMER) {
-                    cursor_visible_blink = !cursor_visible_blink;
-                    term.markDirty(term.cursor_x, term.cursor_y);
+                    if (!backend_focused) {
+                        continue;
+                    }
+                    const idle_ns = loop_now - last_input_ns;
+                    if (idle_ns > 5_000_000_000) {
+                        if (cursor_blink_active) {
+                            cursor_blink_active = false;
+                            cursor_visible_blink = true;
+                            term.markDirty(term.cursor_x, term.cursor_y);
+                        }
+                    } else {
+                        cursor_blink_active = true;
+                        cursor_visible_blink = !cursor_visible_blink;
+                        term.markDirty(term.cursor_x, term.cursor_y);
+                    }
                 }
             }
 
@@ -918,7 +980,7 @@ pub fn main() !void {
             // never appears because Cocoa callbacks never fire.
             if (config.backend == .macos) {
                 while (backend.pollEvents()) |event| {
-                    if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd)) {
+                    if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
                         running = false;
                         break;
                     }
