@@ -182,7 +182,10 @@ pub const X11Backend = struct {
             c.XCB_EVENT_MASK_KEY_RELEASE |
             c.XCB_EVENT_MASK_STRUCTURE_NOTIFY |
             c.XCB_EVENT_MASK_EXPOSURE |
-            c.XCB_EVENT_MASK_FOCUS_CHANGE;
+            c.XCB_EVENT_MASK_FOCUS_CHANGE |
+            c.XCB_EVENT_MASK_BUTTON_PRESS |
+            c.XCB_EVENT_MASK_BUTTON_RELEASE |
+            c.XCB_EVENT_MASK_BUTTON_MOTION;
         const parent = if (embed_window != 0) embed_window else screen.*.root;
         const values = [_]u32{ 0, event_mask }; // back_pixel=black, event_mask
         _ = c.xcb_create_window(
@@ -1244,6 +1247,68 @@ pub const X11Backend = struct {
                         }
                     }
                     return .focus_out;
+                },
+                c.XCB_BUTTON_PRESS => {
+                    const btn_ev: *c.xcb_button_press_event_t = @ptrCast(@alignCast(event));
+                    // Skip unknown buttons (> 7)
+                    if (btn_ev.*.detail == 0 or btn_ev.*.detail > 7) continue;
+                    const mods = xcbStateToMods(btn_ev.*.state);
+                    const button: MouseEvent.Button = switch (btn_ev.*.detail) {
+                        1 => .left,
+                        2 => .middle,
+                        3 => .right,
+                        4 => .wheel_up,
+                        5 => .wheel_down,
+                        6 => .wheel_left,
+                        7 => .wheel_right,
+                        else => unreachable,
+                    };
+                    return .{ .mouse = .{
+                        .x = @intCast(@max(0, btn_ev.*.event_x)),
+                        .y = @intCast(@max(0, btn_ev.*.event_y)),
+                        .button = button,
+                        .action = .press,
+                        .modifiers = mods,
+                    } };
+                },
+                c.XCB_BUTTON_RELEASE => {
+                    const btn_ev: *c.xcb_button_release_event_t = @ptrCast(@alignCast(event));
+                    // Ignore wheel button releases (4-7)
+                    if (btn_ev.*.detail >= 4) continue;
+                    const mods = xcbStateToMods(btn_ev.*.state);
+                    const button: MouseEvent.Button = switch (btn_ev.*.detail) {
+                        1 => .left,
+                        2 => .middle,
+                        3 => .right,
+                        else => continue,
+                    };
+                    return .{ .mouse = .{
+                        .x = @intCast(@max(0, btn_ev.*.event_x)),
+                        .y = @intCast(@max(0, btn_ev.*.event_y)),
+                        .button = button,
+                        .action = .release,
+                        .modifiers = mods,
+                    } };
+                },
+                c.XCB_MOTION_NOTIFY => {
+                    const motion: *c.xcb_motion_notify_event_t = @ptrCast(@alignCast(event));
+                    const mods = xcbStateToMods(motion.*.state);
+                    // Determine which button is held from X11 state bits
+                    const button: MouseEvent.Button = if (motion.*.state & c.XCB_BUTTON_MASK_1 != 0)
+                        .left
+                    else if (motion.*.state & c.XCB_BUTTON_MASK_2 != 0)
+                        .middle
+                    else if (motion.*.state & c.XCB_BUTTON_MASK_3 != 0)
+                        .right
+                    else
+                        .none;
+                    return .{ .mouse = .{
+                        .x = @intCast(@max(0, motion.*.event_x)),
+                        .y = @intCast(@max(0, motion.*.event_y)),
+                        .button = button,
+                        .action = .motion,
+                        .modifiers = mods,
+                    } };
                 },
                 else => {
                     // SHM_COMPLETION: X server finished reading the front buffer
