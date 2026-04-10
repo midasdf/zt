@@ -161,6 +161,9 @@ pub const WaylandBackend = struct {
     cursor_shape_device_id: u32 = 0,
     fallback_cursor_surface_id: u32 = 0, // reuse across pointer.enter events
     pointer_serial: u32 = 0,
+    pointer_x: u32 = 0, // last known pixel x
+    pointer_y: u32 = 0, // last known pixel y
+    pointer_button: Event.MouseEvent.Button = .none, // currently held button
     repeat_registered: bool = false,
 
     // IME
@@ -1142,6 +1145,11 @@ pub const WaylandBackend = struct {
                 var pos: usize = 0;
                 const serial = wire.getUint(payload, &pos);
                 self.pointer_serial = serial;
+                _ = wire.getUint(payload, &pos); // surface
+                const x_fixed_e: i32 = @bitCast(wire.getUint(payload, &pos));
+                const y_fixed_e: i32 = @bitCast(wire.getUint(payload, &pos));
+                self.pointer_x = @intCast(@max(0, x_fixed_e >> 8));
+                self.pointer_y = @intCast(@max(0, y_fixed_e >> 8));
 
                 // Set cursor shape
                 if (self.cursor_shape_device_id != 0) {
@@ -1154,11 +1162,78 @@ pub const WaylandBackend = struct {
                 }
                 self.conn.flush() catch {};
             },
+            seat_mod.WL_POINTER_EVENT_LEAVE => {
+                self.pointer_button = .none;
+            },
+            seat_mod.WL_POINTER_EVENT_MOTION => {
+                // Payload: time(u32) + x(fixed) + y(fixed)
+                var pos: usize = 0;
+                _ = wire.getUint(payload, &pos); // time
+                const x_fixed: i32 = @bitCast(wire.getUint(payload, &pos));
+                const y_fixed: i32 = @bitCast(wire.getUint(payload, &pos));
+                // wl_fixed_t: signed 24.8 format — clamp negative to 0
+                self.pointer_x = @intCast(@max(0, x_fixed >> 8));
+                self.pointer_y = @intCast(@max(0, y_fixed >> 8));
+
+                self.queueEvent(.{ .mouse = .{
+                    .x = self.pointer_x,
+                    .y = self.pointer_y,
+                    .button = self.pointer_button,
+                    .action = .motion,
+                    .modifiers = .{},
+                } });
+            },
             seat_mod.WL_POINTER_EVENT_BUTTON => {
                 // Payload: serial(u32) + time(u32) + button(u32) + state(u32)
                 var pos: usize = 0;
                 const serial = wire.getUint(payload, &pos);
                 self.pointer_serial = serial;
+                _ = wire.getUint(payload, &pos); // time
+                const linux_button = wire.getUint(payload, &pos);
+                const state = wire.getUint(payload, &pos);
+
+                const button: Event.MouseEvent.Button = switch (linux_button) {
+                    0x110 => .left, // BTN_LEFT
+                    0x111 => .right, // BTN_RIGHT
+                    0x112 => .middle, // BTN_MIDDLE
+                    else => return,
+                };
+                const action: Event.MouseEvent.Action = if (state != 0) .press else .release;
+
+                // Track button state for motion events
+                if (action == .press) {
+                    self.pointer_button = button;
+                } else {
+                    self.pointer_button = .none;
+                }
+
+                self.queueEvent(.{ .mouse = .{
+                    .x = self.pointer_x,
+                    .y = self.pointer_y,
+                    .button = button,
+                    .action = action,
+                    .modifiers = .{}, // Will get modifiers from keyboard state if available
+                } });
+            },
+            seat_mod.WL_POINTER_EVENT_AXIS => {
+                // Payload: time(u32) + axis(u32) + value(fixed)
+                var pos: usize = 0;
+                _ = wire.getUint(payload, &pos); // time
+                const axis = wire.getUint(payload, &pos);
+                const value_fixed: i32 = @bitCast(wire.getUint(payload, &pos));
+                // axis 0 = vertical, 1 = horizontal
+                // value > 0 = down/right, < 0 = up/left
+                const button: Event.MouseEvent.Button = if (axis == 0)
+                    (if (value_fixed > 0) .wheel_down else .wheel_up)
+                else
+                    (if (value_fixed > 0) .wheel_right else .wheel_left);
+                self.queueEvent(.{ .mouse = .{
+                    .x = self.pointer_x,
+                    .y = self.pointer_y,
+                    .button = button,
+                    .action = .press,
+                    .modifiers = .{},
+                } });
             },
             else => {},
         }

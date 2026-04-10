@@ -42,6 +42,8 @@ pub const WL_POINTER_EVENT_ENTER: u16 = 0;
 pub const WL_POINTER_EVENT_LEAVE: u16 = 1;
 pub const WL_POINTER_EVENT_MOTION: u16 = 2;
 pub const WL_POINTER_EVENT_BUTTON: u16 = 3;
+pub const WL_POINTER_EVENT_AXIS: u16 = 4;
+pub const WL_POINTER_EVENT_FRAME: u16 = 5;
 
 // wl_pointer requests
 pub const WL_POINTER_SET_CURSOR: u16 = 0;
