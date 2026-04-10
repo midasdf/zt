@@ -163,7 +163,7 @@ pub const WaylandBackend = struct {
     pointer_serial: u32 = 0,
     pointer_x: u32 = 0, // last known pixel x
     pointer_y: u32 = 0, // last known pixel y
-    pointer_button: Event.MouseEvent.Button = .none, // currently held button
+    pointer_button: MouseEvent.Button = .none, // currently held button
     repeat_registered: bool = false,
 
     // IME
@@ -1192,13 +1192,13 @@ pub const WaylandBackend = struct {
                 const linux_button = wire.getUint(payload, &pos);
                 const state = wire.getUint(payload, &pos);
 
-                const button: Event.MouseEvent.Button = switch (linux_button) {
+                const button: MouseEvent.Button = switch (linux_button) {
                     0x110 => .left, // BTN_LEFT
                     0x111 => .right, // BTN_RIGHT
                     0x112 => .middle, // BTN_MIDDLE
                     else => return,
                 };
-                const action: Event.MouseEvent.Action = if (state != 0) .press else .release;
+                const action: MouseEvent.Action = if (state != 0) .press else .release;
 
                 // Track button state for motion events
                 if (action == .press) {
@@ -1223,7 +1223,7 @@ pub const WaylandBackend = struct {
                 const value_fixed: i32 = @bitCast(wire.getUint(payload, &pos));
                 // axis 0 = vertical, 1 = horizontal
                 // value > 0 = down/right, < 0 = up/left
-                const button: Event.MouseEvent.Button = if (axis == 0)
+                const button: MouseEvent.Button = if (axis == 0)
                     (if (value_fixed > 0) .wheel_down else .wheel_up)
                 else
                     (if (value_fixed > 0) .wheel_right else .wheel_left);
