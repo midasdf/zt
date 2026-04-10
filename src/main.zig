@@ -28,6 +28,17 @@ const BackendEvent = switch (config.backend) {
     .fbdev => void,
 };
 
+const MouseButton = if (config.backend == .fbdev) enum { none } else BackendEvent.MouseEvent.Button;
+
+const EncodedMouse = struct {
+    data: [32]u8 = undefined,
+    len: u8 = 0,
+
+    fn slice(self: *const EncodedMouse) []const u8 {
+        return self.data[0..self.len];
+    }
+};
+
 // Embed font at comptime
 // Large fonts use pre-compiled blob (bdf2blob.py) to avoid slow comptime parsing
 const FontType = font_mod.FontBlob(@embedFile("fonts/ufo-nf.bin"));
@@ -516,6 +527,7 @@ fn handleBackendEvent(
     last_input_ns: *i128,
     last_render_ns: *i128,
     backend_focused: *bool,
+    last_pressed_button: *MouseButton,
 ) bool {
     switch (event.*) {
         .key => |key_ev| {
@@ -600,14 +612,156 @@ fn handleBackendEvent(
                 }
             }
         },
-        .mouse => {
-            // TODO: implement mouse dispatch
+        .mouse => |mouse_ev| {
+            refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
+
+            // Pixel → cell coordinate conversion
+            const col: u32 = mouse_ev.x / config.cell_width;
+            const row: u32 = mouse_ev.y / config.cell_height;
+            const cx = @min(col, term.cols -| 1);
+            const cy = @min(row, term.rows -| 1);
+
+            // Shift held → terminal selection (bypass app mouse capture)
+            if (mouse_ev.modifiers.shift) {
+                // TODO: terminal selection (Task 5+6)
+                return true;
+            }
+
+            // App captures mouse → encode VT sequence
+            if (term.mouse_mode != .none) {
+                const seq = encodeMouseEvent(term, mouse_ev, cx, cy, last_pressed_button);
+                if (seq.len > 0) {
+                    if (!ptyBufferedWrite(pty_ptr, seq.slice(), write_buf, write_pending, evloop_fd)) {
+                        return false;
+                    }
+                }
+            } else {
+                // No app mouse mode → terminal selection
+                // TODO: terminal selection (Task 5+6)
+            }
         },
         .close => {
             return false;
         },
     }
     return true;
+}
+
+fn encodeMouseEvent(term: *const Term, ev: BackendEvent.MouseEvent, cx: u32, cy: u32, last_btn: *MouseButton) EncodedMouse {
+    // Filter events based on mouse mode
+    switch (term.mouse_mode) {
+        .none => return .{},
+        .x10 => {
+            if (ev.action != .press) return .{};
+        },
+        .normal => {
+            if (ev.action == .motion) return .{};
+        },
+        .button => {
+            // ?1002: motion only while button held (drag)
+            if (ev.action == .motion and ev.button == .none) return .{};
+        },
+        .any => {}, // report everything
+    }
+
+    // Track pressed button for SGR release
+    if (ev.action == .press and ev.button != .none) {
+        last_btn.* = ev.button;
+    }
+
+    // Build button byte
+    var btn: u8 = switch (ev.action) {
+        .release => switch (term.mouse_encoding) {
+            .sgr => switch (last_btn.*) {
+                .left => 0,
+                .middle => 1,
+                .right => 2,
+                else => 3,
+            },
+            else => 3, // X10/UTF-8/URXVT: generic release
+        },
+        else => switch (ev.button) {
+            .left => 0,
+            .middle => 1,
+            .right => 2,
+            .none => 3,
+            .wheel_up => 64,
+            .wheel_down => 65,
+            .wheel_left => 66,
+            .wheel_right => 67,
+        },
+    };
+
+    if (ev.action == .release) {
+        last_btn.* = .none;
+    }
+
+    // Modifier bits (not for X10 mode)
+    if (term.mouse_mode != .x10) {
+        if (ev.modifiers.shift) btn |= 4;
+        if (ev.modifiers.alt) btn |= 8;
+        if (ev.modifiers.ctrl) btn |= 16;
+    }
+
+    // Motion flag
+    if (ev.action == .motion) btn |= 32;
+
+    var result: EncodedMouse = .{};
+
+    switch (term.mouse_encoding) {
+        .sgr => {
+            // CSI < Pb ; Px ; Py M/m
+            const suffix: u8 = if (ev.action == .release) 'm' else 'M';
+            result.len = @intCast((std.fmt.bufPrint(&result.data, "\x1b[<{d};{d};{d}{c}", .{
+                btn, cx + 1, cy + 1, suffix,
+            }) catch return .{}).len);
+        },
+        .x10 => {
+            // CSI M Cb Cx Cy (max 223)
+            if (cx + 1 > 223 or cy + 1 > 223) return .{};
+            result.data[0] = 0x1b;
+            result.data[1] = '[';
+            result.data[2] = 'M';
+            result.data[3] = btn + 32;
+            result.data[4] = @intCast(cx + 1 + 32);
+            result.data[5] = @intCast(cy + 1 + 32);
+            result.len = 6;
+        },
+        .utf8 => {
+            // Like X10 but coords encoded as UTF-8
+            result.data[0] = 0x1b;
+            result.data[1] = '[';
+            result.data[2] = 'M';
+            result.data[3] = btn + 32;
+            var pos: u8 = 4;
+            pos += encodeUtf8Coord(cx + 1 + 32, result.data[pos..]);
+            pos += encodeUtf8Coord(cy + 1 + 32, result.data[pos..]);
+            result.len = pos;
+        },
+        .urxvt => {
+            // CSI Pb ; Px ; Py M
+            result.len = @intCast((std.fmt.bufPrint(&result.data, "\x1b[{d};{d};{d}M", .{
+                btn + 32, cx + 1, cy + 1,
+            }) catch return .{}).len);
+        },
+    }
+    return result;
+}
+
+fn encodeUtf8Coord(val: u32, buf: []u8) u8 {
+    if (val < 0x80) {
+        buf[0] = @intCast(val);
+        return 1;
+    } else if (val < 0x800) {
+        buf[0] = @intCast(0xC0 | (val >> 6));
+        buf[1] = @intCast(0x80 | (val & 0x3F));
+        return 2;
+    } else {
+        buf[0] = @intCast(0xE0 | (val >> 12));
+        buf[1] = @intCast(0x80 | ((val >> 6) & 0x3F));
+        buf[2] = @intCast(0x80 | (val & 0x3F));
+        return 3;
+    }
 }
 
 // =============================================================================
@@ -764,6 +918,7 @@ pub fn main() !void {
     var cursor_blink_active = true; // false after idle timeout — stops blink rendering
     // false while unfocused: skip cursor timer toggles (avoids stale idle blink + extra wakeups)
     var backend_focused = true;
+    var last_pressed_button: MouseButton = .none;
     var last_input_ns: i128 = std.time.nanoTimestamp();
     const cursor_idle_timeout_ns: i128 = 5 * std.time.ns_per_s;
     var prev_cursor_x: u32 = 0;
@@ -890,7 +1045,7 @@ pub fn main() !void {
                             var drain: u32 = 0;
                             while (drain < 8192) : (drain += 1) {
                                 const event = backend.pollEvents() orelse break;
-                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
+                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
                                     running = false;
                                     break;
                                 }
@@ -985,7 +1140,7 @@ pub fn main() !void {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
-                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
+                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
                                     running = false;
                                     break;
                                 }
@@ -1018,7 +1173,7 @@ pub fn main() !void {
             // never appears because Cocoa callbacks never fire.
             if (config.backend == .macos) {
                 while (backend.pollEvents()) |event| {
-                    if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
+                    if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
                         running = false;
                         break;
                     }
