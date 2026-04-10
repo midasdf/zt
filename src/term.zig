@@ -81,6 +81,33 @@ pub const MouseEncoding = enum(u2) {
     urxvt = 3,     // ?1015: CSI Pb;Px;Py M
 };
 
+pub const Selection = struct {
+    start_x: u32,
+    start_y: u32,
+    end_x: u32,
+    end_y: u32,
+    active: bool, // currently dragging
+
+    /// Returns ordered start/end (top-left to bottom-right)
+    pub fn ordered(self: Selection) struct { sx: u32, sy: u32, ex: u32, ey: u32 } {
+        if (self.start_y < self.end_y or (self.start_y == self.end_y and self.start_x <= self.end_x)) {
+            return .{ .sx = self.start_x, .sy = self.start_y, .ex = self.end_x, .ey = self.end_y };
+        } else {
+            return .{ .sx = self.end_x, .sy = self.end_y, .ex = self.start_x, .ey = self.start_y };
+        }
+    }
+
+    /// Check if a cell is within the selection range
+    pub fn contains(self: Selection, x: u32, y: u32) bool {
+        const o = self.ordered();
+        if (y < o.sy or y > o.ey) return false;
+        if (y == o.sy and y == o.ey) return x >= o.sx and x <= o.ex;
+        if (y == o.sy) return x >= o.sx;
+        if (y == o.ey) return x <= o.ex;
+        return true; // middle row
+    }
+};
+
 pub const Term = struct {
     const Self = @This();
 
@@ -194,6 +221,9 @@ pub const Term = struct {
     // Mouse tracking modes (DECSET)
     mouse_mode: MouseMode = .none,
     mouse_encoding: MouseEncoding = .x10,
+
+    // Text selection state
+    selection: ?Selection = null,
 
     // Backarrow key mode (DECSET ?67): true=BS(0x08), false=DEL(0x7F)
     decbkm: bool = false,

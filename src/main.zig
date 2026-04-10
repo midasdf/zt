@@ -623,7 +623,7 @@ fn handleBackendEvent(
 
             // Shift held → terminal selection (bypass app mouse capture)
             if (mouse_ev.modifiers.shift) {
-                // TODO: terminal selection (Task 5+6)
+                handleTerminalSelection(term, mouse_ev, cx, cy);
                 return true;
             }
 
@@ -637,7 +637,7 @@ fn handleBackendEvent(
                 }
             } else {
                 // No app mouse mode → terminal selection
-                // TODO: terminal selection (Task 5+6)
+                handleTerminalSelection(term, mouse_ev, cx, cy);
             }
         },
         .close => {
@@ -746,6 +746,57 @@ fn encodeMouseEvent(term: *const Term, ev: BackendEvent.MouseEvent, cx: u32, cy:
         },
     }
     return result;
+}
+
+fn handleTerminalSelection(term: *Term, ev: BackendEvent.MouseEvent, cx: u32, cy: u32) void {
+    switch (ev.action) {
+        .press => switch (ev.button) {
+            .left => {
+                // Start new selection
+                term.selection = .{
+                    .start_x = cx,
+                    .start_y = cy,
+                    .end_x = cx,
+                    .end_y = cy,
+                    .active = true,
+                };
+                // Mark screen dirty for selection highlight
+                const total = @as(usize, term.cols) * @as(usize, term.rows);
+                term.markDirtyRange(.{ .start = 0, .end = total });
+            },
+            .wheel_up, .wheel_down => {
+                // When no app captures mouse and in alt screen,
+                // translate wheel to arrow keys for less/man etc.
+                // TODO: scrollback when implemented
+            },
+            else => {},
+        },
+        .motion => {
+            if (term.selection) |*sel| {
+                if (sel.active) {
+                    sel.end_x = cx;
+                    sel.end_y = cy;
+                    // Mark dirty for selection update
+                    const total = @as(usize, term.cols) * @as(usize, term.rows);
+                    term.markDirtyRange(.{ .start = 0, .end = total });
+                }
+            }
+        },
+        .release => {
+            if (ev.button == .left) {
+                if (term.selection) |*sel| {
+                    sel.active = false;
+                    // If start == end, clear selection (was just a click)
+                    if (sel.start_x == sel.end_x and sel.start_y == sel.end_y) {
+                        term.selection = null;
+                    }
+                    // TODO: copy to clipboard (Task 7)
+                }
+                const total = @as(usize, term.cols) * @as(usize, term.rows);
+                term.markDirtyRange(.{ .start = 0, .end = total });
+            }
+        },
+    }
 }
 
 fn encodeUtf8Coord(val: u32, buf: []u8) u8 {
@@ -1003,6 +1054,11 @@ pub fn main() !void {
                                     break;
                                 }
                                 bytes_since_render += bytes_read;
+                                // Clear selection when terminal content changes
+                                if (term.selection != null) {
+                                    term.selection = null;
+                                    term.all_dirty = true;
+                                }
                                 vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                                 // Flush VT responses after each chunk to prevent overflow
                                 if (term.vt_response_len > 0) {
@@ -1126,6 +1182,11 @@ pub fn main() !void {
                                 break;
                             }
                             bytes_since_render += bytes_read;
+                            // Clear selection when terminal content changes
+                            if (term.selection != null) {
+                                term.selection = null;
+                                term.all_dirty = true;
+                            }
                             vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                             // Flush VT responses after each chunk to prevent overflow
                             if (term.vt_response_len > 0) {
@@ -1193,6 +1254,11 @@ pub fn main() !void {
                 }
                 bytes_since_render += extra;
                 extra_total += extra;
+                // Clear selection when terminal content changes
+                if (term.selection != null) {
+                    term.selection = null;
+                    term.all_dirty = true;
+                }
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
                 // Flush VT responses after each chunk to prevent overflow
                 if (term.vt_response_len > 0) {
@@ -1342,6 +1408,18 @@ pub fn main() !void {
                     const tmp_rgb = fg_rgb;
                     fg_rgb = bg_rgb;
                     bg_rgb = tmp_rgb;
+                }
+
+                // Selection highlight: invert fg/bg
+                if (term.selection) |sel| {
+                    if (sel.contains(x, y)) {
+                        const tmp_idx2 = render_cell.fg;
+                        render_cell.fg = render_cell.bg;
+                        render_cell.bg = tmp_idx2;
+                        const tmp_rgb2 = fg_rgb;
+                        fg_rgb = bg_rgb;
+                        bg_rgb = tmp_rgb2;
+                    }
                 }
 
                 // Skip per-cell bg fill when global fill was applied, UNLESS:
