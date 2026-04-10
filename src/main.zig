@@ -28,7 +28,13 @@ const BackendEvent = switch (config.backend) {
     .fbdev => void,
 };
 
-const MouseButton = if (config.backend == .fbdev) enum { none } else BackendEvent.MouseEvent.Button;
+const BackendMouseEvent = switch (config.backend) {
+    .x11 => @import("backend/x11.zig").MouseEvent,
+    .wayland => @import("backend/wayland.zig").MouseEvent,
+    .macos => @import("backend/macos.zig").MouseEvent,
+    .fbdev => void,
+};
+const MouseButton = if (config.backend == .fbdev) enum { none } else BackendMouseEvent.Button;
 
 const EncodedMouse = struct {
     data: [32]u8 = undefined,
@@ -647,7 +653,7 @@ fn handleBackendEvent(
     return true;
 }
 
-fn encodeMouseEvent(term: *const Term, ev: BackendEvent.MouseEvent, cx: u32, cy: u32, last_btn: *MouseButton) EncodedMouse {
+fn encodeMouseEvent(term: *const Term, ev: BackendMouseEvent, cx: u32, cy: u32, last_btn: *MouseButton) EncodedMouse {
     // Filter events based on mouse mode
     switch (term.mouse_mode) {
         .none => return .{},
@@ -781,7 +787,7 @@ fn extractSelectionText(term: *const Term, buf: []u8) []const u8 {
     return buf[0..pos];
 }
 
-fn handleTerminalSelection(term: *Term, ev: BackendEvent.MouseEvent, cx: u32, cy: u32) void {
+fn handleTerminalSelection(term: *Term, ev: BackendMouseEvent, cx: u32, cy: u32) void {
     switch (ev.action) {
         .press => switch (ev.button) {
             .left => {
@@ -852,6 +858,31 @@ fn encodeUtf8Coord(val: u32, buf: []u8) u8 {
         buf[2] = @intCast(0x80 | (val & 0x3F));
         return 3;
     }
+}
+
+fn drainBackendEvents(
+    term: *Term,
+    pty_ptr: *Pty,
+    backend: *Backend,
+    write_buf: *[65536]u8,
+    write_pending: *usize,
+    evloop_fd: i32,
+    cursor_visible_blink: *bool,
+    cursor_blink_active: *bool,
+    last_input_ns: *i128,
+    last_render_ns: *i128,
+    backend_focused: *bool,
+    last_pressed_button: *MouseButton,
+    max_events: u32,
+) bool {
+    var drain: u32 = 0;
+    while (drain < max_events) : (drain += 1) {
+        const event = backend.pollEvents() orelse break;
+        if (!handleBackendEvent(&event, term, pty_ptr, backend, write_buf, write_pending, evloop_fd, cursor_visible_blink, cursor_blink_active, last_input_ns, last_render_ns, backend_focused, last_pressed_button)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // =============================================================================
@@ -1056,6 +1087,16 @@ pub fn main() !void {
         }
 
         if (is_linux) {
+            // X11/Wayland/macos backends can buffer events internally even when their
+            // fd is no longer readable. Drain a bounded amount every loop so input
+            // never appears "stuck" waiting for unrelated socket traffic.
+            if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
+                if (!drainBackendEvents(&term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button, 8192)) {
+                    running = false;
+                    continue;
+                }
+            }
+
             // ---- Linux epoll dispatch ----
             var events: [16]linux.epoll_event = undefined;
             const n_raw = linux.epoll_wait(evloop_fd, &events, events.len, event_timeout);
@@ -1128,22 +1169,10 @@ pub fn main() !void {
                     },
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
-                        // Drain pollEvents until the backend queue is empty (same as
-                        // the macOS kqueue path). On Linux+X11, libxcb often reads the
-                        // whole socket into an internal queue; if we stop after a fixed
-                        // number of delivered events while messages remain, the FD is
-                        // no longer readable and epoll will not wake again — input
-                        // appears stuck or very laggy until unrelated X traffic arrives.
-                        // Cap avoids infinite loops if a backend misbehaves; 8k is far
-                        // above normal bursts but still bounded for timer/signal latency.
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                            var drain: u32 = 0;
-                            while (drain < 8192) : (drain += 1) {
-                                const event = backend.pollEvents() orelse break;
-                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
-                                    running = false;
-                                    break;
-                                }
+                            if (!drainBackendEvents(&term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button, 8192)) {
+                                running = false;
+                                break;
                             }
                         }
                     },
