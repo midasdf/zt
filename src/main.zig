@@ -338,14 +338,16 @@ fn refreshCursorBlinkOnUserInput(
 fn applyCursorBlinkTimerTick(
     term: *Term,
     backend_focused: bool,
-    loop_now: i128,
     last_input_ns: i128,
     cursor_blink_active: *bool,
     cursor_visible_blink: *bool,
     idle_timeout_ns: i128,
 ) void {
     if (!backend_focused) return;
-    const idle_ns = loop_now - last_input_ns;
+    // Sample time here, not from the pre-epoll_wait loop timestamp: last_input_ns may be
+    // updated later in the same iteration (focus_in / input), and reusing an older
+    // `loop_now` makes idle_ns negative and misroutes the idle vs blink branches.
+    const idle_ns = std.time.nanoTimestamp() - last_input_ns;
     if (idle_ns > idle_timeout_ns) {
         if (cursor_blink_active.*) {
             cursor_blink_active.* = false;
@@ -847,7 +849,6 @@ pub fn main() !void {
                         applyCursorBlinkTimerTick(
                             &term,
                             backend_focused,
-                            loop_now,
                             last_input_ns,
                             &cursor_blink_active,
                             &cursor_visible_blink,
@@ -974,7 +975,6 @@ pub fn main() !void {
                     applyCursorBlinkTimerTick(
                         &term,
                         backend_focused,
-                        loop_now,
                         last_input_ns,
                         &cursor_blink_active,
                         &cursor_visible_blink,
