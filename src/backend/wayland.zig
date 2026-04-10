@@ -16,6 +16,31 @@ const clipboard_mod = @import("wayland/clipboard.zig");
 // Event types — mirrors x11.zig's Event union
 // ============================================================================
 
+pub const MouseEvent = struct {
+    x: u32, // pixel x
+    y: u32, // pixel y
+    button: Button,
+    action: Action,
+    modifiers: input_mod.Modifiers,
+
+    pub const Button = enum(u3) {
+        left = 0,
+        middle = 1,
+        right = 2,
+        none = 3,
+        wheel_up = 4,
+        wheel_down = 5,
+        wheel_left = 6,
+        wheel_right = 7,
+    };
+
+    pub const Action = enum(u2) {
+        press,
+        release,
+        motion,
+    };
+};
+
 pub const Event = union(enum) {
     key: KeyEvent,
     text: TextEvent,
@@ -25,6 +50,7 @@ pub const Event = union(enum) {
     close: void,
     focus_in: void,
     focus_out: void,
+    mouse: MouseEvent,
 };
 
 pub const PasteEvent = struct {

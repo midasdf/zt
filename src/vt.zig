@@ -387,6 +387,13 @@ pub const Parser = struct {
             return .none;
         }
 
+        // CAN/SUB abort — return to ground state per VT220 spec
+        if (byte == 0x18 or byte == 0x1A) {
+            self.state = .ground;
+            self.osc_len = 0;
+            return .none;
+        }
+
         if (byte == 0x07) {
             // BEL terminates OSC
             self.state = .ground;
@@ -399,6 +406,10 @@ pub const Parser = struct {
             if (self.osc_len < 8192) {
                 self.osc_buf[self.osc_len] = byte;
                 self.osc_len += 1;
+            } else {
+                // Buffer full — abort to prevent stuck state
+                self.state = .ground;
+                self.osc_len = 0;
             }
             return .none;
         }
@@ -425,6 +436,14 @@ pub const Parser = struct {
                 // Fall through to store the current byte
             }
         }
+
+        // CAN/SUB abort — return to ground state per VT220 spec
+        if (byte == 0x18 or byte == 0x1A) {
+            self.state = .ground;
+            self.osc_len = 0;
+            return .none;
+        }
+
         if (byte == 0x07) {
             // BEL terminates DCS (like OSC)
             const payload = self.osc_buf[0..self.osc_len];
@@ -440,6 +459,10 @@ pub const Parser = struct {
             if (self.osc_len < 8192) {
                 self.osc_buf[self.osc_len] = byte;
                 self.osc_len += 1;
+            } else {
+                // Buffer full — abort to prevent stuck state
+                self.state = .ground;
+                self.osc_len = 0;
             }
         }
         return .none;
@@ -1836,8 +1859,18 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             },
             2004 => term.bracketed_paste = set,
             2026 => term.sync_update = set,
-            // Mouse tracking modes (accepted but not processed — no mouse support yet)
-            9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016 => {},
+            9 => {
+                term.mouse_mode = if (set) .x10 else .none;
+                if (set) term.mouse_encoding = .x10;
+            },
+            1000 => term.mouse_mode = if (set) .normal else .none,
+            1001 => term.mouse_mode = if (set) .normal else .none, // highlight → treat as normal
+            1002 => term.mouse_mode = if (set) .button else .none,
+            1003 => term.mouse_mode = if (set) .any else .none,
+            1005 => term.mouse_encoding = if (set) .utf8 else .x10,
+            1006 => term.mouse_encoding = if (set) .sgr else .x10,
+            1015 => term.mouse_encoding = if (set) .urxvt else .x10,
+            1016 => term.mouse_encoding = if (set) .sgr else .x10, // SGR-pixel → treat as SGR
             1004 => term.focus_events = set, // Focus events (CSI I / CSI O)
             // Alt scroll mode
             1007 => {},

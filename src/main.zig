@@ -600,6 +600,9 @@ fn handleBackendEvent(
                 }
             }
         },
+        .mouse => {
+            // TODO: implement mouse dispatch
+        },
         .close => {
             return false;
         },
@@ -777,11 +780,11 @@ pub fn main() !void {
         // Tier 0: <64KB  → frame_min_ns (default 8ms = 120fps)
         // Tier 1: 64KB+  → frame_min_ns * 2 (default 16ms = 60fps)
         // Tier 2: 256KB+ → frame_min_ns * 8 (default 64ms = ~15fps)
-        // Tier 3: 1MB+   → frame_min_ns * 24 (default 192ms = ~5fps)
+        // Tier 3: 1MB+   → capped at 64ms to keep input responsive
         const effective_frame_ns: i128 = if (config.frame_min_ns == 0)
             0
         else if (bytes_since_render > 1_048_576)
-            @as(i128, config.frame_min_ns) * 24
+            @min(@as(i128, config.frame_min_ns) * 24, 64_000_000)
         else if (bytes_since_render > 262_144)
             @as(i128, config.frame_min_ns) * 8
         else if (bytes_since_render > 65_536)
@@ -796,6 +799,16 @@ pub fn main() !void {
             const remaining_ms = @divFloor(effective_frame_ns - elapsed, 1_000_000);
             break :blk @intCast(@max(remaining_ms, 1));
         } else -1;
+
+        // Proactively flush pending writes before blocking on events.
+        // This ensures buffered keystrokes reach the child ASAP, preventing
+        // input starvation when heavy output keeps the write buffer occupied.
+        if (write_pending > 0) {
+            if (!ptyFlushPending(&pty, &write_buf, &write_pending, evloop_fd)) {
+                running = false;
+                continue;
+            }
+        }
 
         if (is_linux) {
             // ---- Linux epoll dispatch ----
@@ -836,6 +849,14 @@ pub fn main() !void {
                                 }
                                 bytes_since_render += bytes_read;
                                 vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
+                                // Flush VT responses after each chunk to prevent overflow
+                                if (term.vt_response_len > 0) {
+                                    if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+                                        running = false;
+                                        break;
+                                    }
+                                    term.vt_response_len = 0;
+                                }
                             }
                         }
                     },
@@ -951,6 +972,14 @@ pub fn main() !void {
                             }
                             bytes_since_render += bytes_read;
                             vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
+                            // Flush VT responses after each chunk to prevent overflow
+                            if (term.vt_response_len > 0) {
+                                if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+                                    running = false;
+                                    break;
+                                }
+                                term.vt_response_len = 0;
+                            }
                         }
                     } else if (kev.udata == @intFromEnum(KqueueTag.backend)) {
                         // Backend events (X11, Wayland or macOS)
@@ -998,10 +1027,10 @@ pub fn main() !void {
         }
 
         // Extra PTY drain: data may have arrived during event processing.
-        // Capped at pty_buf_size*4 to prevent render starvation from infinite producers (yes, cat /dev/urandom).
+        // Capped at pty_buf_size to keep event loop responsive for input.
         if (running) {
             var extra_total: usize = 0;
-            while (extra_total < config.pty_buf_size * 4) {
+            while (extra_total < config.pty_buf_size) {
                 const extra = pty.read(&pty_buf) catch break;
                 if (extra == 0) {
                     running = false;
@@ -1010,6 +1039,14 @@ pub fn main() !void {
                 bytes_since_render += extra;
                 extra_total += extra;
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
+                // Flush VT responses after each chunk to prevent overflow
+                if (term.vt_response_len > 0) {
+                    if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+                        running = false;
+                        break;
+                    }
+                    term.vt_response_len = 0;
+                }
             }
         }
 
@@ -1068,14 +1105,6 @@ pub fn main() !void {
                     backend.updateTitle("zt " ++ config.version);
                 }
             }
-        }
-
-        // Update IME cursor position (X11 and Wayland)
-        if (@hasDecl(Backend, "updateImeCursorPos")) {
-            backend.updateImeCursorPos(
-                term.cursor_x * config.cell_width,
-                (term.cursor_y + 1) * config.cell_height,
-            );
         }
 
         // Render dirty cells — skip entirely if nothing changed
@@ -1185,6 +1214,14 @@ pub fn main() !void {
         term.clearDirty();
         last_render_ns = std.time.nanoTimestamp();
         bytes_since_render = 0;
+
+        // Update IME cursor position only on render (avoids XIM request storms during heavy output)
+        if (@hasDecl(Backend, "updateImeCursorPos")) {
+            backend.updateImeCursorPos(
+                term.cursor_x * config.cell_width,
+                (term.cursor_y + 1) * config.cell_height,
+            );
+        }
 
         backend.present();
         backend.flush();

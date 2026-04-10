@@ -66,6 +66,21 @@ pub fn translateCharset(cp: u21, cs: CharsetType) u21 {
 
 pub const SavedDecMode = struct { mode: u16 = 0, value: bool = false };
 
+pub const MouseMode = enum(u3) {
+    none = 0,
+    x10 = 1,       // ?9: press only, no modifiers
+    normal = 2,     // ?1000: press + release
+    button = 3,     // ?1002: press + release + drag motion
+    any = 4,        // ?1003: press + release + all motion
+};
+
+pub const MouseEncoding = enum(u2) {
+    x10 = 0,       // CSI M + 3 bytes (max 223 cols)
+    utf8 = 1,      // ?1005: UTF-8 coords
+    sgr = 2,       // ?1006: CSI < Pb;Px;Py M/m
+    urxvt = 3,     // ?1015: CSI Pb;Px;Py M
+};
+
 pub const Term = struct {
     const Self = @This();
 
@@ -121,7 +136,7 @@ pub const Term = struct {
     current_hyperlink_id: u16 = 0,
 
     // VT response buffer — accumulated responses flushed by event loop via ptyBufferedWrite
-    vt_response_buf: [4096]u8 = undefined,
+    vt_response_buf: [16384]u8 = undefined,
     vt_response_len: u16 = 0,
 
     // OSC 52 clipboard output
@@ -175,6 +190,10 @@ pub const Term = struct {
 
     // Focus event tracking (DECSET ?1004)
     focus_events: bool = false,
+
+    // Mouse tracking modes (DECSET)
+    mouse_mode: MouseMode = .none,
+    mouse_encoding: MouseEncoding = .x10,
 
     // Backarrow key mode (DECSET ?67): true=BS(0x08), false=DEL(0x7F)
     decbkm: bool = false,
@@ -712,7 +731,10 @@ pub const Term = struct {
     /// Queue a VT response to be flushed by the event loop (avoids direct write to non-blocking fd)
     pub fn queueResponse(self: *Self, data: []const u8) void {
         const avail = self.vt_response_buf.len - self.vt_response_len;
-        if (data.len > avail) return; // Drop entire response rather than partial write
+        if (data.len > avail) {
+            std.log.warn("VT response buffer full ({d}/{d}), dropping {d} bytes", .{ self.vt_response_len, self.vt_response_buf.len, data.len });
+            return;
+        }
         @memcpy(self.vt_response_buf[self.vt_response_len..][0..data.len], data);
         self.vt_response_len += @intCast(data.len);
     }

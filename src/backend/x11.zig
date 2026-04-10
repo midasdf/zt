@@ -11,6 +11,31 @@ const c = @cImport({
     @cInclude("xkbcommon/xkbcommon-x11.h");
 });
 
+pub const MouseEvent = struct {
+    x: u32, // pixel x
+    y: u32, // pixel y
+    button: Button,
+    action: Action,
+    modifiers: input_mod.Modifiers,
+
+    pub const Button = enum(u3) {
+        left = 0,
+        middle = 1,
+        right = 2,
+        none = 3,
+        wheel_up = 4,
+        wheel_down = 5,
+        wheel_left = 6,
+        wheel_right = 7,
+    };
+
+    pub const Action = enum(u2) {
+        press,
+        release,
+        motion,
+    };
+};
+
 pub const Event = union(enum) {
     key: KeyEvent,
     text: TextEvent,
@@ -20,6 +45,7 @@ pub const Event = union(enum) {
     close: void,
     focus_in: void,
     focus_out: void,
+    mouse: MouseEvent,
 };
 
 pub const PasteEvent = struct {
@@ -64,6 +90,9 @@ pub const X11Backend = struct {
     shm_id: [2]c_int,
     buffers: [2][]u8,
     buf_idx: u1 = 0, // current back buffer index
+    shm_busy: bool = false, // true while X server is reading the front buffer
+    shm_busy_ns: i128 = 0, // timestamp when shm_busy was set (for timeout fallback)
+    shm_event_base: u8 = 0, // SHM extension first_event for completion detection
     // Dimensions
     width: u32,
     height: u32,
@@ -307,7 +336,15 @@ pub const X11Backend = struct {
             );
         }
 
-        // 10. Map window and flush
+        // 10. Query SHM extension first_event for completion events
+        var shm_event_base: u8 = 0;
+        if (c.xcb_get_extension_data(connection, &c.xcb_shm_id)) |ext| {
+            if (ext.*.present != 0) {
+                shm_event_base = ext.*.first_event;
+            }
+        }
+
+        // 11. Map window and flush
         _ = c.xcb_map_window(connection, window);
         _ = c.xcb_flush(connection);
 
@@ -327,6 +364,7 @@ pub const X11Backend = struct {
             .utf8_string_atom = utf8_string_atom,
             .zt_paste_atom = zt_paste_atom,
             .net_wm_name_atom = net_wm_name_atom,
+            .shm_event_base = shm_event_base,
             .screen_id = screen_num,
             .embed_parent = embed_window,
             .xembed_atom = xembed_atom,
@@ -591,10 +629,14 @@ pub const X11Backend = struct {
         }
     }
 
-    fn disconnectedCallback(_: ?*c.xcb_xim_t, user_data: ?*anyopaque) callconv(.c) void {
+    fn disconnectedCallback(xim: ?*c.xcb_xim_t, user_data: ?*anyopaque) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(user_data));
         self.xim_connected = false;
         self.xic = 0;
+        // Attempt to reconnect — ximOpenCallback will restore xim_connected
+        if (xim) |x| {
+            _ = c.xcb_xim_open(x, ximOpenCallback, true, user_data);
+        }
     }
 
     pub fn deinit(self: *Self) void {
@@ -727,6 +769,15 @@ pub const X11Backend = struct {
     pub fn present(self: *Self) void {
         if (self.dirty_y_min > self.dirty_y_max) return; // nothing to present
 
+        // Skip if X server is still reading the previous front buffer.
+        // Keep dirty state so the next frame will include these regions.
+        // Timeout after 100ms in case the SHM_COMPLETION event was lost.
+        if (self.shm_busy) {
+            const now = std.time.nanoTimestamp();
+            if (now - self.shm_busy_ns < 100_000_000) return;
+            self.shm_busy = false;
+        }
+
         const front = self.buf_idx;
         const y_start = self.dirty_y_min;
         const y_end = @min(self.dirty_y_max + 1, self.height);
@@ -747,10 +798,12 @@ pub const X11Backend = struct {
             @intCast(y_start),
             self.screen.*.root_depth,
             c.XCB_IMAGE_FORMAT_Z_PIXMAP,
-            0,
+            1, // send_event=1: X server sends SHM_COMPLETION when done reading
             self.shm_seg[front],
             shm_offset,
         );
+        self.shm_busy = true;
+        self.shm_busy_ns = std.time.nanoTimestamp();
 
         // Lazy-init second buffer on first present, then swap
         const back: u1 = front ^ 1;
@@ -851,6 +904,10 @@ pub const X11Backend = struct {
                 // local XKB instead of being forwarded into a dead IM server.
                 self.xim_connected = false;
                 self.xic = 0;
+                // Attempt to reconnect — ximOpenCallback will restore xim_connected
+                if (self.xim) |xim| {
+                    _ = c.xcb_xim_open(xim, ximOpenCallback, true, @ptrCast(self));
+                }
             }
         }
 
@@ -1188,7 +1245,13 @@ pub const X11Backend = struct {
                     }
                     return .focus_out;
                 },
-                else => continue, // Skip unhandled events (ReparentNotify, MapNotify, etc.)
+                else => {
+                    // SHM_COMPLETION: X server finished reading the front buffer
+                    if (self.shm_event_base != 0 and event_type == self.shm_event_base + c.XCB_SHM_COMPLETION) {
+                        self.shm_busy = false;
+                    }
+                    continue; // Skip unhandled events (ReparentNotify, MapNotify, etc.)
+                },
             }
         } // while (true)
     }
