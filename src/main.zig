@@ -478,12 +478,17 @@ fn dispatchClipboardCopy(data: []const u8) void {
         var display_env_buf: [128]u8 = undefined;
         var wayland_env_buf: [128]u8 = undefined;
         var xdg_env_buf: [256]u8 = undefined;
+        var xauth_env_buf: [256]u8 = undefined;
         var clip_env: [8:null]?[*:0]const u8 = .{null} ** 8;
         var ci: usize = 0;
         clip_env[ci] = "PATH=/usr/local/bin:/usr/bin:/bin";
         ci += 1;
         if (std.posix.getenv("DISPLAY")) |v| {
             clip_env[ci] = (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{v}) catch null);
+            if (clip_env[ci] != null) ci += 1;
+        }
+        if (std.posix.getenv("XAUTHORITY")) |v| {
+            clip_env[ci] = (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{v}) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
         if (std.posix.getenv("WAYLAND_DISPLAY")) |v| {
