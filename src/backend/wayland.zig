@@ -1214,13 +1214,15 @@ pub const WaylandBackend = struct {
                     self.pointer_button = .none;
                 }
 
-                self.queueEvent(.{ .mouse = .{
-                    .x = self.pointer_x,
-                    .y = self.pointer_y,
-                    .button = button,
-                    .action = action,
-                    .modifiers = .{}, // Will get modifiers from keyboard state if available
-                } });
+                self.queueEvent(.{
+                    .mouse = .{
+                        .x = self.pointer_x,
+                        .y = self.pointer_y,
+                        .button = button,
+                        .action = action,
+                        .modifiers = .{}, // Will get modifiers from keyboard state if available
+                    },
+                });
             },
             seat_mod.WL_POINTER_EVENT_AXIS => {
                 // Payload: time(u32) + axis(u32) + value(fixed)

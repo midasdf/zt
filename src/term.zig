@@ -68,17 +68,17 @@ pub const SavedDecMode = struct { mode: u16 = 0, value: bool = false };
 
 pub const MouseMode = enum(u3) {
     none = 0,
-    x10 = 1,       // ?9: press only, no modifiers
-    normal = 2,     // ?1000: press + release
-    button = 3,     // ?1002: press + release + drag motion
-    any = 4,        // ?1003: press + release + all motion
+    x10 = 1, // ?9: press only, no modifiers
+    normal = 2, // ?1000: press + release
+    button = 3, // ?1002: press + release + drag motion
+    any = 4, // ?1003: press + release + all motion
 };
 
 pub const MouseEncoding = enum(u2) {
-    x10 = 0,       // CSI M + 3 bytes (max 223 cols)
-    utf8 = 1,      // ?1005: UTF-8 coords
-    sgr = 2,       // ?1006: CSI < Pb;Px;Py M/m
-    urxvt = 3,     // ?1015: CSI Pb;Px;Py M
+    x10 = 0, // CSI M + 3 bytes (max 223 cols)
+    utf8 = 1, // ?1005: UTF-8 coords
+    sgr = 2, // ?1006: CSI < Pb;Px;Py M/m
+    urxvt = 3, // ?1015: CSI Pb;Px;Py M
 };
 
 pub const Selection = struct {
