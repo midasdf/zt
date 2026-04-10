@@ -646,6 +646,15 @@ fn handleBackendEvent(
                 handleTerminalSelection(term, mouse_ev, cx, cy);
             }
         },
+        .copy_selection => {
+            if (term.selection != null) {
+                var clipboard_buf: [16384]u8 = undefined;
+                const text = extractSelectionText(term, &clipboard_buf);
+                if (text.len > 0) {
+                    dispatchClipboardCopy(text);
+                }
+            }
+        },
         .close => {
             return false;
         },

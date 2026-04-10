@@ -46,6 +46,7 @@ pub const Event = union(enum) {
     focus_in: void,
     focus_out: void,
     mouse: MouseEvent,
+    copy_selection: void,
 };
 
 pub const PasteEvent = struct {
@@ -1004,6 +1005,11 @@ pub const X11Backend = struct {
                             0,
                             0, // group: base, latched, locked
                         );
+                    }
+
+                    // Ctrl+Shift+C → copy selection to clipboard
+                    if (evdev_keycode == 46 and mods.ctrl and mods.shift and !mods.alt) {
+                        return .{ .copy_selection = {} };
                     }
 
                     // Ctrl+Shift+V → paste from clipboard

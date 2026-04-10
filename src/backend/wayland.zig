@@ -51,6 +51,7 @@ pub const Event = union(enum) {
     focus_in: void,
     focus_out: void,
     mouse: MouseEvent,
+    copy_selection: void,
 };
 
 pub const PasteEvent = struct {
@@ -1038,6 +1039,12 @@ pub const WaylandBackend = struct {
                                 _ = linux.epoll_ctl(self.internal_epoll_fd, linux.EPOLL.CTL_ADD, self.clipboard.paste_pipe_fd, &epev);
                             }
                         }
+                        return;
+                    }
+
+                    // Ctrl+Shift+C -> copy selection to clipboard
+                    if (evdev_keycode == input_mod.KEY.C and mods.ctrl and mods.shift) {
+                        self.queueEvent(.{ .copy_selection = {} });
                         return;
                     }
 
