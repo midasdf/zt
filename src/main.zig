@@ -607,6 +607,30 @@ fn handleBackendEvent(
     return true;
 }
 
+fn drainBackendEvents(
+    term: *Term,
+    pty_ptr: *Pty,
+    backend: *Backend,
+    write_buf: *[65536]u8,
+    write_pending: *usize,
+    evloop_fd: i32,
+    cursor_visible_blink: *bool,
+    cursor_blink_active: *bool,
+    last_input_ns: *i128,
+    last_render_ns: *i128,
+    backend_focused: *bool,
+    max_events: u32,
+) bool {
+    var drain: u32 = 0;
+    while (drain < max_events) : (drain += 1) {
+        const event = backend.pollEvents() orelse break;
+        if (!handleBackendEvent(&event, term, pty_ptr, backend, write_buf, write_pending, evloop_fd, cursor_visible_blink, cursor_blink_active, last_input_ns, last_render_ns, backend_focused)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // =============================================================================
 // Main
 // =============================================================================
@@ -798,6 +822,16 @@ pub fn main() !void {
         } else -1;
 
         if (is_linux) {
+            // X11/Wayland/macos backends can buffer events internally even when their
+            // fd is no longer readable. Drain a bounded amount every loop so input
+            // never appears "stuck" waiting for unrelated socket traffic.
+            if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
+                if (!drainBackendEvents(&term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, 8192)) {
+                    running = false;
+                    continue;
+                }
+            }
+
             // ---- Linux epoll dispatch ----
             var events: [16]linux.epoll_event = undefined;
             const n_raw = linux.epoll_wait(evloop_fd, &events, events.len, event_timeout);
@@ -857,22 +891,10 @@ pub fn main() !void {
                     },
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
-                        // Drain pollEvents until the backend queue is empty (same as
-                        // the macOS kqueue path). On Linux+X11, libxcb often reads the
-                        // whole socket into an internal queue; if we stop after a fixed
-                        // number of delivered events while messages remain, the FD is
-                        // no longer readable and epoll will not wake again — input
-                        // appears stuck or very laggy until unrelated X traffic arrives.
-                        // Cap avoids infinite loops if a backend misbehaves; 8k is far
-                        // above normal bursts but still bounded for timer/signal latency.
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                            var drain: u32 = 0;
-                            while (drain < 8192) : (drain += 1) {
-                                const event = backend.pollEvents() orelse break;
-                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
-                                    running = false;
-                                    break;
-                                }
+                            if (!drainBackendEvents(&term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, 8192)) {
+                                running = false;
+                                break;
                             }
                         }
                     },
