@@ -748,6 +748,39 @@ fn encodeMouseEvent(term: *const Term, ev: BackendEvent.MouseEvent, cx: u32, cy:
     return result;
 }
 
+fn extractSelectionText(term: *const Term, buf: []u8) []const u8 {
+    const sel = term.selection orelse return &.{};
+    const o = sel.ordered();
+    var pos: usize = 0;
+
+    var y = o.sy;
+    while (y <= o.ey) : (y += 1) {
+        const start_x = if (y == o.sy) o.sx else 0;
+        const end_x = if (y == o.ey) o.ex else term.cols - 1;
+
+        const phys_row = term.row_map[y];
+        const row_base = @as(usize, phys_row) * @as(usize, term.cols);
+        const row_cells = term.cells[row_base..][0..term.cols];
+
+        var x = start_x;
+        while (x <= end_x) : (x += 1) {
+            const ch = row_cells[x].char;
+            if (ch == 0 or row_cells[x].attrs.wide_dummy) continue;
+            var encode_buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(ch, &encode_buf) catch continue;
+            if (pos + len > buf.len) break;
+            @memcpy(buf[pos..][0..len], encode_buf[0..len]);
+            pos += len;
+        }
+        // Add newline between rows (not after last)
+        if (y < o.ey and pos < buf.len) {
+            buf[pos] = '\n';
+            pos += 1;
+        }
+    }
+    return buf[0..pos];
+}
+
 fn handleTerminalSelection(term: *Term, ev: BackendEvent.MouseEvent, cx: u32, cy: u32) void {
     switch (ev.action) {
         .press => switch (ev.button) {
@@ -789,8 +822,14 @@ fn handleTerminalSelection(term: *Term, ev: BackendEvent.MouseEvent, cx: u32, cy
                     // If start == end, clear selection (was just a click)
                     if (sel.start_x == sel.end_x and sel.start_y == sel.end_y) {
                         term.selection = null;
+                    } else {
+                        // Copy selection text to clipboard
+                        var clipboard_buf: [16384]u8 = undefined;
+                        const text = extractSelectionText(term, &clipboard_buf);
+                        if (text.len > 0) {
+                            dispatchClipboardCopy(text);
+                        }
                     }
-                    // TODO: copy to clipboard (Task 7)
                 }
                 const total = @as(usize, term.cols) * @as(usize, term.rows);
                 term.markDirtyRange(.{ .start = 0, .end = total });
