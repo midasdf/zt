@@ -324,6 +324,41 @@ fn ptyFlushPending(
     return true;
 }
 
+/// Reset cursor blink idle tracking on user input (all backend dispatch paths use handleBackendEvent).
+fn refreshCursorBlinkOnUserInput(
+    cursor_visible_blink: *bool,
+    cursor_blink_active: *bool,
+    last_input_ns: *i128,
+) void {
+    cursor_visible_blink.* = true;
+    cursor_blink_active.* = true;
+    last_input_ns.* = std.time.nanoTimestamp();
+}
+
+fn applyCursorBlinkTimerTick(
+    term: *Term,
+    backend_focused: bool,
+    loop_now: i128,
+    last_input_ns: i128,
+    cursor_blink_active: *bool,
+    cursor_visible_blink: *bool,
+    idle_timeout_ns: i128,
+) void {
+    if (!backend_focused) return;
+    const idle_ns = loop_now - last_input_ns;
+    if (idle_ns > idle_timeout_ns) {
+        if (cursor_blink_active.*) {
+            cursor_blink_active.* = false;
+            cursor_visible_blink.* = true;
+            term.markDirty(term.cursor_x, term.cursor_y);
+        }
+    } else {
+        cursor_blink_active.* = true;
+        cursor_visible_blink.* = !cursor_visible_blink.*;
+        term.markDirty(term.cursor_x, term.cursor_y);
+    }
+}
+
 // =============================================================================
 // Signal handler
 // =============================================================================
@@ -482,6 +517,7 @@ fn handleBackendEvent(
 ) bool {
     switch (event.*) {
         .key => |key_ev| {
+            refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
             if (key_ev.pressed) {
                 const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm, term.decbkm);
                 if (bytes.len > 0) {
@@ -492,6 +528,7 @@ fn handleBackendEvent(
             }
         },
         .text => |text_ev| {
+            refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
             const text = text_ev.slice();
             if (text.len > 0) {
                 if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) {
@@ -500,6 +537,7 @@ fn handleBackendEvent(
             }
         },
         .paste => |paste_ev| {
+            refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
             const text = paste_ev.slice();
             if (text.len > 0) {
                 // Wrap paste in bracketed paste sequences if application enabled DECSET 2004
@@ -722,6 +760,7 @@ pub fn main() !void {
     // false while unfocused: skip cursor timer toggles (avoids stale idle blink + extra wakeups)
     var backend_focused = true;
     var last_input_ns: i128 = std.time.nanoTimestamp();
+    const cursor_idle_timeout_ns: i128 = 5 * std.time.ns_per_s;
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
     var write_buf: [65536]u8 = undefined;
@@ -805,25 +844,15 @@ pub fn main() !void {
                         // Read timer to acknowledge
                         var exp: u64 = 0;
                         _ = std.posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
-                        if (!backend_focused) {
-                            // Unfocused: do not toggle cursor or mark dirty (compositor may throttle us anyway).
-                            continue;
-                        }
-                        // Stop blinking after 5 seconds of no input (like other terminals).
-                        // This avoids continuous rendering during idle, which can trigger
-                        // XCB connection issues and wastes CPU/GPU.
-                        const idle_ns = loop_now - last_input_ns;
-                        if (idle_ns > 5_000_000_000) {
-                            if (cursor_blink_active) {
-                                cursor_blink_active = false;
-                                cursor_visible_blink = true; // show cursor solid
-                                term.markDirty(term.cursor_x, term.cursor_y);
-                            }
-                        } else {
-                            cursor_blink_active = true;
-                            cursor_visible_blink = !cursor_visible_blink;
-                            term.markDirty(term.cursor_x, term.cursor_y);
-                        }
+                        applyCursorBlinkTimerTick(
+                            &term,
+                            backend_focused,
+                            loop_now,
+                            last_input_ns,
+                            &cursor_blink_active,
+                            &cursor_visible_blink,
+                            cursor_idle_timeout_ns,
+                        );
                     },
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
@@ -836,20 +865,13 @@ pub fn main() !void {
                         // Cap avoids infinite loops if a backend misbehaves; 8k is far
                         // above normal bursts but still bounded for timer/signal latency.
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                            var had_input = false;
                             var drain: u32 = 0;
                             while (drain < 8192) : (drain += 1) {
                                 const event = backend.pollEvents() orelse break;
-                                if (event == .key or event == .text or event == .paste) had_input = true;
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
                                     running = false;
                                     break;
                                 }
-                            }
-                            if (had_input) {
-                                cursor_visible_blink = true;
-                                cursor_blink_active = true;
-                                last_input_ns = loop_now;
                             }
                         }
                     },
@@ -932,18 +954,11 @@ pub fn main() !void {
                     } else if (kev.udata == @intFromEnum(KqueueTag.backend)) {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                            var had_input = false;
                             while (backend.pollEvents()) |event| {
-                                if (event == .key or event == .text or event == .paste) had_input = true;
                                 if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused)) {
                                     running = false;
                                     break;
                                 }
-                            }
-                            if (had_input) {
-                                cursor_visible_blink = true;
-                                cursor_blink_active = true;
-                                last_input_ns = loop_now;
                             }
                         }
                     }
@@ -956,21 +971,15 @@ pub fn main() !void {
                 } else if (kev.filter == std.c.EVFILT.SIGNAL) {
                     running = handleSignal(-1, @intCast(kev.ident), &backend);
                 } else if (kev.filter == std.c.EVFILT.TIMER) {
-                    if (!backend_focused) {
-                        continue;
-                    }
-                    const idle_ns = loop_now - last_input_ns;
-                    if (idle_ns > 5_000_000_000) {
-                        if (cursor_blink_active) {
-                            cursor_blink_active = false;
-                            cursor_visible_blink = true;
-                            term.markDirty(term.cursor_x, term.cursor_y);
-                        }
-                    } else {
-                        cursor_blink_active = true;
-                        cursor_visible_blink = !cursor_visible_blink;
-                        term.markDirty(term.cursor_x, term.cursor_y);
-                    }
+                    applyCursorBlinkTimerTick(
+                        &term,
+                        backend_focused,
+                        loop_now,
+                        last_input_ns,
+                        &cursor_blink_active,
+                        &cursor_visible_blink,
+                        cursor_idle_timeout_ns,
+                    );
                 }
             }
 
