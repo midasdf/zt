@@ -35,6 +35,22 @@ const Winsize = extern struct {
     ws_ypixel: u16 = 0,
 };
 
+fn shellBasename(shell_path: []const u8) []const u8 {
+    const end = std.mem.lastIndexOfNone(u8, shell_path, "/") orelse return "sh";
+    const trimmed = shell_path[0 .. end + 1];
+    const slash = std.mem.lastIndexOfScalar(u8, trimmed, '/');
+    return if (slash) |idx| trimmed[idx + 1 ..] else trimmed;
+}
+
+fn makeLoginShellArg0(shell_path: []const u8, buf: *[256]u8) [:0]const u8 {
+    const base = shellBasename(shell_path);
+    const copy_len = @min(base.len, buf.len - 2);
+    buf[0] = '-';
+    @memcpy(buf[1..][0..copy_len], base[0..copy_len]);
+    buf[1 + copy_len] = 0;
+    return buf[0 .. 1 + copy_len :0];
+}
+
 pub const Pty = struct {
     master_fd: posix.fd_t,
     child_pid: posix.pid_t,
@@ -247,11 +263,11 @@ pub const Pty = struct {
                     _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
             } else {
-                // Default: login shell (execvpeZ searches PATH for bare names like "fish")
-                const argv: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{
-                    shell_path,
-                    "--login",
-                };
+                // Default: login shell. A leading '-' in argv[0] is portable across
+                // POSIX sh, bash, zsh, fish, and similar shells; "--login" is not.
+                var login_arg0_buf: [256]u8 = undefined;
+                const login_arg0 = makeLoginShellArg0(std.mem.span(shell_path), &login_arg0_buf);
+                const argv: [*:null]const ?[*:0]const u8 = &[_:null]?[*:0]const u8{login_arg0.ptr};
                 _ = posix.execvpeZ(shell_path, argv, env) catch {
                     _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
@@ -310,6 +326,15 @@ pub const Pty = struct {
         }
     }
 };
+
+test "Pty: login shell argv0 uses portable leading dash" {
+    var buf: [256]u8 = undefined;
+
+    try testing.expectEqualSlices(u8, "-sh", makeLoginShellArg0("/bin/sh", &buf));
+    try testing.expectEqualSlices(u8, "-fish", makeLoginShellArg0("/usr/bin/fish", &buf));
+    try testing.expectEqualSlices(u8, "-zsh", makeLoginShellArg0("zsh", &buf));
+    try testing.expectEqualSlices(u8, "-bin", makeLoginShellArg0("/usr/bin/", &buf));
+}
 
 test "Pty: spawn and read echo output" {
     // Skip when /dev/ptmx (Linux) is missing or invisible (e.g. restricted CI/sandbox).

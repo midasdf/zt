@@ -1444,9 +1444,13 @@ pub fn main() !void {
         if (all_dirty) {
             const default_bg = render.palette[config.default_bg];
             const bg_packed = [4]u8{ default_bg.b, default_bg.g, default_bg.r, 0xFF };
-            const total_pixels = @as(usize, backend.getWidth()) * @as(usize, backend.getHeight());
-            const pixel_buf: [*][4]u8 = @ptrCast(buf.ptr);
-            @memset(pixel_buf[0..total_pixels], bg_packed);
+            const row_pixels = backend.getWidth();
+            var py: u32 = 0;
+            while (py < backend.getHeight()) : (py += 1) {
+                const row_offset = @as(usize, py) * @as(usize, stride);
+                const pixel_buf: [*][4]u8 = @ptrCast(buf.ptr + row_offset);
+                @memset(pixel_buf[0..row_pixels], bg_packed);
+            }
             backend.markDirtyRows(0, backend.getHeight() - 1);
         }
 

@@ -509,7 +509,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         // Fast path: ground state + printable ASCII run (US-ASCII charset only, no insert mode)
         // Writes directly to cells[] array, bypassing setCell/handlePrint overhead.
         // Safe because ASCII is never wide and doesn't need TrueColor cleanup.
-        if (parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E and
+        if (!term.vt52_mode and parser.state == .ground and data[i] >= 0x20 and data[i] <= 0x7E and
             ascii_fast_eligible)
         {
             const cols = term.cols;
@@ -624,6 +624,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
                     switch (data[i]) {
                         0x0A, 0x0B, 0x0C => {
                             term.wrap_next = false;
+                            if (term.linefeed_mode) term.cursor_x = 0;
                             term.insertNewline();
                             i += 1;
                             continue;
@@ -654,7 +655,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         // Medium path: ground state + UTF-8 multi-byte characters (US-ASCII charset, no insert mode)
         // Decode directly, bypassing per-byte parser state machine overhead.
         // Non-wide chars written directly to cells[] with batch dirty marking.
-        if (parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE and
+        if (!term.vt52_mode and parser.state == .ground and data[i] >= 0xC0 and data[i] < 0xFE and
             !term.insert_mode and term.charsets[term.charset] == .us_ascii)
         {
             const start_i = i;
@@ -774,6 +775,7 @@ pub fn feedBulk(parser: *Parser, data: []const u8, term: *Term, writer_fd: ?std.
         if (term.vt52_mode) {
             handleVt52Byte(data[i], term, parser);
             i += 1;
+            ascii_fast_eligible = (term.charsets[term.charset] == .us_ascii and !term.insert_mode);
             continue;
         }
         // Slow path: control/escape sequences, incomplete UTF-8
@@ -1273,13 +1275,50 @@ fn handleControl(c: u8, term: *Term) void {
     }
 }
 
+/// Get CSI param at index, defaulting to `default` when absent or zero.
+inline fn paramOr(p: [16]u16, pc: u8, idx: u8, default: u16) u16 {
+    return if (idx < pc and p[idx] > 0) p[idx] else default;
+}
+
+/// Common terminal state reset shared by RIS (ESC c) and DECSTR (CSI ! p).
+fn resetTermState(term: *Term) void {
+    term.cursor_x = 0;
+    term.cursor_y = 0;
+    term.wrap_next = false;
+    term.insert_mode = false;
+    term.linefeed_mode = false;
+    term.origin_mode = false;
+    term.decawm = true;
+    term.decckm = false;
+    term.cursor_visible = true;
+    term.deckpam = false;
+    term.bracketed_paste = false;
+    term.cursor_style = 0;
+    term.focus_events = false;
+    term.decbkm = false;
+    term.sync_update = false;
+    term.vt52_mode = false;
+    term.last_printed_char = 0;
+    term.current_fg = 7;
+    term.current_bg = 0;
+    term.current_attrs = .{};
+    term.current_fg_rgb = null;
+    term.current_bg_rgb = null;
+    term.current_ul_color_rgb = null;
+    term.current_hyperlink_id = 0;
+    term.charset = 0;
+    term.charsets = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii };
+    term.scroll_top = 0;
+    term.scroll_bottom = term.rows -| 1;
+}
+
 fn handleCsi(csi: CsiAction, term: *Term) void {
     const p = csi.params;
     const pc = csi.param_count;
 
     switch (csi.final_byte) {
         'A' => { // CUU — cursor up (respects scroll region)
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.wrap_next = false;
             const min_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
                 term.scroll_top
@@ -1288,7 +1327,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             term.cursor_y = if (term.cursor_y >= n) @max(term.cursor_y - n, min_y) else min_y;
         },
         'B', 'e' => { // CUD/VPR — cursor down (respects scroll region)
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.wrap_next = false;
             const max_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
                 term.scroll_bottom
@@ -1297,15 +1336,15 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             term.cursor_y = @min(term.cursor_y + n, max_y);
         },
         'C', 'a' => { // CUF/HPR — cursor forward
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.moveCursorRel(@as(i32, @intCast(n)), 0);
         },
         'D' => { // CUB — cursor back
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.moveCursorRel(-@as(i32, @intCast(n)), 0);
         },
         'E' => { // CNL — cursor next line (respects scroll region)
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.wrap_next = false;
             const max_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
                 term.scroll_bottom
@@ -1315,7 +1354,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             term.cursor_x = 0;
         },
         'F' => { // CPL — cursor preceding line (respects scroll region)
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.wrap_next = false;
             const min_y: u32 = if (term.cursor_y >= term.scroll_top and term.cursor_y <= term.scroll_bottom)
                 term.scroll_top
@@ -1325,13 +1364,13 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             term.cursor_x = 0;
         },
         'G', '`' => { // CHA/HPA — cursor horizontal absolute (1-indexed)
-            const col = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
+            const col = paramOr(p, pc, 0, 1) - 1;
             term.cursor_x = @min(@as(u32, @intCast(col)), term.cols -| 1);
             term.wrap_next = false;
         },
         'H', 'f' => { // CUP/HVP — cursor position (1-indexed params, DECOM-aware)
-            const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
-            const col = if (pc > 1 and p[1] > 0) p[1] - 1 else 0;
+            const row = paramOr(p, pc, 0, 1) - 1;
+            const col = paramOr(p, pc, 1, 1) - 1;
             if (term.origin_mode) {
                 // DECOM: row is relative to scroll region top, clamped to region
                 const abs_row = term.scroll_top + @min(@as(u32, @intCast(row)), term.scroll_bottom -| term.scroll_top);
@@ -1357,27 +1396,27 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             }
         },
         'L' => { // IL — insert lines
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.insertLines(@intCast(n));
         },
         'M' => { // DL — delete lines
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.deleteLines(@intCast(n));
         },
         'P' => { // DCH — delete characters
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.deleteChars(@intCast(n));
         },
         'X' => { // ECH — erase characters
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.eraseChars(@intCast(n));
         },
         '@' => { // ICH — insert characters
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.insertChars(@intCast(n));
         },
         'd' => { // VPA — vertical position absolute (1-indexed, DECOM-aware)
-            const row = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
+            const row = paramOr(p, pc, 0, 1) - 1;
             if (term.origin_mode) {
                 const abs_row = term.scroll_top + @min(@as(u32, @intCast(row)), term.scroll_bottom -| term.scroll_top);
                 term.cursor_y = abs_row;
@@ -1412,15 +1451,15 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             }
         },
         'S' => { // SU — scroll up
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.scrollUp(@intCast(n));
         },
         'T' => { // SD — scroll down
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.scrollDown(@intCast(n));
         },
         'b' => { // REP — repeat preceding graphic character
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             const ch = term.last_printed_char;
             if (ch > 0) {
                 const count = @min(@as(u32, n), @as(u32, term.cols) * 2);
@@ -1436,7 +1475,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                 restoreDECModes(csi, term);
             } else if (csi.private_marker == 0) {
                 // DECSTBM — set scroll region (1-indexed)
-                const top = if (pc > 0 and p[0] > 0) p[0] - 1 else 0;
+                const top = paramOr(p, pc, 0, 1) - 1;
                 const bot = if (pc > 1 and p[1] > 0) p[1] - 1 else @as(u16, @intCast(term.rows -| 1));
                 term.setScrollRegion(@intCast(top), @intCast(bot));
                 term.cursor_x = 0;
@@ -1450,14 +1489,14 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
                 saveDECModes(csi, term);
             } else if (csi.private_marker == 0) {
                 // Save cursor position
-                term.saved_cursor_x = term.cursor_x;
-                term.saved_cursor_y = term.cursor_y;
+                term.saved_cursor.cursor_x = term.cursor_x;
+                term.saved_cursor.cursor_y = term.cursor_y;
             }
         },
         'u' => { // Restore cursor (only without private marker; \e[?u/\e[>Nu are Kitty keyboard protocol)
             if (csi.private_marker == 0) {
-                term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
-                term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
+                term.cursor_x = @min(term.saved_cursor.cursor_x, term.cols -| 1);
+                term.cursor_y = @min(term.saved_cursor.cursor_y, term.rows -| 1);
             }
         },
         'g' => { // TBC — tab clear
@@ -1470,11 +1509,11 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             }
         },
         'I' => { // CHT — cursor forward tabulation
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.tputtab(@intCast(n));
         },
         'Z' => { // CBT — cursor backward tabulation
-            const n = if (pc > 0 and p[0] > 0) p[0] else 1;
+            const n = paramOr(p, pc, 0, 1);
             term.tputtab(-@as(i32, @intCast(n)));
         },
         'h' => { // SM/DECSET — set mode
@@ -1497,34 +1536,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             // DECSTR — Soft Terminal Reset (CSI ! p)
             if (csi.intermediate_count > 0 and csi.intermediates[0] == '!') {
                 // DECSTR — Soft Terminal Reset (keep screen content)
-                term.cursor_x = 0;
-                term.cursor_y = 0;
-                term.wrap_next = false;
-                term.insert_mode = false;
-                term.linefeed_mode = false;
-                term.origin_mode = false;
-                term.decawm = true;
-                term.decckm = false;
-                term.cursor_visible = true;
-                term.deckpam = false;
-                term.bracketed_paste = false;
-                term.cursor_style = 0;
-                term.focus_events = false;
-                term.decbkm = false;
-                term.sync_update = false;
-                term.current_fg = 7;
-                term.current_bg = 0;
-                term.current_attrs = .{};
-                term.current_fg_rgb = null;
-                term.current_bg_rgb = null;
-                term.current_ul_color_rgb = null;
-                term.current_hyperlink_id = 0;
-                term.vt52_mode = false;
-                term.charset = 0;
-                term.charsets = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii };
-                term.scroll_top = 0;
-                term.scroll_bottom = term.rows -| 1;
-                term.last_printed_char = 0;
+                resetTermState(term);
                 term.saved_dec_mode_count = 0;
                 for (0..term.tabs.len) |c_idx| {
                     term.tabs[c_idx] = (c_idx % 8 == 0) and c_idx > 0;
@@ -1801,30 +1813,17 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
             },
             1048 => { // Save/restore cursor independently
                 if (set) {
-                    term.saved_cursor_x = term.cursor_x;
-                    term.saved_cursor_y = term.cursor_y;
+                    term.saved_cursor.cursor_x = term.cursor_x;
+                    term.saved_cursor.cursor_y = term.cursor_y;
                 } else {
-                    term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
-                    term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
+                    term.cursor_x = @min(term.saved_cursor.cursor_x, term.cols -| 1);
+                    term.cursor_y = @min(term.saved_cursor.cursor_y, term.rows -| 1);
                     term.wrap_next = false;
                 }
             },
             1049 => {
                 if (set) {
-                    // Save to alt_saved_* (separate from DECSC/DECRC saved_*)
-                    term.alt_saved_cursor_x = term.cursor_x;
-                    term.alt_saved_cursor_y = term.cursor_y;
-                    term.alt_saved_scroll_top = term.scroll_top;
-                    term.alt_saved_scroll_bottom = term.scroll_bottom;
-                    term.alt_saved_wrap_next = term.wrap_next;
-                    term.alt_saved_attrs = term.current_attrs;
-                    term.alt_saved_fg = term.current_fg;
-                    term.alt_saved_bg = term.current_bg;
-                    term.alt_saved_fg_rgb = term.current_fg_rgb;
-                    term.alt_saved_bg_rgb = term.current_bg_rgb;
-                    term.alt_saved_ul_color_rgb = term.current_ul_color_rgb;
-                    term.alt_saved_charset = term.charset;
-                    term.alt_saved_charsets = term.charsets;
+                    term.alt_saved_cursor = term.saveCursorState();
                     term.switchScreen(true) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
@@ -1836,25 +1835,15 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     term.switchScreen(false) catch |err| {
                         std.log.err("switchScreen failed: {}", .{err});
                     };
-                    // Restore from alt_saved_* (separate from DECSC/DECRC saved_*)
-                    term.cursor_x = @min(term.alt_saved_cursor_x, term.cols -| 1);
-                    term.cursor_y = @min(term.alt_saved_cursor_y, term.rows -| 1);
-                    term.scroll_top = @min(term.alt_saved_scroll_top, term.rows -| 1);
-                    term.scroll_bottom = @min(term.alt_saved_scroll_bottom, term.rows -| 1);
+                    term.restoreCursorState(term.alt_saved_cursor);
+                    // Restore scroll region from saved state, clamped to current dimensions
+                    term.scroll_top = @min(term.alt_saved_cursor.scroll_top, term.rows -| 1);
+                    term.scroll_bottom = @min(term.alt_saved_cursor.scroll_bottom, term.rows -| 1);
                     // Validate scroll region invariant after potential resize
                     if (term.scroll_top >= term.scroll_bottom) {
                         term.scroll_top = 0;
                         term.scroll_bottom = term.rows -| 1;
                     }
-                    term.wrap_next = term.alt_saved_wrap_next;
-                    term.current_attrs = term.alt_saved_attrs;
-                    term.current_fg = term.alt_saved_fg;
-                    term.current_bg = term.alt_saved_bg;
-                    term.current_fg_rgb = term.alt_saved_fg_rgb;
-                    term.current_bg_rgb = term.alt_saved_bg_rgb;
-                    term.current_ul_color_rgb = term.alt_saved_ul_color_rgb;
-                    term.charset = term.alt_saved_charset;
-                    term.charsets = term.alt_saved_charsets;
                 }
             },
             2004 => term.bracketed_paste = set,
@@ -1919,34 +1908,8 @@ fn handleEsc(esc: EscAction, term: *Term) void {
     }
 
     switch (esc.final_byte) {
-        '7' => { // DECSC — save cursor (with attributes + TrueColor)
-            term.saved_cursor_x = term.cursor_x;
-            term.saved_cursor_y = term.cursor_y;
-            term.saved_attrs = term.current_attrs;
-            term.saved_fg = term.current_fg;
-            term.saved_bg = term.current_bg;
-            term.saved_fg_rgb = term.current_fg_rgb;
-            term.saved_bg_rgb = term.current_bg_rgb;
-            term.saved_ul_color_rgb = term.current_ul_color_rgb;
-            term.saved_charset = term.charset;
-            term.saved_charsets = term.charsets;
-            term.saved_wrap_next = term.wrap_next;
-            term.saved_origin_mode = term.origin_mode;
-        },
-        '8' => { // DECRC — restore cursor (with attributes + TrueColor)
-            term.cursor_x = @min(term.saved_cursor_x, term.cols -| 1);
-            term.cursor_y = @min(term.saved_cursor_y, term.rows -| 1);
-            term.current_attrs = term.saved_attrs;
-            term.current_fg = term.saved_fg;
-            term.current_bg = term.saved_bg;
-            term.current_fg_rgb = term.saved_fg_rgb;
-            term.current_bg_rgb = term.saved_bg_rgb;
-            term.current_ul_color_rgb = term.saved_ul_color_rgb;
-            term.charset = term.saved_charset;
-            term.charsets = term.saved_charsets;
-            term.wrap_next = term.saved_wrap_next;
-            term.origin_mode = term.saved_origin_mode;
-        },
+        '7' => term.saved_cursor = term.saveCursorState(), // DECSC
+        '8' => term.restoreCursorState(term.saved_cursor), // DECRC
         'D' => { // IND — index (cursor down, scroll if at bottom)
             term.wrap_next = false;
             if (term.cursor_y == term.scroll_bottom) {
@@ -1977,46 +1940,9 @@ fn handleEsc(esc: EscAction, term: *Term) void {
             term.queueResponse("\x1b[?62;22c");
         },
         'c' => { // RIS — full reset
-            term.cursor_x = 0;
-            term.cursor_y = 0;
-            term.saved_cursor_x = 0;
-            term.saved_cursor_y = 0;
-            term.scroll_top = 0;
-            term.scroll_bottom = term.rows -| 1;
-            term.current_fg = 7;
-            term.current_bg = 0;
-            term.current_attrs = .{};
-            term.current_fg_rgb = null;
-            term.current_bg_rgb = null;
-            term.decckm = false;
-            term.decawm = true;
-            term.cursor_visible = true;
-            term.bracketed_paste = false;
-            term.wrap_next = false;
-            term.insert_mode = false;
-            term.linefeed_mode = false;
-            term.charset = 0;
-            term.charsets = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii };
-            term.deckpam = false;
-            term.origin_mode = false;
-            term.cursor_style = 0;
-            term.focus_events = false;
-            term.decbkm = false;
-            term.vt52_mode = false;
-            term.sync_update = false;
-            term.last_printed_char = 0;
+            resetTermState(term);
+            term.saved_cursor = .{};
             term.saved_dec_mode_count = 0;
-            term.saved_attrs = .{};
-            term.saved_fg = 7;
-            term.saved_bg = 0;
-            term.saved_charset = 0;
-            term.saved_wrap_next = false;
-            term.saved_origin_mode = false;
-            term.saved_ul_color_rgb = null;
-            term.current_ul_color_rgb = null;
-            term.current_hyperlink_id = 0;
-            term.saved_fg_rgb = null;
-            term.saved_bg_rgb = null;
             for (0..term.tabs.len) |c| {
                 term.tabs[c] = (c % 8 == 0) and c > 0;
             }
@@ -2375,6 +2301,48 @@ test "Executor: TrueColor bulk ASCII preserves RGB" {
         try testing.expect(rgb != null);
         try testing.expectEqual([3]u8{ 255, 128, 0 }, rgb.?);
     }
+}
+
+test "Executor: feedBulk LF honors linefeed mode" {
+    var t = try Term.init(testing.allocator, 10, 4);
+    defer t.deinit();
+    var parser = Parser{};
+
+    feedBulk(&parser, "\x1b[20hab\nc", &t, null);
+
+    try testing.expect(t.linefeed_mode);
+    try testing.expectEqual(@as(u21, 'a'), t.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'b'), t.getCell(1, 0).char);
+    try testing.expectEqual(@as(u21, 'c'), t.getCell(0, 1).char);
+    try testing.expectEqual(@as(u21, ' '), t.getCell(2, 1).char);
+    try testing.expectEqual(@as(u32, 1), t.cursor_x);
+    try testing.expectEqual(@as(u32, 1), t.cursor_y);
+}
+
+test "Executor: feedBulk keeps VT52 cursor addressing out of ASCII fast path" {
+    var t = try Term.init(testing.allocator, 10, 4);
+    defer t.deinit();
+    var parser = Parser{};
+
+    feedBulk(&parser, "\x1b[?2l\x1bY\"#X", &t, null);
+
+    try testing.expect(t.vt52_mode);
+    try testing.expectEqual(@as(u21, ' '), t.getCell(0, 0).char);
+    try testing.expectEqual(@as(u21, 'X'), t.getCell(3, 2).char);
+    try testing.expectEqual(@as(u32, 4), t.cursor_x);
+    try testing.expectEqual(@as(u32, 2), t.cursor_y);
+}
+
+test "Executor: feedBulk refreshes fast-path eligibility after VT52 charset changes" {
+    var t = try Term.init(testing.allocator, 10, 4);
+    defer t.deinit();
+    var parser = Parser{};
+
+    feedBulk(&parser, "\x1b[?2l\x1bF\x1b<`", &t, null);
+
+    try testing.expect(!t.vt52_mode);
+    try testing.expectEqual(@as(u21, 0x25C6), t.getCell(0, 0).char);
+    try testing.expectEqual(@as(term_mod.CharsetType, .dec_graphics), t.charsets[0]);
 }
 
 test "OSC: title set via OSC 0" {

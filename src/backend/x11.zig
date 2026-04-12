@@ -502,9 +502,16 @@ pub const X11Backend = struct {
             if (len > 0) {
                 const ulen: u32 = @intCast(len);
                 var text_ev: TextEvent = .{};
-                const clamped = @min(ulen, 128);
-                @memcpy(text_ev.data[0..clamped], xkb_buf[0..clamped]);
-                text_ev.len = clamped;
+                if (mods.alt) {
+                    text_ev.data[0] = 0x1b;
+                    const clamped = @min(ulen, 127);
+                    @memcpy(text_ev.data[1 .. 1 + clamped], xkb_buf[0..clamped]);
+                    text_ev.len = clamped + 1;
+                } else {
+                    const clamped = @min(ulen, 128);
+                    @memcpy(text_ev.data[0..clamped], xkb_buf[0..clamped]);
+                    text_ev.len = clamped;
+                }
                 return .{ .text = text_ev };
             }
         }

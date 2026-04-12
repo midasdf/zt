@@ -64,6 +64,23 @@ pub fn translateCharset(cp: u21, cs: CharsetType) u21 {
     return table[cp - 0x60];
 }
 
+pub const CursorState = struct {
+    cursor_x: u32 = 0,
+    cursor_y: u32 = 0,
+    scroll_top: u32 = 0,
+    scroll_bottom: u32 = 0,
+    wrap_next: bool = false,
+    origin_mode: bool = false,
+    attrs: Cell.Attrs = .{},
+    fg: u8 = 7,
+    bg: u8 = 0,
+    fg_rgb: ?[3]u8 = null,
+    bg_rgb: ?[3]u8 = null,
+    ul_color_rgb: ?[3]u8 = null,
+    charset: u2 = 0,
+    charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
+};
+
 pub const SavedDecMode = struct { mode: u16 = 0, value: bool = false };
 
 pub const MouseMode = enum(u3) {
@@ -134,10 +151,6 @@ pub const Term = struct {
     // Cursor
     cursor_x: u32 = 0,
     cursor_y: u32 = 0,
-    saved_cursor_x: u32 = 0,
-    saved_cursor_y: u32 = 0,
-    saved_scroll_top: u32 = 0,
-    saved_scroll_bottom: u32 = 0,
 
     // Scroll region
     scroll_top: u32 = 0,
@@ -233,32 +246,11 @@ pub const Term = struct {
     saved_dec_mode_count: u8 = 0,
 
     // Saved cursor state (DECSC/DECRC — saves attrs + charset like st)
-    saved_attrs: Cell.Attrs = .{},
-    saved_fg: u8 = 7,
-    saved_bg: u8 = 0,
-    saved_charset: u2 = 0,
-    saved_wrap_next: bool = false,
-    saved_origin_mode: bool = false,
-    saved_fg_rgb: ?[3]u8 = null,
-    saved_bg_rgb: ?[3]u8 = null,
-    saved_ul_color_rgb: ?[3]u8 = null,
-    saved_charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
+    saved_cursor: CursorState = .{},
 
     // Separate save area for ?1049 alt screen (must not collide with DECSC/DECRC)
-    alt_saved_cursor_x: u32 = 0,
-    alt_saved_cursor_y: u32 = 0,
-    alt_saved_scroll_top: u32 = 0,
-    alt_saved_scroll_bottom: u32 = 0,
+    alt_saved_cursor: CursorState = .{},
     alt_has_truecolor_cells: bool = false,
-    alt_saved_wrap_next: bool = false,
-    alt_saved_attrs: Cell.Attrs = .{},
-    alt_saved_fg: u8 = 7,
-    alt_saved_bg: u8 = 0,
-    alt_saved_fg_rgb: ?[3]u8 = null,
-    alt_saved_bg_rgb: ?[3]u8 = null,
-    alt_saved_ul_color_rgb: ?[3]u8 = null,
-    alt_saved_charset: u2 = 0,
-    alt_saved_charsets: [4]CharsetType = .{ .us_ascii, .us_ascii, .us_ascii, .us_ascii },
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
@@ -319,6 +311,42 @@ pub const Term = struct {
         self.allocator.free(self.bg_rgb);
         self.allocator.free(self.ul_color_rgb);
         self.allocator.free(self.hyperlink_ids);
+    }
+
+    /// Capture current cursor + drawing state into a CursorState.
+    pub fn saveCursorState(self: *const Self) CursorState {
+        return .{
+            .cursor_x = self.cursor_x,
+            .cursor_y = self.cursor_y,
+            .scroll_top = self.scroll_top,
+            .scroll_bottom = self.scroll_bottom,
+            .wrap_next = self.wrap_next,
+            .origin_mode = self.origin_mode,
+            .attrs = self.current_attrs,
+            .fg = self.current_fg,
+            .bg = self.current_bg,
+            .fg_rgb = self.current_fg_rgb,
+            .bg_rgb = self.current_bg_rgb,
+            .ul_color_rgb = self.current_ul_color_rgb,
+            .charset = self.charset,
+            .charsets = self.charsets,
+        };
+    }
+
+    /// Restore cursor + drawing state from a CursorState, clamping to current dimensions.
+    pub fn restoreCursorState(self: *Self, s: CursorState) void {
+        self.cursor_x = @min(s.cursor_x, self.cols -| 1);
+        self.cursor_y = @min(s.cursor_y, self.rows -| 1);
+        self.wrap_next = s.wrap_next;
+        self.origin_mode = s.origin_mode;
+        self.current_attrs = s.attrs;
+        self.current_fg = s.fg;
+        self.current_bg = s.bg;
+        self.current_fg_rgb = s.fg_rgb;
+        self.current_bg_rgb = s.bg_rgb;
+        self.current_ul_color_rgb = s.ul_color_rgb;
+        self.charset = s.charset;
+        self.charsets = s.charsets;
     }
 
     /// Physical cell index via row_map indirection
@@ -604,8 +632,8 @@ pub const Term = struct {
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
         // Clamp alt-screen saved scroll region to new dimensions
-        self.alt_saved_scroll_top = @min(self.alt_saved_scroll_top, new_rows -| 1);
-        self.alt_saved_scroll_bottom = @min(self.alt_saved_scroll_bottom, new_rows -| 1);
+        self.alt_saved_cursor.scroll_top = @min(self.alt_saved_cursor.scroll_top, new_rows -| 1);
+        self.alt_saved_cursor.scroll_bottom = @min(self.alt_saved_cursor.scroll_bottom, new_rows -| 1);
 
         // Resize alt buffer if allocated — allocate all new buffers first,
         // then free old ones, so OOM leaves the old buffers intact (no UAF).
