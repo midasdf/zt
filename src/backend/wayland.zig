@@ -1187,7 +1187,7 @@ pub const WaylandBackend = struct {
                     .y = self.pointer_y,
                     .button = self.pointer_button,
                     .action = .motion,
-                    .modifiers = .{},
+                    .modifiers = self.keyboard.getModifiers(),
                 } });
             },
             seat_mod.WL_POINTER_EVENT_BUTTON => {
@@ -1220,7 +1220,7 @@ pub const WaylandBackend = struct {
                         .y = self.pointer_y,
                         .button = button,
                         .action = action,
-                        .modifiers = .{}, // Will get modifiers from keyboard state if available
+                        .modifiers = self.keyboard.getModifiers(),
                     },
                 });
             },
@@ -1241,7 +1241,7 @@ pub const WaylandBackend = struct {
                     .y = self.pointer_y,
                     .button = button,
                     .action = .press,
-                    .modifiers = .{},
+                    .modifiers = self.keyboard.getModifiers(),
                 } });
             },
             else => {},

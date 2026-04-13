@@ -32,8 +32,11 @@ jobs:
       - name: Format check
         run: zig fmt --check .
 
-      - name: Build
+      - name: Build (X11)
         run: zig build -Dbackend=x11
+
+      - name: Build (Wayland)
+        run: zig build -Dbackend=wayland
 
       - name: Test
         run: zig build test -Dbackend=x11

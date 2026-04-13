@@ -204,6 +204,7 @@ pub const Parser = struct {
         } else if (byte == 'P') {
             // DCS — Device Control String
             self.osc_len = 0;
+            self.esc_in_osc = false;
             self.state = .dcs_entry;
             return .none;
         } else if (byte >= 0x20 and byte <= 0x2F) {
@@ -375,16 +376,20 @@ pub const Parser = struct {
                 self.state = .ground;
                 return Action{ .osc_dispatch = self.osc_buf[0..self.osc_len] };
             }
-            // Not ST, store the ESC and this byte
-            if (self.osc_len < 8192) {
-                self.osc_buf[self.osc_len] = 0x1B;
-                self.osc_len += 1;
+            // Not ST — store ESC only for printable data bytes;
+            // control bytes (CAN, SUB, BEL, ESC) fall through to handlers below
+            if (byte >= 0x20 and byte != 0x7F) {
+                if (self.osc_len < 8192) {
+                    self.osc_buf[self.osc_len] = 0x1B;
+                    self.osc_len += 1;
+                }
+                if (self.osc_len < 8192) {
+                    self.osc_buf[self.osc_len] = byte;
+                    self.osc_len += 1;
+                }
+                return .none;
             }
-            if (self.osc_len < 8192) {
-                self.osc_buf[self.osc_len] = byte;
-                self.osc_len += 1;
-            }
-            return .none;
+            // Control byte after ESC — fall through (discard pending ESC per xterm behavior)
         }
 
         // CAN/SUB abort — return to ground state per VT220 spec
@@ -428,12 +433,15 @@ pub const Parser = struct {
                 self.state = .ground;
                 return if (payload.len > 0) Action{ .dcs_dispatch = payload } else .none;
             } else {
-                // ESC followed by non-backslash — store the ESC and reprocess byte
-                if (self.osc_len < 8192) {
-                    self.osc_buf[self.osc_len] = 0x1B;
-                    self.osc_len += 1;
+                // ESC followed by non-backslash — store ESC only for data bytes;
+                // control bytes (CAN, SUB, BEL) fall through without stale ESC
+                if (byte >= 0x20 and byte != 0x7F) {
+                    if (self.osc_len < 8192) {
+                        self.osc_buf[self.osc_len] = 0x1B;
+                        self.osc_len += 1;
+                    }
                 }
-                // Fall through to store the current byte
+                // Fall through to handle the current byte
             }
         }
 
@@ -936,8 +944,6 @@ fn respondXtgettcap(term: *Term, hex_name: []const u8) void {
         .{ "524742", "382f382f38" },
     };
 
-    var resp_buf: [256]u8 = undefined;
-
     inline for (caps) |cap| {
         if (std.mem.eql(u8, hex_name, cap[0])) {
             const resp = "\x1bP1+r" ++ cap[0] ++ "=" ++ cap[1] ++ "\x1b\\";
@@ -954,6 +960,7 @@ fn respondXtgettcap(term: *Term, hex_name: []const u8) void {
             else => return,
         }
     }
+    var resp_buf: [256]u8 = undefined;
     const prefix = "\x1bP0+r";
     const suffix = "\x1b\\";
     if (prefix.len + hex_name.len + suffix.len <= resp_buf.len) {

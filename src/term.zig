@@ -980,7 +980,7 @@ pub const Term = struct {
     pub fn insertNewline(self: *Self) void {
         if (self.cursor_y == self.scroll_bottom) {
             self.scrollUp(1);
-        } else if (self.cursor_y < self.rows - 1) {
+        } else if (self.cursor_y < self.rows -| 1) {
             self.cursor_y += 1;
         }
     }
@@ -1273,21 +1273,25 @@ pub const Term = struct {
     }
 
     // TrueColor helpers (indexed by physical cell position)
-    pub fn setFgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) !void {
+    pub fn setFgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) void {
+        if (x >= self.cols or y >= self.rows) return;
         self.fg_rgb[self.cellIndex(x, y)] = rgb;
         self.has_truecolor_cells = true;
     }
 
     pub fn getFgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {
+        if (x >= self.cols or y >= self.rows) return null;
         return self.fg_rgb[self.cellIndex(x, y)];
     }
 
-    pub fn setBgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) !void {
+    pub fn setBgRgb(self: *Self, x: u32, y: u32, rgb: [3]u8) void {
+        if (x >= self.cols or y >= self.rows) return;
         self.bg_rgb[self.cellIndex(x, y)] = rgb;
         self.has_truecolor_cells = true;
     }
 
     pub fn getBgRgb(self: *const Self, x: u32, y: u32) ?[3]u8 {
+        if (x >= self.cols or y >= self.rows) return null;
         return self.bg_rgb[self.cellIndex(x, y)];
     }
 };

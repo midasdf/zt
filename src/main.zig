@@ -1401,8 +1401,8 @@ pub fn main() !void {
             if (@hasDecl(Backend, "updateTitle")) {
                 if (term.title_len > 0) {
                     // Prefix with "zt — " so the version/app name stays visible
-                    var title_buf: [280]u8 = undefined;
                     const prefix = "zt " ++ config.version ++ " — ";
+                    var title_buf: [prefix.len + 256]u8 = undefined;
                     @memcpy(title_buf[0..prefix.len], prefix);
                     const tlen: usize = term.title_len;
                     @memcpy(title_buf[prefix.len..][0..tlen], term.title[0..tlen]);
@@ -1421,7 +1421,7 @@ pub fn main() !void {
         if (term.sync_update) {
             if (sync_update_start_ns == 0) {
                 sync_update_start_ns = loop_now;
-            } else if (loop_now - sync_update_start_ns > 3_000_000_000) {
+            } else if (std.time.nanoTimestamp() - sync_update_start_ns > 3_000_000_000) {
                 term.sync_update = false;
                 sync_update_start_ns = 0;
                 last_render_ns = 0; // force immediate render after timeout

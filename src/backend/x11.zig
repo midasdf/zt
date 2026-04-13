@@ -872,6 +872,14 @@ pub const X11Backend = struct {
             return error.ShmAtFailed;
         }
 
+        // Ensure X server is not reading the old buffer before we detach.
+        // xcb_get_input_focus is a cheap round-trip that guarantees all prior
+        // SHM requests (including any in-flight shm_put_image) have completed.
+        if (self.shm_busy) {
+            _ = c.xcb_get_input_focus_reply(self.connection, c.xcb_get_input_focus(self.connection), null);
+            self.shm_busy = false;
+        }
+
         // New buffer ready — now safe to destroy old ones
         for (0..2) |i| {
             if (self.buffers[i].len > 0) {
