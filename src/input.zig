@@ -626,14 +626,28 @@ test "Input: Alt+Ctrl+A produces ESC + 0x01" {
 }
 
 test "Input: symbol keys" {
-    try testing.expectEqualSlices(u8, "-", translateKey(KEY.MINUS, .{}, false, false));
-    try testing.expectEqualSlices(u8, "_", translateKey(KEY.MINUS, .{ .shift = true }, false, false));
-    try testing.expectEqualSlices(u8, "=", translateKey(KEY.EQUAL, .{}, false, false));
-    try testing.expectEqualSlices(u8, "+", translateKey(KEY.EQUAL, .{ .shift = true }, false, false));
-    try testing.expectEqualSlices(u8, "[", translateKey(KEY.LEFTBRACE, .{}, false, false));
-    try testing.expectEqualSlices(u8, "{", translateKey(KEY.LEFTBRACE, .{ .shift = true }, false, false));
-    try testing.expectEqualSlices(u8, ";", translateKey(KEY.SEMICOLON, .{}, false, false));
-    try testing.expectEqualSlices(u8, ":", translateKey(KEY.SEMICOLON, .{ .shift = true }, false, false));
+    switch (config.keymap) {
+        .us => {
+            try testing.expectEqualSlices(u8, "-", translateKey(KEY.MINUS, .{}, false, false));
+            try testing.expectEqualSlices(u8, "_", translateKey(KEY.MINUS, .{ .shift = true }, false, false));
+            try testing.expectEqualSlices(u8, "=", translateKey(KEY.EQUAL, .{}, false, false));
+            try testing.expectEqualSlices(u8, "+", translateKey(KEY.EQUAL, .{ .shift = true }, false, false));
+            try testing.expectEqualSlices(u8, "[", translateKey(KEY.LEFTBRACE, .{}, false, false));
+            try testing.expectEqualSlices(u8, "{", translateKey(KEY.LEFTBRACE, .{ .shift = true }, false, false));
+            try testing.expectEqualSlices(u8, ";", translateKey(KEY.SEMICOLON, .{}, false, false));
+            try testing.expectEqualSlices(u8, ":", translateKey(KEY.SEMICOLON, .{ .shift = true }, false, false));
+        },
+        .jp => {
+            try testing.expectEqualSlices(u8, "-", translateKey(KEY.MINUS, .{}, false, false));
+            try testing.expectEqualSlices(u8, "=", translateKey(KEY.MINUS, .{ .shift = true }, false, false));
+            try testing.expectEqualSlices(u8, "^", translateKey(KEY.EQUAL, .{}, false, false));
+            try testing.expectEqualSlices(u8, "~", translateKey(KEY.EQUAL, .{ .shift = true }, false, false));
+            try testing.expectEqualSlices(u8, "@", translateKey(KEY.LEFTBRACE, .{}, false, false));
+            try testing.expectEqualSlices(u8, "`", translateKey(KEY.LEFTBRACE, .{ .shift = true }, false, false));
+            try testing.expectEqualSlices(u8, ";", translateKey(KEY.SEMICOLON, .{}, false, false));
+            try testing.expectEqualSlices(u8, "+", translateKey(KEY.SEMICOLON, .{ .shift = true }, false, false));
+        },
+    }
 }
 
 test "Input: HOME with DECCKM on produces SS3 H" {

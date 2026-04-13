@@ -1295,6 +1295,8 @@ fn resetTermState(term: *Term) void {
     term.bracketed_paste = false;
     term.cursor_style = 0;
     term.focus_events = false;
+    term.mouse_mode = .none;
+    term.mouse_encoding = .x10;
     term.decbkm = false;
     term.sync_update = false;
     term.vt52_mode = false;
@@ -2701,6 +2703,33 @@ test "Bracketed paste mode tracked by DECSET 2004" {
         executeAction(action, &term);
     }
     try testing.expect(!term.bracketed_paste);
+}
+
+test "Executor: terminal reset clears mouse tracking" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b[?1002h\x1b[?1006h") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(term_mod.MouseMode.button, term.mouse_mode);
+    try testing.expectEqual(term_mod.MouseEncoding.sgr, term.mouse_encoding);
+
+    for ("\x1b[!p") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(term_mod.MouseMode.none, term.mouse_mode);
+    try testing.expectEqual(term_mod.MouseEncoding.x10, term.mouse_encoding);
+
+    for ("\x1b[?1003h\x1b[?1015h\x1bc") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(term_mod.MouseMode.none, term.mouse_mode);
+    try testing.expectEqual(term_mod.MouseEncoding.x10, term.mouse_encoding);
 }
 
 test "SGR 0 does not reset hyperlink id" {
