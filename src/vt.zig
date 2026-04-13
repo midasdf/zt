@@ -1499,6 +1499,7 @@ fn handleCsi(csi: CsiAction, term: *Term) void {
             if (csi.private_marker == 0) {
                 term.cursor_x = @min(term.saved_cursor.cursor_x, term.cols -| 1);
                 term.cursor_y = @min(term.saved_cursor.cursor_y, term.rows -| 1);
+                term.wrap_next = false;
             }
         },
         'g' => { // TBC — tab clear
@@ -1825,14 +1826,11 @@ fn handleDecSet(csi: CsiAction, term: *Term, set: bool) void {
                     std.log.err("switchScreen failed: {}", .{err});
                 };
             },
-            1048 => { // Save/restore cursor independently
+            1048 => { // Save/restore cursor (like DECSC/DECRC per xterm)
                 if (set) {
-                    term.saved_cursor.cursor_x = term.cursor_x;
-                    term.saved_cursor.cursor_y = term.cursor_y;
+                    term.saved_cursor = term.saveCursorState();
                 } else {
-                    term.cursor_x = @min(term.saved_cursor.cursor_x, term.cols -| 1);
-                    term.cursor_y = @min(term.saved_cursor.cursor_y, term.rows -| 1);
-                    term.wrap_next = false;
+                    term.restoreCursorState(term.saved_cursor);
                 }
             },
             1049 => {
@@ -2005,12 +2003,20 @@ fn queryDecMode(term: *const Term, mode: u16) u8 {
     // Returns: 1=set, 2=reset, 0=not recognized
     return switch (mode) {
         1 => if (term.decckm) @as(u8, 1) else 2,
+        2 => if (!term.vt52_mode) @as(u8, 1) else 2, // DECANM: set=VT100, reset=VT52
         6 => if (term.origin_mode) @as(u8, 1) else 2,
         7 => if (term.decawm) @as(u8, 1) else 2,
         25 => if (term.cursor_visible) @as(u8, 1) else 2,
         47, 1047, 1049 => if (term.is_alt_screen) @as(u8, 1) else 2,
         67 => if (term.decbkm) @as(u8, 1) else 2,
+        9 => if (term.mouse_mode == .x10) @as(u8, 1) else 2,
+        1000 => if (term.mouse_mode == .normal) @as(u8, 1) else 2,
+        1002 => if (term.mouse_mode == .button) @as(u8, 1) else 2,
+        1003 => if (term.mouse_mode == .any) @as(u8, 1) else 2,
         1004 => if (term.focus_events) @as(u8, 1) else 2,
+        1005 => if (term.mouse_encoding == .utf8) @as(u8, 1) else 2,
+        1006 => if (term.mouse_encoding == .sgr) @as(u8, 1) else 2,
+        1015 => if (term.mouse_encoding == .urxvt) @as(u8, 1) else 2,
         2004 => if (term.bracketed_paste) @as(u8, 1) else 2,
         2026 => if (term.sync_update) @as(u8, 1) else 2,
         else => 0,

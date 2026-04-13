@@ -782,6 +782,7 @@ fn extractSelectionText(term: *const Term, buf: []u8) []const u8 {
         const row_base = @as(usize, phys_row) * @as(usize, term.cols);
         const row_cells = term.cells[row_base..][0..term.cols];
 
+        const row_start_pos = pos;
         var x = start_x;
         while (x <= end_x) : (x += 1) {
             const ch = row_cells[x].char;
@@ -791,6 +792,10 @@ fn extractSelectionText(term: *const Term, buf: []u8) []const u8 {
             if (pos + len > buf.len) break;
             @memcpy(buf[pos..][0..len], encode_buf[0..len]);
             pos += len;
+        }
+        // Trim trailing spaces from each line
+        while (pos > row_start_pos and buf[pos - 1] == ' ') {
+            pos -= 1;
         }
         // Add newline between rows (not after last)
         if (y < o.ey and pos < buf.len) {
@@ -1225,9 +1230,7 @@ pub fn main() !void {
                                 }
                             }
                             if (had_input) {
-                                cursor_visible_blink = true;
-                                cursor_blink_active = true;
-                                last_input_ns = loop_now;
+                                refreshCursorBlinkOnUserInput(&cursor_visible_blink, &cursor_blink_active, &last_input_ns);
                             }
                         }
                     },
@@ -1487,25 +1490,17 @@ pub fn main() !void {
                 if (row_hl[x] != 0 and render_cell.attrs.underline_style == 0) {
                     render_cell.attrs.underline_style = 1;
                 }
-                if (is_cursor) {
+                const in_selection = if (term.selection) |sel| sel.contains(x, y) else false;
+
+                // Invert fg/bg for cursor or selection, but not both
+                // (double inversion cancels out, making cursor invisible)
+                if (is_cursor != in_selection) {
                     const tmp_idx = render_cell.fg;
                     render_cell.fg = render_cell.bg;
                     render_cell.bg = tmp_idx;
                     const tmp_rgb = fg_rgb;
                     fg_rgb = bg_rgb;
                     bg_rgb = tmp_rgb;
-                }
-
-                // Selection highlight: invert fg/bg
-                if (term.selection) |sel| {
-                    if (sel.contains(x, y)) {
-                        const tmp_idx2 = render_cell.fg;
-                        render_cell.fg = render_cell.bg;
-                        render_cell.bg = tmp_idx2;
-                        const tmp_rgb2 = fg_rgb;
-                        fg_rgb = bg_rgb;
-                        bg_rgb = tmp_rgb2;
-                    }
                 }
 
                 // Skip per-cell bg fill when global fill was applied, UNLESS:

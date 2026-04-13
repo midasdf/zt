@@ -251,6 +251,7 @@ pub const Term = struct {
     // Separate save area for ?1049 alt screen (must not collide with DECSC/DECRC)
     alt_saved_cursor: CursorState = .{},
     alt_has_truecolor_cells: bool = false,
+    alt_has_wide_chars: bool = false,
 
     pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
@@ -788,10 +789,14 @@ pub const Term = struct {
         self.hyperlink_ids = self.alt_hyperlink_ids.?;
         self.alt_hyperlink_ids = tmp_hl;
 
-        // Swap truecolor tracking flag between screens
+        // Swap per-screen tracking flags between screens
         const tmp_tc = self.has_truecolor_cells;
         self.has_truecolor_cells = self.alt_has_truecolor_cells;
         self.alt_has_truecolor_cells = tmp_tc;
+
+        const tmp_wc = self.has_wide_chars;
+        self.has_wide_chars = self.alt_has_wide_chars;
+        self.alt_has_wide_chars = tmp_wc;
 
         self.is_alt_screen = alt;
         self.markDirtyRange(.{ .start = 0, .end = total });
@@ -1158,6 +1163,7 @@ pub const Term = struct {
         const bg_rgb_val: ?[3]u8 = self.current_bg_rgb;
         switch (mode) {
             0 => {
+                self.fixWideBoundaries(@as(usize, self.cursor_y) * cols + self.cursor_x, @as(usize, self.rows) * cols);
                 for (self.cursor_y..self.rows) |y| {
                     const phys = self.row_map[y];
                     const from: usize = if (y == self.cursor_y) self.cursor_x else 0;
@@ -1175,6 +1181,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = @as(usize, self.cursor_y) * cols + self.cursor_x, .end = @as(usize, self.rows) * cols });
             },
             1 => {
+                self.fixWideBoundaries(0, @as(usize, self.cursor_y) * cols + self.cursor_x + 1);
                 for (0..self.cursor_y + 1) |y| {
                     const phys = self.row_map[y];
                     const to: usize = if (y == self.cursor_y) self.cursor_x + 1 else cols;
@@ -1220,6 +1227,7 @@ pub const Term = struct {
         const row_start = @as(usize, self.cursor_y) * cols;
         switch (mode) {
             0 => {
+                self.fixWideBoundaries(row_start + self.cursor_x, row_start + cols);
                 for (self.cursor_x..self.cols) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {
@@ -1233,6 +1241,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = row_start + self.cursor_x, .end = row_start + cols });
             },
             1 => {
+                self.fixWideBoundaries(row_start, row_start + self.cursor_x + 1);
                 for (0..self.cursor_x + 1) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {
@@ -1246,6 +1255,7 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = row_start, .end = row_start + self.cursor_x + 1 });
             },
             2 => {
+                // Full line erase — no wide boundary fixup needed (entire row cleared)
                 for (0..cols) |x| {
                     const idx = phys * cols + x;
                     if (!self.cells[idx].attrs.protected) {
