@@ -631,6 +631,17 @@ pub const Term = struct {
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
+        // Clamp selection to the resized grid. Copying a stale selection after
+        // shrinking the terminal must not index past row_map/cell buffers.
+        if (self.selection) |*sel| {
+            const max_x = new_cols -| 1;
+            const max_y = new_rows -| 1;
+            sel.start_x = @min(sel.start_x, max_x);
+            sel.end_x = @min(sel.end_x, max_x);
+            sel.start_y = @min(sel.start_y, max_y);
+            sel.end_y = @min(sel.end_y, max_y);
+        }
+
         // Clamp alt-screen saved scroll region to new dimensions
         self.alt_saved_cursor.scroll_top = @min(self.alt_saved_cursor.scroll_top, new_rows -| 1);
         self.alt_saved_cursor.scroll_bottom = @min(self.alt_saved_cursor.scroll_bottom, new_rows -| 1);
@@ -1395,6 +1406,27 @@ test "Term: hasDirty with single bit" {
     try testing.expect(!term.hasDirty());
     term.markDirty(4, 1);
     try testing.expect(term.hasDirty());
+}
+
+test "Term: resize clamps selection to new grid" {
+    var term = try Term.init(testing.allocator, 10, 5);
+    defer term.deinit();
+
+    term.selection = .{
+        .start_x = 8,
+        .start_y = 4,
+        .end_x = 9,
+        .end_y = 4,
+        .active = false,
+    };
+
+    try term.resize(4, 2);
+
+    const sel = term.selection.?;
+    try testing.expectEqual(@as(u32, 3), sel.start_x);
+    try testing.expectEqual(@as(u32, 1), sel.start_y);
+    try testing.expectEqual(@as(u32, 3), sel.end_x);
+    try testing.expectEqual(@as(u32, 1), sel.end_y);
 }
 
 test "switchScreen preserves main screen cells" {

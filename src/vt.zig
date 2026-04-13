@@ -1633,7 +1633,10 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
             27 => term.current_attrs.reverse = false,
             28 => term.current_attrs.invisible = false,
             29 => term.current_attrs.strikethrough = false,
-            30...37 => term.current_fg = @intCast(param - 30),
+            30...37 => {
+                term.current_fg = @intCast(param - 30);
+                term.current_fg_rgb = null;
+            },
             38 => {
                 // Extended foreground: colon form (38:2:r:g:b) or semicolon (38;2;r;g;b)
                 if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
@@ -1646,7 +1649,10 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
                 term.current_fg = 7;
                 term.current_fg_rgb = null;
             },
-            40...47 => term.current_bg = @intCast(param - 40),
+            40...47 => {
+                term.current_bg = @intCast(param - 40);
+                term.current_bg_rgb = null;
+            },
             48 => {
                 // Extended background: colon form (48:2:r:g:b) or semicolon (48;2;r;g;b)
                 if (csi.has_sub & (@as(u16, 1) << @intCast(i)) != 0) {
@@ -1668,8 +1674,14 @@ fn handleSgr(csi: CsiAction, term: *Term) void {
                 }
             },
             59 => term.current_ul_color_rgb = null,
-            90...97 => term.current_fg = @intCast(param - 90 + 8),
-            100...107 => term.current_bg = @intCast(param - 100 + 8),
+            90...97 => {
+                term.current_fg = @intCast(param - 90 + 8);
+                term.current_fg_rgb = null;
+            },
+            100...107 => {
+                term.current_bg = @intCast(param - 100 + 8);
+                term.current_bg_rgb = null;
+            },
             else => {},
         }
     }
@@ -2263,6 +2275,50 @@ test "Executor: TrueColor SGR 38;2;r;g;b" {
     const rgb = term.getFgRgb(0, 0);
     try testing.expect(rgb != null);
     try testing.expectEqual([3]u8{ 255, 128, 0 }, rgb.?);
+}
+
+test "Executor: 16-color foreground SGR clears prior TrueColor override" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    feedBulk(&parser, "\x1b[38;2;255;128;0m\x1b[31mX", &term, null);
+
+    try testing.expectEqual(@as(u8, 1), term.getCell(0, 0).fg);
+    try testing.expectEqual(@as(?[3]u8, null), term.getFgRgb(0, 0));
+}
+
+test "Executor: bright foreground SGR clears prior TrueColor override" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    feedBulk(&parser, "\x1b[38;2;255;128;0m\x1b[91mX", &term, null);
+
+    try testing.expectEqual(@as(u8, 9), term.getCell(0, 0).fg);
+    try testing.expectEqual(@as(?[3]u8, null), term.getFgRgb(0, 0));
+}
+
+test "Executor: 16-color background SGR clears prior TrueColor override" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    feedBulk(&parser, "\x1b[48;2;1;2;3m\x1b[44mX", &term, null);
+
+    try testing.expectEqual(@as(u8, 4), term.getCell(0, 0).bg);
+    try testing.expectEqual(@as(?[3]u8, null), term.getBgRgb(0, 0));
+}
+
+test "Executor: bright background SGR clears prior TrueColor override" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    feedBulk(&parser, "\x1b[48;2;1;2;3m\x1b[104mX", &term, null);
+
+    try testing.expectEqual(@as(u8, 12), term.getCell(0, 0).bg);
+    try testing.expectEqual(@as(?[3]u8, null), term.getBgRgb(0, 0));
 }
 
 test "Executor: ED mode 0 erases below" {
