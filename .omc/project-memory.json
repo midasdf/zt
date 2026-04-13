@@ -1,0 +1,206 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775810169618,
+  "projectRoot": "/home/midasdf/zt",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "src"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bench-results": {
+      "path": "bench-results",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775810169615,
+      "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1775810169617,
+      "keyFiles": [
+        "benchmark.png"
+      ]
+    },
+    "fonts": {
+      "path": "fonts",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775810169617,
+      "keyFiles": [
+        "plemoljp-console-nf.bdf",
+        "ufo.bdf"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 7,
+      "lastAccessed": 1775810169617,
+      "keyFiles": [
+        "font.zig",
+        "input.zig",
+        "main.zig",
+        "pty.zig",
+        "render.zig"
+      ]
+    },
+    "sysroot": {
+      "path": "sysroot",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775810169617,
+      "keyFiles": []
+    },
+    "zig-out": {
+      "path": "zig-out",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775810169617,
+      "keyFiles": []
+    },
+    "zig-out/bin": {
+      "path": "zig-out/bin",
+      "purpose": "Executable scripts",
+      "fileCount": 1,
+      "lastAccessed": 1775810169617,
+      "keyFiles": [
+        "zt"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/main.zig",
+      "accessCount": 144,
+      "lastAccessed": 1776091801802,
+      "type": "directory"
+    },
+    {
+      "path": "src/backend/x11.zig",
+      "accessCount": 61,
+      "lastAccessed": 1775839246994,
+      "type": "file"
+    },
+    {
+      "path": "src/vt.zig",
+      "accessCount": 52,
+      "lastAccessed": 1776092595976,
+      "type": "directory"
+    },
+    {
+      "path": "src/term.zig",
+      "accessCount": 42,
+      "lastAccessed": 1776091762693,
+      "type": "directory"
+    },
+    {
+      "path": "src/backend/wayland.zig",
+      "accessCount": 32,
+      "lastAccessed": 1775839247818,
+      "type": "file"
+    },
+    {
+      "path": "src",
+      "accessCount": 10,
+      "lastAccessed": 1776090889490,
+      "type": "directory"
+    },
+    {
+      "path": "src/backend/fbdev.zig",
+      "accessCount": 7,
+      "lastAccessed": 1775831893467,
+      "type": "file"
+    },
+    {
+      "path": "src/backend/macos.zig",
+      "accessCount": 7,
+      "lastAccessed": 1775834823960,
+      "type": "file"
+    },
+    {
+      "path": "src/backend/wayland/seat.zig",
+      "accessCount": 3,
+      "lastAccessed": 1775832126275,
+      "type": "file"
+    },
+    {
+      "path": "src/font.zig",
+      "accessCount": 3,
+      "lastAccessed": 1776090656947,
+      "type": "directory"
+    },
+    {
+      "path": "src/backend/wayland",
+      "accessCount": 2,
+      "lastAccessed": 1775832127575,
+      "type": "directory"
+    },
+    {
+      "path": "src/render.zig",
+      "accessCount": 2,
+      "lastAccessed": 1776090656845,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1776092883776,
+      "type": "directory"
+    },
+    {
+      "path": "src/backend",
+      "accessCount": 1,
+      "lastAccessed": 1775831859061,
+      "type": "directory"
+    },
+    {
+      "path": "src/input.zig",
+      "accessCount": 1,
+      "lastAccessed": 1776090656825,
+      "type": "file"
+    },
+    {
+      "path": "src/pty.zig",
+      "accessCount": 1,
+      "lastAccessed": 1776090656895,
+      "type": "file"
+    },
+    {
+      "path": "config.zig",
+      "accessCount": 1,
+      "lastAccessed": 1776092960678,
+      "type": "directory"
+    }
+  ],
+  "userDirectives": []
+}

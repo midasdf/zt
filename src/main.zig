@@ -1421,6 +1421,9 @@ pub fn main() !void {
         if (term.sync_update) {
             if (sync_update_start_ns == 0) {
                 sync_update_start_ns = loop_now;
+                // Do not paint on the BSU frame — wait for ESU (or timeout) so the batch
+                // is not visibly torn across frames.
+                continue;
             } else if (std.time.nanoTimestamp() - sync_update_start_ns > 3_000_000_000) {
                 term.sync_update = false;
                 sync_update_start_ns = 0;

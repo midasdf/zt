@@ -1,0 +1,22 @@
+* [33m9404dce[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/codex/fix-terminal-edge-cases[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mcodex/fix-terminal-edge-cases[m[33m)[m Fix terminal edge cases
+* [33m924d90e[m Fix terminal edge cases
+* [33m892ef1f[m style: zig fmt wayland.zig and term.zig
+* [33m6ca3461[m[33m ([m[1;33mtag: [m[1;33mv0.6.0[m[33m)[m chore: bump version to 0.6.0
+* [33m41474b4[m fix(clipboard): pass XAUTHORITY to xclip child process
+* [33m23c550e[m feat(zt): add Ctrl+Shift+C keybind for copy selection to clipboard
+* [33mdfeaec3[m fix: use top-level MouseEvent in Wayland backend
+*   [33m17df28b[m Merge origin/main — resolve drainBackendEvents + MouseEvent conflicts
+[32m|[m[33m\[m  
+[32m|[m * [33m014b6bd[m fix: drain buffered backend events every loop (#27)
+* [33m|[m [33mf0d9302[m feat(zt): copy selected text to clipboard
+* [33m|[m [33m0e58fab[m feat(zt): implement terminal text selection with highlight
+* [33m|[m [33mf7cbe6c[m feat(zt): implement VT mouse encoding and event dispatch
+* [33m|[m [33m154988e[m feat(zt): handle Wayland mouse events (button/motion/axis)
+* [33m|[m [33mc7884b6[m feat(zt): handle X11 mouse events (press/release/motion)
+* [33m|[m [33m416c910[m feat(zt): add MouseEvent type and mouse mode state tracking
+[33m|[m[33m/[m  
+* [33mc5feace[m[33m ([m[1;33mtag: [m[1;33mv0.5.12[m[33m)[m chore: bump version to 0.5.12
+* [33m4d95607[m fix: フォーカス復帰時のカーソル点滅と応答性 (#26)
+* [33m47dc80c[m fix: Wayland 入力キュー溢れ + Linux/X11 epoll でのイベント滞留 (#25)
+* [33m1ba8b19[m chore: zig fmt, PTY test skip without /dev/ptmx, stricter CI fmt (#24)
+* [33m38146f6[m Revert dynamic buffers/queue from PR #23, keep wait4 fix

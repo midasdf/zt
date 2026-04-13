@@ -871,6 +871,11 @@ fn handleOsc8(param: []const u8, term: *Term) void {
     // OSC 8 ; params ; URI ST  (start hyperlink)
     // OSC 8 ; ; ST             (end hyperlink)
     // Format: params;URI — find second semicolon
+    if (param.len == 0) {
+        // Malformed / minimal "8;" — still clear an active hyperlink
+        term.current_hyperlink_id = 0;
+        return;
+    }
     const first_sep = std.mem.indexOfScalar(u8, param, ';') orelse return;
     const uri = param[first_sep + 1 ..];
 
@@ -2675,6 +2680,25 @@ test "OSC 8: hyperlink sets current_hyperlink_id" {
     try testing.expectEqual(@as(u16, 0), term.current_hyperlink_id);
 }
 
+test "OSC 8: bare semicolon payload clears hyperlink" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b]8;;https://example.com\x07") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expect(term.current_hyperlink_id != 0);
+
+    // OSC 8 ; ST — empty param after command separator
+    for ("\x1b]8;\x07") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expectEqual(@as(u16, 0), term.current_hyperlink_id);
+}
+
 test "OSC 8: hyperlink id written to cells" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
@@ -2716,6 +2740,26 @@ test "Bracketed paste mode tracked by DECSET 2004" {
         executeAction(action, &term);
     }
     try testing.expect(!term.bracketed_paste);
+}
+
+test "DECSET 2026 toggles synchronized output (sync_update)" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    try testing.expect(!term.sync_update);
+
+    for ("\x1b[?2026h") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expect(term.sync_update);
+
+    for ("\x1b[?2026l") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    try testing.expect(!term.sync_update);
 }
 
 test "Executor: terminal reset clears mouse tracking" {
