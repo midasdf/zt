@@ -1450,14 +1450,15 @@ pub fn main() !void {
         if (all_dirty) {
             const default_bg = render.palette[config.default_bg];
             const bg_packed = [4]u8{ default_bg.b, default_bg.g, default_bg.r, 0xFF };
-            const row_pixels = backend.getWidth();
+            const back_w = backend.getWidth();
+            const back_h = backend.getHeight();
             var py: u32 = 0;
-            while (py < backend.getHeight()) : (py += 1) {
+            while (py < back_h) : (py += 1) {
                 const row_offset = @as(usize, py) * @as(usize, stride);
                 const pixel_buf: [*][4]u8 = @ptrCast(buf.ptr + row_offset);
-                @memset(pixel_buf[0..row_pixels], bg_packed);
+                @memset(pixel_buf[0..back_w], bg_packed);
             }
-            backend.markDirtyRows(0, backend.getHeight() - 1);
+            backend.markDirtyRows(0, back_h - 1);
         }
 
         var y: u32 = 0;
@@ -1474,6 +1475,7 @@ pub fn main() !void {
             const row_ul = term.ul_color_rgb[row_base..][0..term.cols];
             const row_hl = term.hyperlink_ids[row_base..][0..term.cols];
             const dirty_row_base = @as(usize, y) * @as(usize, term.cols);
+            const sel_opt = term.selection;
 
             var x: u32 = 0;
             while (x < term.cols) : (x += 1) {
@@ -1486,14 +1488,19 @@ pub fn main() !void {
                 var bg_rgb = row_bg[x];
                 const ul_rgb = row_ul[x];
                 const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
-                const is_cursor = (x == term.cursor_x and y == term.cursor_y and term.cursor_visible and cursor_visible_blink);
+                const vis = term.cursor_visible and cursor_visible_blink;
+                const is_cursor = vis and term.cursor_y == y and (term.cursor_x == x or
+                    (cell.attrs.wide and x + 1 < term.cols and term.cursor_x == x + 1));
 
                 var render_cell = cell.*;
                 // Hyperlinked cells: show underline if not already underlined
                 if (row_hl[x] != 0 and render_cell.attrs.underline_style == 0) {
                     render_cell.attrs.underline_style = 1;
                 }
-                const in_selection = if (term.selection) |sel| sel.contains(x, y) else false;
+                const in_selection = if (sel_opt) |sel|
+                    sel.coversWideLeftCell(x, y, cell.attrs.wide, term.cols)
+                else
+                    false;
 
                 // Invert fg/bg for cursor or selection, but not both
                 // (double inversion cancels out, making cursor invisible)

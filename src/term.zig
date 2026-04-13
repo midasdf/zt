@@ -123,6 +123,14 @@ pub const Selection = struct {
         if (y == o.ey) return x <= o.ex;
         return true; // middle row
     }
+
+    /// True if selection covers logical cell (x,y) or, for a wide-char left half,
+    /// the right column (x+1) that shares the same glyph (render skips `wide_dummy`).
+    pub fn coversWideLeftCell(self: Selection, x: u32, y: u32, wide_left: bool, cols: u32) bool {
+        if (self.contains(x, y)) return true;
+        if (wide_left and x + 1 < cols and self.contains(x + 1, y)) return true;
+        return false;
+    }
 };
 
 pub const Term = struct {
@@ -1420,6 +1428,19 @@ test "Term: hasDirty with single bit" {
     try testing.expect(!term.hasDirty());
     term.markDirty(4, 1);
     try testing.expect(term.hasDirty());
+}
+
+test "Selection: coversWideLeftCell includes right column of wide glyph" {
+    const sel = Selection{
+        .start_x = 1,
+        .start_y = 0,
+        .end_x = 1,
+        .end_y = 0,
+        .active = false,
+    };
+    try testing.expect(!sel.contains(0, 0));
+    try testing.expect(sel.coversWideLeftCell(0, 0, true, 80));
+    try testing.expect(!sel.coversWideLeftCell(0, 0, false, 80));
 }
 
 test "Term: resize clamps selection to new grid" {
