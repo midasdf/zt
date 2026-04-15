@@ -68,23 +68,29 @@ inline fn mapErrno(e: linux.E, comptime mapping: []const ErrnoEntry) anyerror {
 }
 
 pub const WriteError = error{
-    WouldBlock, BrokenPipe, InputOutput, NoSpaceLeft,
-    DiskQuota, FileTooBig, ConnectionResetByPeer, Unexpected,
+    WouldBlock,
+    BrokenPipe,
+    InputOutput,
+    NoSpaceLeft,
+    DiskQuota,
+    FileTooBig,
+    ConnectionResetByPeer,
+    Unexpected,
 };
 
 const write_map = [_]ErrnoEntry{
-    .{ .AGAIN,       error.WouldBlock },
-    .{ .BADF,        error.Unexpected },
+    .{ .AGAIN, error.WouldBlock },
+    .{ .BADF, error.Unexpected },
     .{ .DESTADDRREQ, error.Unexpected },
-    .{ .DQUOT,       error.DiskQuota },
-    .{ .FAULT,       error.Unexpected },
-    .{ .FBIG,        error.FileTooBig },
-    .{ .INVAL,       error.Unexpected },
-    .{ .IO,          error.InputOutput },
-    .{ .NOSPC,       error.NoSpaceLeft },
-    .{ .PERM,        error.Unexpected },
-    .{ .PIPE,        error.BrokenPipe },
-    .{ .CONNRESET,   error.ConnectionResetByPeer },
+    .{ .DQUOT, error.DiskQuota },
+    .{ .FAULT, error.Unexpected },
+    .{ .FBIG, error.FileTooBig },
+    .{ .INVAL, error.Unexpected },
+    .{ .IO, error.InputOutput },
+    .{ .NOSPC, error.NoSpaceLeft },
+    .{ .PERM, error.Unexpected },
+    .{ .PIPE, error.BrokenPipe },
+    .{ .CONNRESET, error.ConnectionResetByPeer },
 };
 
 pub inline fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
@@ -194,8 +200,16 @@ pub inline fn getenv(key: []const u8) ?[]const u8 {
 }
 
 pub const ExecveError = error{
-    AccessDenied, FileNotFound, NotDir, NameTooLong,
-    SystemResources, InvalidExe, FileBusy, IsDir, SymLinkLoop, Unexpected,
+    AccessDenied,
+    FileNotFound,
+    NotDir,
+    NameTooLong,
+    SystemResources,
+    InvalidExe,
+    FileBusy,
+    IsDir,
+    SymLinkLoop,
+    Unexpected,
 };
 
 inline fn execveErrno(rc: usize) ExecveError {
@@ -240,7 +254,10 @@ pub inline fn execvpeZ(
         const err = execveErrno(linux.execve(full.ptr, argv, envp));
         switch (err) {
             error.FileNotFound, error.NotDir => continue,
-            error.AccessDenied => { last_err = err; continue; },
+            error.AccessDenied => {
+                last_err = err;
+                continue;
+            },
             else => return err,
         }
     }
@@ -261,8 +278,10 @@ pub inline fn kevent(
     if (builtin.os.tag == .macos) {
         const rc = std.c.kevent(
             kq,
-            changelist.ptr, @intCast(changelist.len),
-            eventlist.ptr,  @intCast(eventlist.len),
+            changelist.ptr,
+            @intCast(changelist.len),
+            eventlist.ptr,
+            @intCast(eventlist.len),
             timeout,
         );
         if (rc < 0) return error.Unexpected;
@@ -272,28 +291,40 @@ pub inline fn kevent(
 }
 
 pub const OpenError = error{
-    FileNotFound, AccessDenied, IsDir, NotDir, SymLinkLoop,
-    ProcessFdQuotaExceeded, SystemFdQuotaExceeded, NoDevice, NameTooLong,
-    SystemResources, NoSpaceLeft, FileTooBig, WouldBlock, BadPathName, Unexpected,
+    FileNotFound,
+    AccessDenied,
+    IsDir,
+    NotDir,
+    SymLinkLoop,
+    ProcessFdQuotaExceeded,
+    SystemFdQuotaExceeded,
+    NoDevice,
+    NameTooLong,
+    SystemResources,
+    NoSpaceLeft,
+    FileTooBig,
+    WouldBlock,
+    BadPathName,
+    Unexpected,
 };
 
 const open_map = [_]ErrnoEntry{
-    .{ .ACCES,       error.AccessDenied },
-    .{ .EXIST,       error.Unexpected },
-    .{ .FBIG,        error.FileTooBig },
-    .{ .OVERFLOW,    error.FileTooBig },
-    .{ .ISDIR,       error.IsDir },
-    .{ .LOOP,        error.SymLinkLoop },
-    .{ .MFILE,       error.ProcessFdQuotaExceeded },
-    .{ .NFILE,       error.SystemFdQuotaExceeded },
+    .{ .ACCES, error.AccessDenied },
+    .{ .EXIST, error.Unexpected },
+    .{ .FBIG, error.FileTooBig },
+    .{ .OVERFLOW, error.FileTooBig },
+    .{ .ISDIR, error.IsDir },
+    .{ .LOOP, error.SymLinkLoop },
+    .{ .MFILE, error.ProcessFdQuotaExceeded },
+    .{ .NFILE, error.SystemFdQuotaExceeded },
     .{ .NAMETOOLONG, error.NameTooLong },
-    .{ .NODEV,       error.NoDevice },
-    .{ .NOENT,       error.FileNotFound },
-    .{ .NOMEM,       error.SystemResources },
-    .{ .NOSPC,       error.NoSpaceLeft },
-    .{ .NOTDIR,      error.NotDir },
-    .{ .PERM,        error.AccessDenied },
-    .{ .AGAIN,       error.WouldBlock },
+    .{ .NODEV, error.NoDevice },
+    .{ .NOENT, error.FileNotFound },
+    .{ .NOMEM, error.SystemResources },
+    .{ .NOSPC, error.NoSpaceLeft },
+    .{ .NOTDIR, error.NotDir },
+    .{ .PERM, error.AccessDenied },
+    .{ .AGAIN, error.WouldBlock },
 };
 
 pub inline fn open(path: []const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
@@ -335,9 +366,9 @@ pub inline fn fcntl(fd: fd_t, cmd: i32, arg: usize) FcntlError!i32 {
 pub const TruncateError = error{ FileTooBig, InputOutput, AccessDenied, Unexpected };
 
 const ftruncate_map = [_]ErrnoEntry{
-    .{ .FBIG,  error.FileTooBig },
-    .{ .IO,    error.InputOutput },
-    .{ .PERM,  error.AccessDenied },
+    .{ .FBIG, error.FileTooBig },
+    .{ .IO, error.InputOutput },
+    .{ .PERM, error.AccessDenied },
     .{ .ACCES, error.AccessDenied },
 };
 
@@ -350,20 +381,26 @@ pub inline fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
 }
 
 pub const SocketError = error{
-    AddressFamilyNotSupported, ProtocolFamilyNotAvailable,
-    ProcessFdQuotaExceeded, SystemFdQuotaExceeded, SystemResources,
-    ProtocolNotSupported, SocketTypeNotSupported, PermissionDenied, Unexpected,
+    AddressFamilyNotSupported,
+    ProtocolFamilyNotAvailable,
+    ProcessFdQuotaExceeded,
+    SystemFdQuotaExceeded,
+    SystemResources,
+    ProtocolNotSupported,
+    SocketTypeNotSupported,
+    PermissionDenied,
+    Unexpected,
 };
 
 const socket_map = [_]ErrnoEntry{
-    .{ .AFNOSUPPORT,    error.AddressFamilyNotSupported },
-    .{ .MFILE,          error.ProcessFdQuotaExceeded },
-    .{ .NFILE,          error.SystemFdQuotaExceeded },
-    .{ .NOBUFS,         error.SystemResources },
-    .{ .NOMEM,          error.SystemResources },
+    .{ .AFNOSUPPORT, error.AddressFamilyNotSupported },
+    .{ .MFILE, error.ProcessFdQuotaExceeded },
+    .{ .NFILE, error.SystemFdQuotaExceeded },
+    .{ .NOBUFS, error.SystemResources },
+    .{ .NOMEM, error.SystemResources },
     .{ .PROTONOSUPPORT, error.ProtocolNotSupported },
-    .{ .PROTOTYPE,      error.SocketTypeNotSupported },
-    .{ .ACCES,          error.PermissionDenied },
+    .{ .PROTOTYPE, error.SocketTypeNotSupported },
+    .{ .ACCES, error.PermissionDenied },
 };
 
 pub inline fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!fd_t {
@@ -375,25 +412,34 @@ pub inline fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!f
 }
 
 pub const ConnectError = error{
-    PermissionDenied, AddressInUse, AddressNotAvailable, AddressFamilyNotSupported,
-    AlreadyConnected, ConnectionRefused, ConnectionResetByPeer, ConnectionTimedOut,
-    NetworkUnreachable, FileNotFound, WouldBlock, Unexpected,
+    PermissionDenied,
+    AddressInUse,
+    AddressNotAvailable,
+    AddressFamilyNotSupported,
+    AlreadyConnected,
+    ConnectionRefused,
+    ConnectionResetByPeer,
+    ConnectionTimedOut,
+    NetworkUnreachable,
+    FileNotFound,
+    WouldBlock,
+    Unexpected,
 };
 
 const connect_map = [_]ErrnoEntry{
-    .{ .ACCES,        error.PermissionDenied },
-    .{ .PERM,         error.PermissionDenied },
-    .{ .ADDRINUSE,    error.AddressInUse },
+    .{ .ACCES, error.PermissionDenied },
+    .{ .PERM, error.PermissionDenied },
+    .{ .ADDRINUSE, error.AddressInUse },
     .{ .ADDRNOTAVAIL, error.AddressNotAvailable },
-    .{ .AFNOSUPPORT,  error.AddressFamilyNotSupported },
-    .{ .ISCONN,       error.AlreadyConnected },
-    .{ .CONNREFUSED,  error.ConnectionRefused },
-    .{ .CONNRESET,    error.ConnectionResetByPeer },
-    .{ .TIMEDOUT,     error.ConnectionTimedOut },
-    .{ .NETUNREACH,   error.NetworkUnreachable },
-    .{ .NOENT,        error.FileNotFound },
-    .{ .AGAIN,        error.WouldBlock },
-    .{ .INPROGRESS,   error.WouldBlock },
+    .{ .AFNOSUPPORT, error.AddressFamilyNotSupported },
+    .{ .ISCONN, error.AlreadyConnected },
+    .{ .CONNREFUSED, error.ConnectionRefused },
+    .{ .CONNRESET, error.ConnectionResetByPeer },
+    .{ .TIMEDOUT, error.ConnectionTimedOut },
+    .{ .NETUNREACH, error.NetworkUnreachable },
+    .{ .NOENT, error.FileNotFound },
+    .{ .AGAIN, error.WouldBlock },
+    .{ .INPROGRESS, error.WouldBlock },
 };
 
 pub inline fn connect(sockfd: fd_t, sock_addr: *const anyopaque, len: u32) ConnectError!void {
