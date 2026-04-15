@@ -2894,3 +2894,32 @@ test "CUP respects DECOM origin mode" {
     try testing.expectEqual(@as(u32, 0), term.cursor_x);
     try testing.expectEqual(@as(u32, 4), term.cursor_y); // row 5 (0-indexed = 4)
 }
+
+test "Fuzz: random byte sequences do not panic or leak" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    var prng = std.Random.DefaultPrng.init(0xDEADBEEF_CAFEBABE);
+    const random = prng.random();
+
+    var iter: usize = 0;
+    while (iter < 10_000) : (iter += 1) {
+        const len = random.intRangeAtMost(usize, 1, 256);
+        var buf: [256]u8 = undefined;
+        random.bytes(buf[0..len]);
+        for (buf[0..len]) |byte| {
+            const action = parser.feed(byte);
+            executeAction(action, &term);
+        }
+    }
+
+    // RIS — parser must return cleanly to ground state
+    for ("\x1bc") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Verify ground state by feeding plain ASCII and expecting print
+    const after_reset = parser.feed('A');
+    try testing.expect(after_reset == .print);
+}
