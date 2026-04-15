@@ -908,7 +908,7 @@ fn drainBackendEvents(
 // Main
 // =============================================================================
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     // Debug: GPA for leak detection; Release: lightweight allocator
     var gpa = if (builtin.mode == .Debug)
         std.heap.DebugAllocator(.{}){}
@@ -926,8 +926,9 @@ pub fn main() !void {
     // 0. Parse command-line arguments
     var exec_argv: ?[]const [:0]const u8 = null;
     var embed_window: u32 = 0;
-    const args = std.process.argsAlloc(allocator) catch null;
-    defer if (args) |a| std.process.argsFree(allocator, a);
+    var args_arena = std.heap.ArenaAllocator.init(allocator);
+    defer args_arena.deinit();
+    const args = init.args.toSlice(args_arena.allocator()) catch null;
     if (args) |argv| {
         var i: usize = 1; // skip argv[0]
         while (i < argv.len) : (i += 1) {
