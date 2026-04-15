@@ -55,38 +55,46 @@ pub const unexpectedErrno = std.posix.unexpectedErrno;
 //   waitpid      — verified absent in 0.16 stdlib; pty.zig uses raw syscall correctly
 const linux_only_msg = "posix shim: this wrapper is Linux-only; macOS port pending";
 
+// Errno helper: comptime (errno → error) lookup table used by all switch-heavy
+// wrappers. Each entry is .{ linux.E tag, anyerror value }. The caller's declared
+// return type constrains the visible set; @errorCast bridges anyerror at runtime.
+const ErrnoEntry = struct { linux.E, anyerror };
+
+inline fn mapErrno(e: linux.E, comptime mapping: []const ErrnoEntry) anyerror {
+    inline for (mapping) |entry| {
+        if (e == entry[0]) return entry[1];
+    }
+    return std.posix.unexpectedErrno(e);
+}
+
 pub const WriteError = error{
-    WouldBlock,
-    BrokenPipe,
-    InputOutput,
-    NoSpaceLeft,
-    DiskQuota,
-    FileTooBig,
-    ConnectionResetByPeer,
-    Unexpected,
+    WouldBlock, BrokenPipe, InputOutput, NoSpaceLeft,
+    DiskQuota, FileTooBig, ConnectionResetByPeer, Unexpected,
+};
+
+const write_map = [_]ErrnoEntry{
+    .{ .AGAIN,       error.WouldBlock },
+    .{ .BADF,        error.Unexpected },
+    .{ .DESTADDRREQ, error.Unexpected },
+    .{ .DQUOT,       error.DiskQuota },
+    .{ .FAULT,       error.Unexpected },
+    .{ .FBIG,        error.FileTooBig },
+    .{ .INVAL,       error.Unexpected },
+    .{ .IO,          error.InputOutput },
+    .{ .NOSPC,       error.NoSpaceLeft },
+    .{ .PERM,        error.Unexpected },
+    .{ .PIPE,        error.BrokenPipe },
+    .{ .CONNRESET,   error.ConnectionResetByPeer },
 };
 
 pub inline fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     while (true) {
         const rc = linux.write(fd, bytes.ptr, bytes.len);
-        switch (linux.errno(rc)) {
-            .SUCCESS => return @intCast(rc),
-            .INTR => continue, // std.posix.write semantics — retry transparently
-            .AGAIN => return error.WouldBlock,
-            .BADF => return error.Unexpected,
-            .DESTADDRREQ => return error.Unexpected,
-            .DQUOT => return error.DiskQuota,
-            .FAULT => unreachable,
-            .FBIG => return error.FileTooBig,
-            .INVAL => return error.Unexpected,
-            .IO => return error.InputOutput,
-            .NOSPC => return error.NoSpaceLeft,
-            .PERM => return error.Unexpected,
-            .PIPE => return error.BrokenPipe,
-            .CONNRESET => return error.ConnectionResetByPeer,
-            else => |err| return std.posix.unexpectedErrno(err),
-        }
+        const e = linux.errno(rc);
+        if (e == .SUCCESS) return @intCast(rc);
+        if (e == .INTR) continue; // retry transparently, std.posix.write semantics
+        return @errorCast(mapErrno(e, &write_map));
     }
 }
 
@@ -97,40 +105,42 @@ pub inline fn close(fd: fd_t) void {
 
 pub const PipeError = error{ SystemFdQuotaExceeded, ProcessFdQuotaExceeded, Unexpected };
 
+const pipe_map = [_]ErrnoEntry{
+    .{ .MFILE, error.ProcessFdQuotaExceeded },
+    .{ .NFILE, error.SystemFdQuotaExceeded },
+};
+
 pub inline fn pipe() PipeError![2]fd_t {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var fds: [2]i32 = undefined;
     const rc = linux.pipe(&fds);
-    return switch (linux.errno(rc)) {
-        .SUCCESS => fds,
-        .MFILE => error.ProcessFdQuotaExceeded,
-        .NFILE => error.SystemFdQuotaExceeded,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return fds;
+    return @errorCast(mapErrno(e, &pipe_map));
 }
 
 pub inline fn pipe2(flags: linux.O) PipeError![2]fd_t {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var fds: [2]i32 = undefined;
     const rc = linux.pipe2(&fds, flags);
-    return switch (linux.errno(rc)) {
-        .SUCCESS => fds,
-        .MFILE => error.ProcessFdQuotaExceeded,
-        .NFILE => error.SystemFdQuotaExceeded,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return fds;
+    return @errorCast(mapErrno(e, &pipe_map));
 }
 
 pub const ForkError = error{ SystemResources, Unexpected };
 
+const fork_map = [_]ErrnoEntry{
+    .{ .AGAIN, error.SystemResources },
+    .{ .NOMEM, error.SystemResources },
+};
+
 pub inline fn fork() ForkError!linux.pid_t {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.fork();
-    return switch (linux.errno(rc)) {
-        .SUCCESS => @intCast(@as(isize, @bitCast(rc))),
-        .AGAIN, .NOMEM => error.SystemResources,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return @intCast(@as(isize, @bitCast(rc)));
+    return @errorCast(mapErrno(e, &fork_map));
 }
 
 pub const Dup2Error = error{Unexpected};
@@ -184,16 +194,8 @@ pub inline fn getenv(key: []const u8) ?[]const u8 {
 }
 
 pub const ExecveError = error{
-    AccessDenied,
-    FileNotFound,
-    NotDir,
-    NameTooLong,
-    SystemResources,
-    InvalidExe,
-    FileBusy,
-    IsDir,
-    SymLinkLoop,
-    Unexpected,
+    AccessDenied, FileNotFound, NotDir, NameTooLong,
+    SystemResources, InvalidExe, FileBusy, IsDir, SymLinkLoop, Unexpected,
 };
 
 inline fn execveErrno(rc: usize) ExecveError {
@@ -222,47 +224,31 @@ pub inline fn execvpeZ(
 ) ExecveError {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const file_slice = std.mem.span(file);
-
-    // If the path contains a slash, treat as literal — no PATH walk.
     if (std.mem.indexOfScalar(u8, file_slice, '/') != null) {
         return execveErrno(linux.execve(file, argv, envp));
     }
-
     const path = getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     var it = std.mem.splitScalar(u8, path, ':');
     var last_err: ExecveError = error.FileNotFound;
     while (it.next()) |dir| {
-        // Skip empty PATH entries (do NOT treat as CWD — hostile-CWD hardening).
-        if (dir.len == 0) continue;
+        if (dir.len == 0) continue; // skip empty PATH entries (hostile-CWD hardening)
         const full = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, file_slice }) catch {
             last_err = error.NameTooLong;
             continue;
         };
         const err = execveErrno(linux.execve(full.ptr, argv, envp));
         switch (err) {
-            // Recoverable — keep walking PATH.
             error.FileNotFound, error.NotDir => continue,
-            error.AccessDenied => {
-                // Remember EACCES but keep looking; std.posix returns EACCES
-                // only if no other entry succeeded.
-                last_err = err;
-                continue;
-            },
-            // Unrecoverable — surface immediately so caller sees real cause.
+            error.AccessDenied => { last_err = err; continue; },
             else => return err,
         }
     }
     return last_err;
 }
 
-// kqueue/kevent — macOS only. Stubs on Linux keep the file semantically valid
-// but any call on Linux is a comptime reachability error at the call site,
-// which zt already gates on builtin.os.tag.
 pub inline fn kqueue() !i32 {
-    if (builtin.os.tag == .macos) {
-        return @intCast(std.c.kqueue());
-    }
+    if (builtin.os.tag == .macos) return @intCast(std.c.kqueue());
     @compileError("kqueue is macOS-only");
 }
 
@@ -275,10 +261,8 @@ pub inline fn kevent(
     if (builtin.os.tag == .macos) {
         const rc = std.c.kevent(
             kq,
-            changelist.ptr,
-            @intCast(changelist.len),
-            eventlist.ptr,
-            @intCast(eventlist.len),
+            changelist.ptr, @intCast(changelist.len),
+            eventlist.ptr,  @intCast(eventlist.len),
             timeout,
         );
         if (rc < 0) return error.Unexpected;
@@ -288,21 +272,28 @@ pub inline fn kevent(
 }
 
 pub const OpenError = error{
-    FileNotFound,
-    AccessDenied,
-    IsDir,
-    NotDir,
-    SymLinkLoop,
-    ProcessFdQuotaExceeded,
-    SystemFdQuotaExceeded,
-    NoDevice,
-    NameTooLong,
-    SystemResources,
-    NoSpaceLeft,
-    FileTooBig,
-    WouldBlock,
-    BadPathName,
-    Unexpected,
+    FileNotFound, AccessDenied, IsDir, NotDir, SymLinkLoop,
+    ProcessFdQuotaExceeded, SystemFdQuotaExceeded, NoDevice, NameTooLong,
+    SystemResources, NoSpaceLeft, FileTooBig, WouldBlock, BadPathName, Unexpected,
+};
+
+const open_map = [_]ErrnoEntry{
+    .{ .ACCES,       error.AccessDenied },
+    .{ .EXIST,       error.Unexpected },
+    .{ .FBIG,        error.FileTooBig },
+    .{ .OVERFLOW,    error.FileTooBig },
+    .{ .ISDIR,       error.IsDir },
+    .{ .LOOP,        error.SymLinkLoop },
+    .{ .MFILE,       error.ProcessFdQuotaExceeded },
+    .{ .NFILE,       error.SystemFdQuotaExceeded },
+    .{ .NAMETOOLONG, error.NameTooLong },
+    .{ .NODEV,       error.NoDevice },
+    .{ .NOENT,       error.FileNotFound },
+    .{ .NOMEM,       error.SystemResources },
+    .{ .NOSPC,       error.NoSpaceLeft },
+    .{ .NOTDIR,      error.NotDir },
+    .{ .PERM,        error.AccessDenied },
+    .{ .AGAIN,       error.WouldBlock },
 };
 
 pub inline fn open(path: []const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
@@ -314,98 +305,101 @@ pub inline fn open(path: []const u8, flags: linux.O, mode: linux.mode_t) OpenErr
     return openZ(@ptrCast(buf[0..path.len :0]), flags, mode);
 }
 
+pub inline fn openZ(path: [*:0]const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+    const rc = linux.open(path, flags, mode);
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return @intCast(rc);
+    return @errorCast(mapErrno(e, &open_map));
+}
+
 pub const FcntlError = error{ Locked, ProcessFdQuotaExceeded, SystemFdQuotaExceeded, Unexpected };
 
+const fcntl_map = [_]ErrnoEntry{
+    .{ .ACCES, error.Locked },
+    .{ .AGAIN, error.Locked },
+    .{ .MFILE, error.ProcessFdQuotaExceeded },
+};
+
 /// Returns the cmd-specific result on success (e.g. `F_GETFL` flags word).
-/// Truncates the raw `usize` syscall return to `i32` to match the kernel
-/// fcntl ABI and avoid leaking sign-extended errno-encoded `usize` values
-/// into call sites that mask flags.
+/// Truncates the raw `usize` return to `i32` to match the kernel fcntl ABI
+/// and avoid leaking sign-extended errno-encoded values into flag-masking callers.
 pub inline fn fcntl(fd: fd_t, cmd: i32, arg: usize) FcntlError!i32 {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.fcntl(fd, cmd, arg);
-    return switch (linux.errno(rc)) {
-        .SUCCESS => @bitCast(@as(u32, @truncate(rc))),
-        .ACCES, .AGAIN => error.Locked,
-        .MFILE => error.ProcessFdQuotaExceeded,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return @bitCast(@as(u32, @truncate(rc)));
+    return @errorCast(mapErrno(e, &fcntl_map));
 }
 
 pub const TruncateError = error{ FileTooBig, InputOutput, AccessDenied, Unexpected };
 
+const ftruncate_map = [_]ErrnoEntry{
+    .{ .FBIG,  error.FileTooBig },
+    .{ .IO,    error.InputOutput },
+    .{ .PERM,  error.AccessDenied },
+    .{ .ACCES, error.AccessDenied },
+};
+
 pub inline fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.ftruncate(fd, @intCast(length));
-    return switch (linux.errno(rc)) {
-        .SUCCESS => {},
-        .FBIG => error.FileTooBig,
-        .IO => error.InputOutput,
-        .PERM, .ACCES => error.AccessDenied,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return;
+    return @errorCast(mapErrno(e, &ftruncate_map));
 }
 
-pub const SocketError = error{ AddressFamilyNotSupported, ProtocolFamilyNotAvailable, ProcessFdQuotaExceeded, SystemFdQuotaExceeded, SystemResources, ProtocolNotSupported, SocketTypeNotSupported, PermissionDenied, Unexpected };
+pub const SocketError = error{
+    AddressFamilyNotSupported, ProtocolFamilyNotAvailable,
+    ProcessFdQuotaExceeded, SystemFdQuotaExceeded, SystemResources,
+    ProtocolNotSupported, SocketTypeNotSupported, PermissionDenied, Unexpected,
+};
+
+const socket_map = [_]ErrnoEntry{
+    .{ .AFNOSUPPORT,    error.AddressFamilyNotSupported },
+    .{ .MFILE,          error.ProcessFdQuotaExceeded },
+    .{ .NFILE,          error.SystemFdQuotaExceeded },
+    .{ .NOBUFS,         error.SystemResources },
+    .{ .NOMEM,          error.SystemResources },
+    .{ .PROTONOSUPPORT, error.ProtocolNotSupported },
+    .{ .PROTOTYPE,      error.SocketTypeNotSupported },
+    .{ .ACCES,          error.PermissionDenied },
+};
 
 pub inline fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!fd_t {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.socket(domain, socket_type, protocol);
-    return switch (linux.errno(rc)) {
-        .SUCCESS => @intCast(rc),
-        .AFNOSUPPORT => error.AddressFamilyNotSupported,
-        .MFILE => error.ProcessFdQuotaExceeded,
-        .NFILE => error.SystemFdQuotaExceeded,
-        .NOBUFS, .NOMEM => error.SystemResources,
-        .PROTONOSUPPORT => error.ProtocolNotSupported,
-        .PROTOTYPE => error.SocketTypeNotSupported,
-        .ACCES => error.PermissionDenied,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return @intCast(rc);
+    return @errorCast(mapErrno(e, &socket_map));
 }
 
-pub const ConnectError = error{ PermissionDenied, AddressInUse, AddressNotAvailable, AddressFamilyNotSupported, AlreadyConnected, ConnectionRefused, ConnectionResetByPeer, ConnectionTimedOut, NetworkUnreachable, FileNotFound, WouldBlock, Unexpected };
+pub const ConnectError = error{
+    PermissionDenied, AddressInUse, AddressNotAvailable, AddressFamilyNotSupported,
+    AlreadyConnected, ConnectionRefused, ConnectionResetByPeer, ConnectionTimedOut,
+    NetworkUnreachable, FileNotFound, WouldBlock, Unexpected,
+};
+
+const connect_map = [_]ErrnoEntry{
+    .{ .ACCES,        error.PermissionDenied },
+    .{ .PERM,         error.PermissionDenied },
+    .{ .ADDRINUSE,    error.AddressInUse },
+    .{ .ADDRNOTAVAIL, error.AddressNotAvailable },
+    .{ .AFNOSUPPORT,  error.AddressFamilyNotSupported },
+    .{ .ISCONN,       error.AlreadyConnected },
+    .{ .CONNREFUSED,  error.ConnectionRefused },
+    .{ .CONNRESET,    error.ConnectionResetByPeer },
+    .{ .TIMEDOUT,     error.ConnectionTimedOut },
+    .{ .NETUNREACH,   error.NetworkUnreachable },
+    .{ .NOENT,        error.FileNotFound },
+    .{ .AGAIN,        error.WouldBlock },
+    .{ .INPROGRESS,   error.WouldBlock },
+};
 
 pub inline fn connect(sockfd: fd_t, sock_addr: *const anyopaque, len: u32) ConnectError!void {
     if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.connect(sockfd, sock_addr, len);
-    return switch (linux.errno(rc)) {
-        .SUCCESS => {},
-        .ACCES, .PERM => error.PermissionDenied,
-        .ADDRINUSE => error.AddressInUse,
-        .ADDRNOTAVAIL => error.AddressNotAvailable,
-        .AFNOSUPPORT => error.AddressFamilyNotSupported,
-        .ISCONN => error.AlreadyConnected,
-        .CONNREFUSED => error.ConnectionRefused,
-        .CONNRESET => error.ConnectionResetByPeer,
-        .TIMEDOUT => error.ConnectionTimedOut,
-        .NETUNREACH => error.NetworkUnreachable,
-        .NOENT => error.FileNotFound,
-        .AGAIN, .INPROGRESS => error.WouldBlock,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
-}
-
-pub inline fn openZ(path: [*:0]const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
-    const rc = linux.open(path, flags, mode);
-    return switch (linux.errno(rc)) {
-        .SUCCESS => @intCast(rc),
-        .ACCES => error.AccessDenied,
-        .EXIST => error.Unexpected,
-        .FBIG => error.FileTooBig,
-        .OVERFLOW => error.FileTooBig,
-        .ISDIR => error.IsDir,
-        .LOOP => error.SymLinkLoop,
-        .MFILE => error.ProcessFdQuotaExceeded,
-        .NFILE => error.SystemFdQuotaExceeded,
-        .NAMETOOLONG => error.NameTooLong,
-        .NODEV => error.NoDevice,
-        .NOENT => error.FileNotFound,
-        .NOMEM => error.SystemResources,
-        .NOSPC => error.NoSpaceLeft,
-        .NOTDIR => error.NotDir,
-        .PERM => error.AccessDenied,
-        .AGAIN => error.WouldBlock,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    const e = linux.errno(rc);
+    if (e == .SUCCESS) return;
+    return @errorCast(mapErrno(e, &connect_map));
 }
