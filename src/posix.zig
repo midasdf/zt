@@ -38,6 +38,21 @@ pub const unexpectedErrno = std.posix.unexpectedErrno;
 // All functions below are Linux-only — the Zig 0.16 stdlib still uses these
 // platform-specific syscall wrappers. macOS targets must be ported separately
 // (kqueue/kevent above are the only macOS-aware shims here).
+//
+// Audit against /lib/std/posix.zig @ Zig 0.16.0 (1686 lines):
+//   write        — verified absent in 0.16 stdlib; hand-rolled required
+//   close        — verified absent in 0.16 stdlib; hand-rolled required
+//   pipe/pipe2   — verified absent in 0.16 stdlib; hand-rolled required
+//   fork         — verified absent in 0.16 stdlib; hand-rolled required
+//   dup2         — verified absent in 0.16 stdlib; hand-rolled required
+//   open/openZ   — verified absent in 0.16 stdlib (replaced by openat/openatZ); hand-rolled required
+//   fcntl        — verified absent in 0.16 stdlib; hand-rolled required
+//   ftruncate    — verified absent in 0.16 stdlib; hand-rolled required
+//   socket       — verified absent in 0.16 stdlib; hand-rolled required
+//   connect      — verified absent in 0.16 stdlib; hand-rolled required
+//   execvpeZ     — verified absent in 0.16 stdlib; hand-rolled required
+//   sleep        — verified absent in 0.16 stdlib (std.Thread.sleep also removed); hand-rolled required
+//   waitpid      — verified absent in 0.16 stdlib; pty.zig uses raw syscall correctly
 const linux_only_msg = "posix shim: this wrapper is Linux-only; macOS port pending";
 
 pub const WriteError = error{
@@ -218,8 +233,9 @@ pub inline fn execvpeZ(
     var it = std.mem.splitScalar(u8, path, ':');
     var last_err: ExecveError = error.FileNotFound;
     while (it.next()) |dir| {
-        const dir_use = if (dir.len == 0) "." else dir;
-        const full = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir_use, file_slice }) catch {
+        // Skip empty PATH entries (do NOT treat as CWD — hostile-CWD hardening).
+        if (dir.len == 0) continue;
+        const full = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, file_slice }) catch {
             last_err = error.NameTooLong;
             continue;
         };

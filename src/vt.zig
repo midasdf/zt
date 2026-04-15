@@ -284,13 +284,18 @@ pub const Parser = struct {
                 if (idx < 16) {
                     const si = self.sub_param_counts[idx];
                     if (si < 5) {
-                        self.sub_params[idx][si] = self.sub_params[idx][si] *| 10 +| (byte - '0');
+                        // Stop accumulating once saturated to avoid silent corruption of large values.
+                        if (self.sub_params[idx][si] < 0xffff) {
+                            self.sub_params[idx][si] = self.sub_params[idx][si] *| 10 +| (byte - '0');
+                        }
                     }
                 }
             } else {
                 const idx = self.param_count;
                 if (idx < 16) {
-                    self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
+                    if (self.params[idx] < 0xffff) {
+                        self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
+                    }
                 }
             }
             return .none;
@@ -867,6 +872,16 @@ fn handleOsc52(_: []const u8, _: *Term) void {
     // TODO: add a CLI flag (e.g. --allow-osc52) to opt in.
 }
 
+// OSC 8 URI scheme allowlist — drop hyperlinks with unknown/dangerous schemes.
+const osc8_allowed_schemes = [_][]const u8{ "http://", "https://", "file://", "mailto:" };
+
+fn osc8UriAllowed(uri: []const u8) bool {
+    for (osc8_allowed_schemes) |scheme| {
+        if (uri.len >= scheme.len and std.ascii.eqlIgnoreCase(uri[0..scheme.len], scheme)) return true;
+    }
+    return false;
+}
+
 fn handleOsc8(param: []const u8, term: *Term) void {
     // OSC 8 ; params ; URI ST  (start hyperlink)
     // OSC 8 ; ; ST             (end hyperlink)
@@ -877,16 +892,32 @@ fn handleOsc8(param: []const u8, term: *Term) void {
         return;
     }
     const first_sep = std.mem.indexOfScalar(u8, param, ';') orelse return;
-    const uri = param[first_sep + 1 ..];
+    const raw_uri = param[first_sep + 1 ..];
 
-    if (uri.len == 0) {
+    if (raw_uri.len == 0) {
         // End hyperlink
         term.current_hyperlink_id = 0;
         return;
     }
 
-    // Start hyperlink — find or create entry
-    const max_len = @min(uri.len, @as(usize, 512));
+    // Strip C0/DEL bytes from URI (mirrors OSC 0/2 title sanitization).
+    var sanitized: [512]u8 = undefined;
+    var slen: usize = 0;
+    for (raw_uri) |b| {
+        if (b < 0x20 or b == 0x7f) continue;
+        if (slen >= sanitized.len) break;
+        sanitized[slen] = b;
+        slen += 1;
+    }
+    const uri = sanitized[0..slen];
+
+    // Reject URIs whose scheme is not in the allowlist.
+    if (uri.len == 0 or !osc8UriAllowed(uri)) {
+        term.current_hyperlink_id = 0;
+        return;
+    }
+
+    const max_len = uri.len;
 
     // Search existing entries
     for (&term.hyperlink_table, 0..) |*entry, idx| {
@@ -906,6 +937,13 @@ fn handleOsc8(param: []const u8, term: *Term) void {
     if (term.hyperlink_table[slot].len > 0) {
         for (term.hyperlink_ids) |*hid| {
             if (hid.* == old_id) hid.* = 0;
+        }
+        // Also scan the alt-screen buffer if allocated, otherwise stale IDs
+        // there would render with the new URL after \e[?1049h.
+        if (term.alt_hyperlink_ids) |alt_ids| {
+            for (alt_ids) |*hid| {
+                if (hid.* == old_id) hid.* = 0;
+            }
         }
     }
     term.hyperlink_table[slot].len = @intCast(max_len);

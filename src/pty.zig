@@ -12,11 +12,7 @@ comptime {
     }
 }
 
-const c = if (is_macos) @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-}) else struct {};
+const c = if (is_macos) @import("c_pty_macos") else struct {};
 
 // ioctl constants — stored as u32 for Linux (linux.ioctl takes u32).
 // On macOS, std.c.ioctl takes c_int, so callers use @bitCast(TIOCSWINSZ)
@@ -295,12 +291,40 @@ pub const Pty = struct {
         posix.kill(self.child_pid, posix.SIG.TERM) catch {};
         posix.close(self.master_fd);
         // Use WNOHANG: child may already be reaped by SIGCHLD handler.
-        // Use raw syscall because posix.waitpid panics on ECHILD.
-        if (is_linux) {
-            // wait4(pid, NULL, WNOHANG, NULL)
-            _ = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, linux.W.NOHANG, 0);
-        } else {
-            _ = std.c.waitpid(self.child_pid, null, 1); // WNOHANG=1
+        // Use raw syscall: std.posix.waitpid is absent from Zig 0.16 stdlib (verified).
+        // Poll up to 5 times (50ms each) for child to exit after SIGTERM.
+        var reaped = false;
+        for (0..5) |_| {
+            posix.sleep(50 * std.time.ns_per_ms);
+            if (is_linux) {
+                const rc = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, linux.W.NOHANG, 0);
+                const err = linux.errno(rc);
+                if (err == .SUCCESS or err == .CHILD) {
+                    reaped = true;
+                    break;
+                }
+            } else {
+                const rc = std.c.waitpid(self.child_pid, null, 1); // WNOHANG=1
+                if (rc > 0) {
+                    reaped = true;
+                    break;
+                }
+                if (std.c.getErrno(rc) == .CHILD) {
+                    reaped = true;
+                    break;
+                }
+            }
+        }
+        if (!reaped) {
+            // Child survived SIGTERM; escalate to SIGKILL (unblockable).
+            posix.kill(self.child_pid, posix.SIG.KILL) catch {};
+            // Blocking wait — SIGKILL delivery is immediate so this returns quickly.
+            // ECHILD means SIGCHLD handler already reaped it; either way we're done.
+            if (is_linux) {
+                _ = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, 0, 0);
+            } else {
+                _ = std.c.waitpid(self.child_pid, null, 0);
+            }
         }
     }
 

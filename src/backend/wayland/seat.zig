@@ -9,9 +9,7 @@ const wire = @import("wire.zig");
 const core = @import("core.zig");
 const input_mod = @import("../../input.zig");
 
-const c = @cImport({
-    @cInclude("xkbcommon/xkbcommon.h");
-});
+const c = @import("c_xkb");
 
 // ============================================================================
 // Protocol opcodes

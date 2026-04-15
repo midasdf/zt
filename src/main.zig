@@ -555,15 +555,31 @@ fn handleBackendEvent(
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
             const text = paste_ev.slice();
             if (text.len > 0) {
-                // Wrap paste in bracketed paste sequences if application enabled DECSET 2004
                 if (term.bracketed_paste) {
+                    // Bracketed paste mode: wrap in \x1b[200~ / \x1b[201~ framing.
+                    // Strip any embedded \x1b[201~ (end-of-paste marker) from the
+                    // clipboard payload to prevent injection: an attacker-controlled
+                    // string containing \x1b[201~<cmd>\n would close the paste window
+                    // early and have the remainder interpreted as typed input.
                     if (!ptyBufferedWrite(pty_ptr, "\x1b[200~", write_buf, write_pending, evloop_fd)) return false;
-                }
-                if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) {
-                    return false;
-                }
-                if (term.bracketed_paste) {
+                    const marker = "\x1b[201~";
+                    var rest = text;
+                    while (rest.len > 0) {
+                        if (std.mem.indexOf(u8, rest, marker)) |idx| {
+                            // Write span before the marker, skip the marker itself.
+                            if (idx > 0) {
+                                if (!ptyBufferedWrite(pty_ptr, rest[0..idx], write_buf, write_pending, evloop_fd)) return false;
+                            }
+                            rest = rest[idx + marker.len ..];
+                        } else {
+                            if (!ptyBufferedWrite(pty_ptr, rest, write_buf, write_pending, evloop_fd)) return false;
+                            break;
+                        }
+                    }
                     if (!ptyBufferedWrite(pty_ptr, "\x1b[201~", write_buf, write_pending, evloop_fd)) return false;
+                } else {
+                    // Non-bracketed mode: forward raw paste without framing.
+                    if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) return false;
                 }
             }
         },
@@ -1037,9 +1053,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
             const new_cols = actual.w / config.cell_width;
             const new_rows = actual.h / config.cell_height;
             if (new_cols > 0 and new_rows > 0) {
-                term.resize(new_cols, new_rows) catch {};
-                pty.resize(@intCast(@min(new_cols, 65535)), @intCast(@min(new_rows, 65535))) catch {};
-                backend.resize(actual.w, actual.h) catch {};
+                // Save old size for rollback in case term.resize fails (OOM).
+                const old_cols = term.cols;
+                const old_rows = term.rows;
+                term.resize(new_cols, new_rows) catch |err| {
+                    std.log.err("geometry-sync term resize failed: {}", .{err});
+                    return err;
+                };
+                pty.resize(@intCast(@min(new_cols, 65535)), @intCast(@min(new_rows, 65535))) catch |pty_err| {
+                    // PTY resize failed; roll back term to previous size.
+                    std.log.err("geometry-sync pty resize failed: {}", .{pty_err});
+                    term.resize(old_cols, old_rows) catch {};
+                };
+                backend.resize(actual.w, actual.h) catch |err| {
+                    std.log.err("geometry-sync backend resize failed: {}", .{err});
+                };
             }
         }
     }
@@ -1162,6 +1190,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
                                     }
                                     term.vt_response_len = 0;
                                 }
+                                // If the write buffer is more than half full, stop
+                                // draining and let epoll pump EPOLLOUT to flush it
+                                // first — prevents VT responses being silently dropped
+                                // when write_pending approaches the 64 KB buffer cap.
+                                if (write_pending > write_buf.len / 2) break;
                             }
                         }
                     },
@@ -1327,7 +1360,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         if (running) {
             var extra_total: usize = 0;
             while (extra_total < config.pty_buf_size) {
-                const extra = pty.read(&pty_buf) catch break;
+                const extra = pty.read(&pty_buf) catch |err| switch (err) {
+                    error.WouldBlock => break,
+                    else => {
+                        // EIO/HUP: child exited; terminate the event loop.
+                        running = false;
+                        break;
+                    },
+                };
                 if (extra == 0) {
                     running = false;
                     break;

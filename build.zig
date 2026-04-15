@@ -73,13 +73,39 @@ pub fn build(b: *std.Build) void {
         // Allow cross-compilation against shared libs with newer glibc
         exe.linker_allow_shlib_undefined = true;
         exe_mod.link_libc = true;
+
+        // translate-c for xkbcommon (used by wayland seat; x11.zig still uses
+        // @cImport directly due to opaque xcb_extension_t — see x11.zig comment)
+        const c_xkb_x11 = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_xkb", c_xkb_x11.createModule());
     } else if (is_wayland) {
         exe_mod.linkSystemLibrary("xkbcommon", .{});
         exe_mod.link_libc = true;
+
+        const c_xkb_wl = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_xkb", c_xkb_wl.createModule());
     } else if (is_macos) {
         exe_mod.linkFramework("Cocoa", .{});
         exe_mod.linkFramework("QuartzCore", .{});
         exe_mod.link_libc = true;
+
+        const c_pty_macos = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_pty_macos.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_pty_macos", c_pty_macos.createModule());
     }
 
     b.installArtifact(exe);
@@ -106,13 +132,37 @@ pub fn build(b: *std.Build) void {
         test_mod.linkSystemLibrary("xkbcommon", .{});
         test_mod.linkSystemLibrary("xkbcommon-x11", .{});
         test_mod.link_libc = true;
+
+        const c_xkb_x11_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_xkb", c_xkb_x11_test.createModule());
     } else if (is_wayland) {
         test_mod.linkSystemLibrary("xkbcommon", .{});
         test_mod.link_libc = true;
+
+        const c_xkb_wl_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_xkb", c_xkb_wl_test.createModule());
     } else if (is_macos) {
         test_mod.linkFramework("Cocoa", .{});
         test_mod.linkFramework("QuartzCore", .{});
         test_mod.link_libc = true;
+
+        const c_pty_macos_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_pty_macos.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_pty_macos", c_pty_macos_test.createModule());
     }
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
