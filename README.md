@@ -164,7 +164,7 @@ Some applications may have minor rendering issues due to missing features (see b
 ## Limitations
 
 - **No scrollback buffer** — only the current viewport
-- **No mouse support** — mouse tracking sequences are accepted but ignored
+- **Mouse support is limited** — app mouse tracking and selection work, but there is no scrollback wheel behavior yet
 - **No clipboard paste on fbdev** — X11/Wayland support Ctrl+Shift+V
 - **No inline pre-edit display** — IME uses its own popup window
 - **No font fallback** — single embedded font, no system font lookup

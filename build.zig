@@ -8,13 +8,22 @@ pub fn build(b: *std.Build) void {
     const is_x11 = std.mem.eql(u8, backend_opt, "x11");
     const is_wayland = std.mem.eql(u8, backend_opt, "wayland");
     const is_macos = std.mem.eql(u8, backend_opt, "macos");
+    if (!is_x11 and !is_wayland and !is_macos and !std.mem.eql(u8, backend_opt, "fbdev")) {
+        std.debug.panic("invalid -Dbackend='{s}'; expected fbdev, x11, wayland, or macos", .{backend_opt});
+    }
 
     const keymap_opt = b.option([]const u8, "keymap", "Keyboard layout: us or jp (default: us)") orelse "us";
     const use_jp_keymap = std.mem.eql(u8, keymap_opt, "jp");
+    if (!use_jp_keymap and !std.mem.eql(u8, keymap_opt, "us")) {
+        std.debug.panic("invalid -Dkeymap='{s}'; expected us or jp", .{keymap_opt});
+    }
 
     const scale_opt = b.option(u32, "scale", "Pixel scale factor: 1, 2, or 4 (default: 1)") orelse 1;
     const max_fps_opt = b.option(u32, "max_fps", "Maximum frame rate: 0 = unlimited (default: 120)") orelse 120;
     const pty_buf_kb_opt = b.option(u32, "pty_buf_kb", "PTY read buffer size in KB (default: 1024)") orelse 1024;
+    if (pty_buf_kb_opt == 0) {
+        @panic("invalid -Dpty_buf_kb=0; expected a positive buffer size");
+    }
     const shell_opt_raw = b.option([]const u8, "shell", "Shell path (default: /bin/sh)") orelse "/bin/sh";
     const shell_opt: [:0]const u8 = b.allocator.dupeZ(u8, shell_opt_raw) catch @panic("OOM");
 
