@@ -54,23 +54,23 @@ pub fn build(b: *std.Build) void {
     });
 
     if (is_x11) {
-        exe.linkSystemLibrary("xcb");
-        exe.linkSystemLibrary("xcb-shm");
-        exe.linkSystemLibrary("xcb-xkb");
-        exe.linkSystemLibrary("xcb-imdkit");
-        exe.linkSystemLibrary("xcb-util");
-        exe.linkSystemLibrary("xkbcommon");
-        exe.linkSystemLibrary("xkbcommon-x11");
+        exe_mod.linkSystemLibrary("xcb", .{});
+        exe_mod.linkSystemLibrary("xcb-shm", .{});
+        exe_mod.linkSystemLibrary("xcb-xkb", .{});
+        exe_mod.linkSystemLibrary("xcb-imdkit", .{});
+        exe_mod.linkSystemLibrary("xcb-util", .{});
+        exe_mod.linkSystemLibrary("xkbcommon", .{});
+        exe_mod.linkSystemLibrary("xkbcommon-x11", .{});
         // Allow cross-compilation against shared libs with newer glibc
         exe.linker_allow_shlib_undefined = true;
-        exe.linkLibC();
+        exe_mod.link_libc = true;
     } else if (is_wayland) {
-        exe.linkSystemLibrary("xkbcommon");
-        exe.linkLibC();
+        exe_mod.linkSystemLibrary("xkbcommon", .{});
+        exe_mod.link_libc = true;
     } else if (is_macos) {
-        exe.linkFramework("Cocoa");
-        exe.linkFramework("QuartzCore");
-        exe.linkLibC();
+        exe_mod.linkFramework("Cocoa", .{});
+        exe_mod.linkFramework("QuartzCore", .{});
+        exe_mod.link_libc = true;
     }
 
     b.installArtifact(exe);
@@ -89,21 +89,21 @@ pub fn build(b: *std.Build) void {
     });
 
     if (is_x11) {
-        unit_tests.linkSystemLibrary("xcb");
-        unit_tests.linkSystemLibrary("xcb-shm");
-        unit_tests.linkSystemLibrary("xcb-xkb");
-        unit_tests.linkSystemLibrary("xcb-imdkit");
-        unit_tests.linkSystemLibrary("xcb-util");
-        unit_tests.linkSystemLibrary("xkbcommon");
-        unit_tests.linkSystemLibrary("xkbcommon-x11");
-        unit_tests.linkLibC();
+        test_mod.linkSystemLibrary("xcb", .{});
+        test_mod.linkSystemLibrary("xcb-shm", .{});
+        test_mod.linkSystemLibrary("xcb-xkb", .{});
+        test_mod.linkSystemLibrary("xcb-imdkit", .{});
+        test_mod.linkSystemLibrary("xcb-util", .{});
+        test_mod.linkSystemLibrary("xkbcommon", .{});
+        test_mod.linkSystemLibrary("xkbcommon-x11", .{});
+        test_mod.link_libc = true;
     } else if (is_wayland) {
-        unit_tests.linkSystemLibrary("xkbcommon");
-        unit_tests.linkLibC();
+        test_mod.linkSystemLibrary("xkbcommon", .{});
+        test_mod.link_libc = true;
     } else if (is_macos) {
-        unit_tests.linkFramework("Cocoa");
-        unit_tests.linkFramework("QuartzCore");
-        unit_tests.linkLibC();
+        test_mod.linkFramework("Cocoa", .{});
+        test_mod.linkFramework("QuartzCore", .{});
+        test_mod.link_libc = true;
     }
 
     const run_unit_tests = b.addRunArtifact(unit_tests);

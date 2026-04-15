@@ -911,7 +911,7 @@ fn drainBackendEvents(
 pub fn main() !void {
     // Debug: GPA for leak detection; Release: lightweight allocator
     var gpa = if (builtin.mode == .Debug)
-        std.heap.GeneralPurposeAllocator(.{}){}
+        std.heap.DebugAllocator(.{}){}
     else {};
     defer if (builtin.mode == .Debug) {
         _ = gpa.deinit();
