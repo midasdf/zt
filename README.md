@@ -1,6 +1,6 @@
 # zt — minimal terminal emulator in Zig
 
-[![Zig](https://img.shields.io/badge/Zig-0.15+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
+[![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
@@ -48,7 +48,7 @@ Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=Rel
 
 ## Build
 
-Requires Zig 0.15+.
+Requires Zig 0.16+.
 
 |  | fbdev | X11 | Wayland |
 |---|---|---|---|
