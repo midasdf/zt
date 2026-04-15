@@ -540,42 +540,69 @@ pub const Term = struct {
         if (new_cols == 0 or new_rows == 0) return error.InvalidSize;
         const new_total = @as(usize, new_cols) * @as(usize, new_rows);
 
-        // Allocate all new buffers before modifying any state.
-        // On OOM, errdefer frees everything so self remains consistent.
+        // ========================================================
+        // PHASE 1: allocate *every* new buffer (main + alt) before
+        // touching self. Each alloc has an errdefer so any OOM along
+        // the way unwinds cleanly and self stays on the old buffers.
+        //
+        // Previously, main buffers were committed (old freed, self.*
+        // reassigned) before alt allocations ran; a later alt OOM
+        // would fire the main buffers' errdefers, freeing the now-
+        // self-owned memory and leaving self holding dangling ptrs.
+        // ========================================================
         const new_cells = try self.allocator.alloc(Cell, new_total);
         errdefer self.allocator.free(new_cells);
-        @memset(new_cells, Cell{});
 
         const new_row_map = try self.allocator.alloc(u32, new_rows);
         errdefer self.allocator.free(new_row_map);
-        for (0..new_rows) |i| new_row_map[i] = @intCast(i);
 
         const new_fg_rgb = try self.allocator.alloc(?[3]u8, new_total);
         errdefer self.allocator.free(new_fg_rgb);
-        @memset(new_fg_rgb, null);
 
         const new_bg_rgb = try self.allocator.alloc(?[3]u8, new_total);
         errdefer self.allocator.free(new_bg_rgb);
-        @memset(new_bg_rgb, null);
 
         const new_ul_color_rgb = try self.allocator.alloc(?[3]u8, new_total);
         errdefer self.allocator.free(new_ul_color_rgb);
-        @memset(new_ul_color_rgb, null);
 
         const new_hyperlink_ids = try self.allocator.alloc(u16, new_total);
         errdefer self.allocator.free(new_hyperlink_ids);
-        @memset(new_hyperlink_ids, 0);
 
-        const new_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
-        errdefer @constCast(&new_dirty).deinit();
+        var new_dirty = try std.DynamicBitSet.initFull(self.allocator, new_total);
+        errdefer new_dirty.deinit();
 
         const new_tabs = try self.allocator.alloc(bool, new_cols);
         errdefer self.allocator.free(new_tabs);
-        for (0..new_cols) |c| {
-            new_tabs[c] = (c % 8 == 0) and c > 0;
-        }
 
-        // Copy existing content (logical row order → identity physical order)
+        // Alt allocations mirror whatever alt fields self already owns.
+        const has_alt = self.alt_cells != null or self.alt_row_map != null or self.alt_dirty != null or self.alt_fg_rgb != null or self.alt_bg_rgb != null or self.alt_ul_color_rgb != null or self.alt_hyperlink_ids != null;
+        const new_alt_cells = if (has_alt and self.alt_cells != null) try self.allocator.alloc(Cell, new_total) else null;
+        errdefer if (new_alt_cells) |p| self.allocator.free(p);
+        const new_alt_row_map = if (has_alt and self.alt_row_map != null) try self.allocator.alloc(u32, new_rows) else null;
+        errdefer if (new_alt_row_map) |p| self.allocator.free(p);
+        var new_alt_dirty: ?std.DynamicBitSet = if (has_alt and self.alt_dirty != null) try std.DynamicBitSet.initFull(self.allocator, new_total) else null;
+        errdefer if (new_alt_dirty) |*p| p.deinit();
+        const new_alt_fg = if (has_alt and self.alt_fg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+        errdefer if (new_alt_fg) |p| self.allocator.free(p);
+        const new_alt_bg = if (has_alt and self.alt_bg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+        errdefer if (new_alt_bg) |p| self.allocator.free(p);
+        const new_alt_ul = if (has_alt and self.alt_ul_color_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
+        errdefer if (new_alt_ul) |p| self.allocator.free(p);
+        const new_alt_hl = if (has_alt and self.alt_hyperlink_ids != null) try self.allocator.alloc(u16, new_total) else null;
+        errdefer if (new_alt_hl) |p| self.allocator.free(p);
+
+        // ========================================================
+        // PHASE 2: initialise + copy into the new buffers. No more
+        // fallible calls past this point (only @memset/@memcpy).
+        // ========================================================
+        @memset(new_cells, Cell{});
+        for (0..new_rows) |i| new_row_map[i] = @intCast(i);
+        @memset(new_fg_rgb, null);
+        @memset(new_bg_rgb, null);
+        @memset(new_ul_color_rgb, null);
+        @memset(new_hyperlink_ids, 0);
+        for (0..new_cols) |c| new_tabs[c] = (c % 8 == 0) and c > 0;
+
         const copy_cols: usize = @min(self.cols, new_cols);
         const copy_rows: usize = @min(self.rows, new_rows);
         for (0..copy_rows) |y| {
@@ -594,7 +621,6 @@ pub const Term = struct {
             const blank = Cell{};
             for (0..copy_rows) |y| {
                 const last = y * @as(usize, new_cols) + new_cols - 1;
-                // Orphaned wide cell at last column (dummy was truncated)
                 if (new_cells[last].attrs.wide) {
                     new_cells[last] = blank;
                     new_fg_rgb[last] = null;
@@ -602,7 +628,6 @@ pub const Term = struct {
                     new_ul_color_rgb[last] = null;
                     new_hyperlink_ids[last] = 0;
                 }
-                // Orphaned wide_dummy at first column (wide cell was in previous row's truncated area)
                 const first = y * @as(usize, new_cols);
                 if (new_cells[first].attrs.wide_dummy) {
                     new_cells[first] = blank;
@@ -614,7 +639,47 @@ pub const Term = struct {
             }
         }
 
-        // All allocations succeeded — now swap state (no errors possible below)
+        // Init + copy alt buffers
+        if (new_alt_cells) |nac| @memset(nac, Cell{});
+        if (new_alt_row_map) |narm| for (0..new_rows) |i| {
+            narm[i] = @intCast(i);
+        };
+        if (new_alt_fg) |nfg| @memset(nfg, null);
+        if (new_alt_bg) |nbg| @memset(nbg, null);
+        if (new_alt_ul) |nul| @memset(nul, null);
+        if (new_alt_hl) |nhl| @memset(nhl, 0);
+
+        if (self.alt_cells) |old_alt_cells| {
+            if (new_alt_cells) |nac| {
+                const old_alt_cols = old_alt_cells.len / (if (self.alt_row_map) |arm| arm.len else self.rows);
+                const old_alt_rows = if (self.alt_row_map) |arm| arm.len else self.rows;
+                const alt_copy_cols: usize = @min(old_alt_cols, new_cols);
+                const alt_copy_rows: usize = @min(old_alt_rows, new_rows);
+                for (0..alt_copy_rows) |ay| {
+                    const old_rm = if (self.alt_row_map) |arm| arm[ay] else @as(u32, @intCast(ay));
+                    const old_start = @as(usize, old_rm) * old_alt_cols;
+                    const new_start = ay * @as(usize, new_cols);
+                    @memcpy(nac[new_start .. new_start + alt_copy_cols], old_alt_cells[old_start .. old_start + alt_copy_cols]);
+                    if (new_alt_fg) |nfg| if (self.alt_fg_rgb) |ofg| {
+                        @memcpy(nfg[new_start .. new_start + alt_copy_cols], ofg[old_start .. old_start + alt_copy_cols]);
+                    };
+                    if (new_alt_bg) |nbg| if (self.alt_bg_rgb) |obg| {
+                        @memcpy(nbg[new_start .. new_start + alt_copy_cols], obg[old_start .. old_start + alt_copy_cols]);
+                    };
+                    if (new_alt_ul) |nul| if (self.alt_ul_color_rgb) |oul| {
+                        @memcpy(nul[new_start .. new_start + alt_copy_cols], oul[old_start .. old_start + alt_copy_cols]);
+                    };
+                    if (new_alt_hl) |nhl| if (self.alt_hyperlink_ids) |ohl| {
+                        @memcpy(nhl[new_start .. new_start + alt_copy_cols], ohl[old_start .. old_start + alt_copy_cols]);
+                    };
+                }
+            }
+        }
+
+        // ========================================================
+        // PHASE 3: commit — free old, take ownership of new. No
+        // fallible ops past here, so the earlier errdefers never fire.
+        // ========================================================
         self.allocator.free(self.cells);
         self.allocator.free(self.row_map);
         self.allocator.free(self.fg_rgb);
@@ -640,12 +705,9 @@ pub const Term = struct {
         self.scroll_top = 0;
         self.scroll_bottom = new_rows -| 1;
 
-        // Clamp cursor
         self.cursor_x = @min(self.cursor_x, new_cols -| 1);
         self.cursor_y = @min(self.cursor_y, new_rows -| 1);
 
-        // Clamp selection to the resized grid. Copying a stale selection after
-        // shrinking the terminal must not index past row_map/cell buffers.
         if (self.selection) |*sel| {
             const max_x = new_cols -| 1;
             const max_y = new_rows -| 1;
@@ -655,75 +717,17 @@ pub const Term = struct {
             sel.end_y = @min(sel.end_y, max_y);
         }
 
-        // Clamp alt-screen saved scroll region to new dimensions
         self.alt_saved_cursor.scroll_top = @min(self.alt_saved_cursor.scroll_top, new_rows -| 1);
         self.alt_saved_cursor.scroll_bottom = @min(self.alt_saved_cursor.scroll_bottom, new_rows -| 1);
 
-        // Resize alt buffer if allocated — allocate all new buffers first,
-        // then free old ones, so OOM leaves the old buffers intact (no UAF).
-        if (self.alt_cells != null or self.alt_row_map != null or self.alt_dirty != null or self.alt_fg_rgb != null or self.alt_bg_rgb != null) {
-            const new_alt_cells = if (self.alt_cells != null) try self.allocator.alloc(Cell, new_total) else null;
-            errdefer if (new_alt_cells) |nac| self.allocator.free(nac);
-            const new_alt_row_map = if (self.alt_row_map != null) try self.allocator.alloc(u32, new_rows) else null;
-            errdefer if (new_alt_row_map) |narm| self.allocator.free(narm);
-            const new_alt_dirty = if (self.alt_dirty != null) try std.DynamicBitSet.initFull(self.allocator, new_total) else null;
-            errdefer if (new_alt_dirty) |*nad| @constCast(nad).deinit();
-            const new_alt_fg = if (self.alt_fg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
-            errdefer if (new_alt_fg) |nafg| self.allocator.free(nafg);
-            const new_alt_bg = if (self.alt_bg_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
-            errdefer if (new_alt_bg) |nabg| self.allocator.free(nabg);
-            const new_alt_ul = if (self.alt_ul_color_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
-            errdefer if (new_alt_ul) |naul| self.allocator.free(naul);
-            const new_alt_hl = if (self.alt_hyperlink_ids != null) try self.allocator.alloc(u16, new_total) else null;
-            errdefer if (new_alt_hl) |nhl| self.allocator.free(nhl);
-
-            // Initialize new alt buffers then copy existing content BEFORE freeing old
-            if (new_alt_cells) |nac| @memset(nac, Cell{});
-            if (new_alt_row_map) |narm| for (0..new_rows) |i| {
-                narm[i] = @intCast(i);
-            };
-            if (new_alt_fg) |nfg| @memset(nfg, null);
-            if (new_alt_bg) |nbg| @memset(nbg, null);
-            if (new_alt_ul) |nul| @memset(nul, null);
-            if (new_alt_hl) |nhl| @memset(nhl, 0);
-
-            // Copy content from old alt buffers using OLD dimensions (cols/rows already updated)
-            // old_cols/old_rows derived from old alt buffer sizes
-            if (self.alt_cells) |old_cells| {
-                if (new_alt_cells) |nac| {
-                    const old_alt_cols = old_cells.len / (if (self.alt_row_map) |arm| arm.len else new_rows);
-                    const old_alt_rows = if (self.alt_row_map) |arm| arm.len else new_rows;
-                    const alt_copy_cols: usize = @min(old_alt_cols, new_cols);
-                    const alt_copy_rows: usize = @min(old_alt_rows, new_rows);
-                    for (0..alt_copy_rows) |ay| {
-                        const old_rm = if (self.alt_row_map) |arm| arm[ay] else @as(u32, @intCast(ay));
-                        const old_start = @as(usize, old_rm) * old_alt_cols;
-                        const new_start = ay * @as(usize, new_cols);
-                        @memcpy(nac[new_start .. new_start + alt_copy_cols], old_cells[old_start .. old_start + alt_copy_cols]);
-                        if (new_alt_fg) |nfg| if (self.alt_fg_rgb) |ofg| {
-                            @memcpy(nfg[new_start .. new_start + alt_copy_cols], ofg[old_start .. old_start + alt_copy_cols]);
-                        };
-                        if (new_alt_bg) |nbg| if (self.alt_bg_rgb) |obg| {
-                            @memcpy(nbg[new_start .. new_start + alt_copy_cols], obg[old_start .. old_start + alt_copy_cols]);
-                        };
-                        if (new_alt_ul) |nul| if (self.alt_ul_color_rgb) |oul| {
-                            @memcpy(nul[new_start .. new_start + alt_copy_cols], oul[old_start .. old_start + alt_copy_cols]);
-                        };
-                        if (new_alt_hl) |nhl| if (self.alt_hyperlink_ids) |ohl| {
-                            @memcpy(nhl[new_start .. new_start + alt_copy_cols], ohl[old_start .. old_start + alt_copy_cols]);
-                        };
-                    }
-                }
-            }
-
-            // Now free old buffers
-            if (self.alt_cells) |alt| self.allocator.free(alt);
-            if (self.alt_row_map) |arm| self.allocator.free(arm);
-            if (self.alt_dirty) |*ad| ad.deinit();
-            if (self.alt_fg_rgb) |a| self.allocator.free(a);
-            if (self.alt_bg_rgb) |a| self.allocator.free(a);
-            if (self.alt_ul_color_rgb) |a| self.allocator.free(a);
-            if (self.alt_hyperlink_ids) |a| self.allocator.free(a);
+        if (has_alt) {
+            if (self.alt_cells) |p| self.allocator.free(p);
+            if (self.alt_row_map) |p| self.allocator.free(p);
+            if (self.alt_dirty) |*p| p.deinit();
+            if (self.alt_fg_rgb) |p| self.allocator.free(p);
+            if (self.alt_bg_rgb) |p| self.allocator.free(p);
+            if (self.alt_ul_color_rgb) |p| self.allocator.free(p);
+            if (self.alt_hyperlink_ids) |p| self.allocator.free(p);
 
             self.alt_cells = new_alt_cells;
             self.alt_row_map = new_alt_row_map;
