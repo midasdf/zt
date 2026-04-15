@@ -1,4 +1,5 @@
 const std = @import("std");
+const posix = @import("../posix.zig");
 
 // Linux ioctl constants
 const FBIOGET_VSCREENINFO: u32 = 0x4600;
@@ -99,7 +100,7 @@ pub const InputEvent = struct {
 pub const FbdevBackend = struct {
     const Self = @This();
 
-    fb_fd: std.posix.fd_t,
+    fb_fd: posix.fd_t,
     fb_mem: []align(std.heap.page_size_min) u8,
     shadow: []u8,
     allocator: std.mem.Allocator,
@@ -107,17 +108,17 @@ pub const FbdevBackend = struct {
     height: u32,
     stride: u32,
     bpp: u32,
-    evdev_fds: [8]std.posix.fd_t,
+    evdev_fds: [8]posix.fd_t,
     evdev_count: u8 = 0,
-    tty_fd: std.posix.fd_t,
+    tty_fd: posix.fd_t,
     original_kb_mode: i32 = 0,
     dirty_y_min: u32 = std.math.maxInt(u32),
     dirty_y_max: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         // 1. Open /dev/fb0
-        const fb_fd = try std.posix.open("/dev/fb0", .{ .ACCMODE = .RDWR }, 0);
-        errdefer std.posix.close(fb_fd);
+        const fb_fd = try posix.open("/dev/fb0", .{ .ACCMODE = .RDWR }, 0);
+        errdefer posix.close(fb_fd);
 
         // 2. Get variable screen info
         var vinfo: FbVarScreenInfo = undefined;
@@ -151,10 +152,10 @@ pub const FbdevBackend = struct {
         }
 
         // 4. mmap the framebuffer
-        const fb_mem = try std.posix.mmap(
+        const fb_mem = try posix.mmap(
             null,
             fb_size,
-            std.posix.PROT.READ | std.posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             fb_fd,
             0,
@@ -165,7 +166,7 @@ pub const FbdevBackend = struct {
         @memset(shadow, 0);
 
         // 6. Scan for evdev keyboards
-        var evdev_fds: [8]std.posix.fd_t = [_]std.posix.fd_t{-1} ** 8;
+        var evdev_fds: [8]posix.fd_t = [_]posix.fd_t{-1} ** 8;
         var evdev_count: u8 = 0;
 
         for (0..32) |i| {
@@ -175,13 +176,13 @@ pub const FbdevBackend = struct {
             var c_path: [32:0]u8 = undefined;
             @memcpy(c_path[0..path.len], path);
             c_path[path.len] = 0;
-            const fd = std.posix.open(c_path[0..path.len :0], .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
+            const fd = posix.open(c_path[0..path.len :0], .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
 
             // Check if it's a keyboard
             var key_bits: [96]u8 = [_]u8{0} ** 96;
             const ev_ret = std.os.linux.ioctl(fd, EVIOCGBIT_EV_KEY, @intFromPtr(&key_bits));
             if (@as(isize, @bitCast(ev_ret)) < 0) {
-                std.posix.close(fd);
+                posix.close(fd);
                 continue;
             }
 
@@ -194,12 +195,12 @@ pub const FbdevBackend = struct {
                 evdev_count += 1;
                 if (evdev_count >= 8) break;
             } else {
-                std.posix.close(fd);
+                posix.close(fd);
             }
         }
 
         // 7. Open tty
-        const tty_fd = std.posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0) catch -1;
+        const tty_fd = posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0) catch -1;
 
         return Self{
             .fb_fd = fb_fd,
@@ -220,13 +221,13 @@ pub const FbdevBackend = struct {
         self.restoreConsoleState();
 
         for (0..self.evdev_count) |i| {
-            std.posix.close(self.evdev_fds[i]);
+            posix.close(self.evdev_fds[i]);
         }
 
         self.allocator.free(self.shadow);
-        std.posix.munmap(self.fb_mem);
-        std.posix.close(self.fb_fd);
-        if (self.tty_fd >= 0) std.posix.close(self.tty_fd);
+        posix.munmap(self.fb_mem);
+        posix.close(self.fb_fd);
+        if (self.tty_fd >= 0) posix.close(self.tty_fd);
     }
 
     pub fn getBuffer(self: *Self) []u8 {
@@ -266,7 +267,7 @@ pub const FbdevBackend = struct {
     /// No-op for fbdev — present() writes directly to framebuffer.
     pub fn flush(_: *Self) void {}
 
-    pub fn getFd(self: *Self) ?std.posix.fd_t {
+    pub fn getFd(self: *Self) ?posix.fd_t {
         _ = self;
         return null;
     }
@@ -289,7 +290,7 @@ pub const FbdevBackend = struct {
             value: i32,
         };
         var ev: InputEventRaw = undefined;
-        const n = std.posix.read(fd, std.mem.asBytes(&ev)) catch return null;
+        const n = posix.read(fd, std.mem.asBytes(&ev)) catch return null;
         if (n < @sizeOf(InputEventRaw)) return null;
         const ev_type = ev.type;
         const ev_code = ev.code;
@@ -320,8 +321,8 @@ pub const FbdevBackend = struct {
         var mode = VtMode{
             .mode = VT_PROCESS,
             .waitv = 0,
-            .relsig = std.posix.SIG.USR1,
-            .acqsig = std.posix.SIG.USR2,
+            .relsig = @intFromEnum(posix.SIG.USR1),
+            .acqsig = @intFromEnum(posix.SIG.USR2),
             .frsig = 0,
         };
         const ret = std.os.linux.ioctl(self.tty_fd, VT_SETMODE, @intFromPtr(&mode));

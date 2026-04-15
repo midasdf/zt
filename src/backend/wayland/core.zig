@@ -3,7 +3,7 @@
 /// Handles wl_display, wl_registry, wl_compositor, wl_shm, wl_shm_pool,
 /// wl_buffer, and wl_surface interactions.
 const std = @import("std");
-const posix = std.posix;
+const posix = @import("../../posix.zig");
 const linux = std.os.linux;
 const wire = @import("wire.zig");
 
@@ -344,7 +344,7 @@ pub const ShmBuffer = struct {
             const new_data = try posix.mmap(
                 null,
                 new_total_size,
-                posix.PROT.READ | posix.PROT.WRITE,
+                .{ .READ = true, .WRITE = true },
                 .{ .TYPE = .SHARED },
                 self.fd,
                 0,
@@ -423,7 +423,7 @@ pub fn createShmBuffers(
     const data_ptr = try posix.mmap(
         null,
         total_size,
-        posix.PROT.READ | posix.PROT.WRITE,
+        .{ .READ = true, .WRITE = true },
         .{ .TYPE = .SHARED },
         fd,
         0,

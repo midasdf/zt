@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const posix = @import("../posix.zig");
 const config = @import("config");
 const input_mod = @import("../input.zig");
 
@@ -263,8 +264,8 @@ pub const MacosBackend = struct {
     height: u32,
     stride: u32,
 
-    wakeup_read_fd: std.posix.fd_t, // Non-blocking, for kqueue
-    wakeup_write_fd: std.posix.fd_t, // Non-blocking, written by NSView callbacks
+    wakeup_read_fd: posix.fd_t, // Non-blocking, for kqueue
+    wakeup_write_fd: posix.fd_t, // Non-blocking, written by NSView callbacks
 
     app: id, // NSApplication
     window: id, // NSWindow
@@ -293,7 +294,7 @@ pub const MacosBackend = struct {
         self.event_queue[self.event_tail] = event;
         self.event_tail = next;
         // Wake up kqueue
-        _ = std.posix.write(self.wakeup_write_fd, &[_]u8{1}) catch {};
+        _ = posix.write(self.wakeup_write_fd, &[_]u8{1}) catch {};
     }
 
     fn popEvent(self: *Self) ?Event {
@@ -322,10 +323,10 @@ pub const MacosBackend = struct {
 
     pub fn init() !Self {
         // 1. Self-pipe for waking kqueue from Cocoa callbacks
-        const pipe_fds = try std.posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
+        const pipe_fds = try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
         errdefer {
-            std.posix.close(pipe_fds[0]);
-            std.posix.close(pipe_fds[1]);
+            posix.close(pipe_fds[0]);
+            posix.close(pipe_fds[1]);
         }
 
         // 2. NSApplication setup
@@ -424,8 +425,8 @@ pub const MacosBackend = struct {
     // =========================================================================
 
     pub fn deinit(self: *Self) void {
-        std.posix.close(self.wakeup_read_fd);
-        std.posix.close(self.wakeup_write_fd);
+        posix.close(self.wakeup_read_fd);
+        posix.close(self.wakeup_write_fd);
         CGContextRelease(self.cg_context);
         // NSWindow and NSView are autoreleased by Cocoa
     }
@@ -475,7 +476,7 @@ pub const MacosBackend = struct {
     // Event polling
     // =========================================================================
 
-    pub fn getFd(self: *Self) ?std.posix.fd_t {
+    pub fn getFd(self: *Self) ?posix.fd_t {
         return self.wakeup_read_fd;
     }
 
@@ -501,7 +502,7 @@ pub const MacosBackend = struct {
 
         // 2. Drain wakeup pipe
         var drain_buf: [64]u8 = undefined;
-        _ = std.posix.read(self.wakeup_read_fd, &drain_buf) catch {};
+        _ = posix.read(self.wakeup_read_fd, &drain_buf) catch {};
 
         // 3. Return next queued event
         return self.popEvent();

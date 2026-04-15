@@ -3,7 +3,7 @@
 /// Handles wl_seat capabilities, wl_keyboard events (keymap, key, modifiers,
 /// repeat_info), wl_pointer events (enter, button), and wp_cursor_shape_device_v1.
 const std = @import("std");
-const posix = std.posix;
+const posix = @import("../../posix.zig");
 const linux = std.os.linux;
 const wire = @import("wire.zig");
 const core = @import("core.zig");
@@ -103,7 +103,7 @@ pub const KeyboardState = struct {
         const map = posix.mmap(
             null,
             size,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .PRIVATE },
             fd,
             0,

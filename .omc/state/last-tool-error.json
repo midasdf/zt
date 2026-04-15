@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"git checkout main && git merge --ff-only cursor/dec2026-osc8-terminal-fixes && git push origin main\",\"description\":\"Fast-forward main and push\"}",
+  "error": "Exit code 1\nerror: Your local changes to the following files would be overwritten by checkout:\n\t.omc/project-memory.json\n\t.omc/state/idle-notif-cooldown.json\nPlease commit your changes or stash them before you switch branches.\nAborting\n[rerun: b11]",
+  "timestamp": "2026-04-14T20:11:43.011Z",
+  "retry_count": 2
+}

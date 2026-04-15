@@ -8,7 +8,7 @@
 ///     The fd argument is sent via SCM_RIGHTS and occupies ZERO bytes in payload.
 ///   - All event parsing advances through payload using wire.getString / wire.getUint.
 const std = @import("std");
-const posix = std.posix;
+const posix = @import("../../posix.zig");
 const linux = std.os.linux;
 const wire = @import("wire.zig");
 

@@ -9,7 +9,7 @@
 ///   - Strings: 4-byte length (including null terminator) + bytes + null + padding
 ///   - Arrays: 4-byte length + data + padding to 4-byte boundary
 const std = @import("std");
-const posix = std.posix;
+const posix = @import("../../posix.zig");
 const linux = std.os.linux;
 
 /// cmsg header for SCM_RIGHTS ancillary data.
@@ -179,13 +179,13 @@ pub const Connection = struct {
     /// Reads $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY (defaults to "wayland-0").
     /// If WAYLAND_DISPLAY is an absolute path, it is used directly (per Wayland spec).
     pub fn connect() !Connection {
-        const display = std.posix.getenv("WAYLAND_DISPLAY") orelse "wayland-0";
+        const display = posix.getenv("WAYLAND_DISPLAY") orelse "wayland-0";
 
         var path_buf: [256]u8 = undefined;
         const path = if (display.len > 0 and display[0] == '/')
             std.fmt.bufPrintZ(&path_buf, "{s}", .{display}) catch return error.PathTooLong
         else blk: {
-            const runtime_dir = std.posix.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntimeDir;
+            const runtime_dir = posix.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntimeDir;
             break :blk std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ runtime_dir, display }) catch return error.PathTooLong;
         };
 

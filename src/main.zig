@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const posix = @import("posix.zig");
 const is_macos = builtin.os.tag == .macos;
 const is_linux = builtin.os.tag == .linux;
 const linux = if (is_linux) std.os.linux else struct {};
@@ -53,7 +54,7 @@ const FontType = font_mod.FontBlob(@embedFile("fonts/ufo-nf.bin"));
 // Signal handling via signalfd
 // =============================================================================
 
-fn setupSignals() !std.posix.fd_t {
+fn setupSignals() !posix.fd_t {
     if (is_linux) {
         var mask = linux.sigemptyset();
         linux.sigaddset(&mask, linux.SIG.CHLD);
@@ -94,12 +95,12 @@ fn setupSignals() !std.posix.fd_t {
 // Timer fd for cursor blink
 // =============================================================================
 
-fn createTimerFd(interval_ns: u64) !std.posix.fd_t {
+fn createTimerFd(interval_ns: u64) !posix.fd_t {
     if (is_linux) {
         const fd_raw = linux.timerfd_create(.MONOTONIC, .{ .NONBLOCK = true, .CLOEXEC = true });
         const fd_isize: isize = @bitCast(fd_raw);
         if (fd_isize < 0) return error.TimerFdFailed;
-        const timer_fd: std.posix.fd_t = @intCast(fd_isize);
+        const timer_fd: posix.fd_t = @intCast(fd_isize);
 
         const sec: isize = @intCast(interval_ns / std.time.ns_per_s);
         const nsec: isize = @intCast(interval_ns % std.time.ns_per_s);
@@ -127,7 +128,7 @@ const EpollTag = enum(u32) {
 };
 const EVDEV_BASE: u32 = 10;
 
-fn epollAdd(epoll_fd: i32, fd: std.posix.fd_t, tag: u32) !void {
+fn epollAdd(epoll_fd: i32, fd: posix.fd_t, tag: u32) !void {
     var ev = linux.epoll_event{
         .events = linux.EPOLL.IN,
         .data = .{ .u32 = tag },
@@ -137,7 +138,7 @@ fn epollAdd(epoll_fd: i32, fd: std.posix.fd_t, tag: u32) !void {
     if (rc_isize < 0) return error.EpollCtlFailed;
 }
 
-fn epollSetPtyEvents(epoll_fd: i32, pty_fd: std.posix.fd_t, want_write: bool) void {
+fn epollSetPtyEvents(epoll_fd: i32, pty_fd: posix.fd_t, want_write: bool) void {
     var ev = linux.epoll_event{
         .events = linux.EPOLL.IN | if (want_write) linux.EPOLL.OUT else @as(u32, 0),
         .data = .{ .u32 = @intFromEnum(EpollTag.pty) },
@@ -159,8 +160,8 @@ const KqueueTag = enum(usize) {
 // so they're identified by filter+ident, not by a tag.
 const KQUEUE_TIMER_IDENT: usize = 100;
 
-fn kqueueAddFd(kq: i32, fd: std.posix.fd_t, tag: usize) !void {
-    const changelist = [1]std.posix.Kevent{.{
+fn kqueueAddFd(kq: i32, fd: posix.fd_t, tag: usize) !void {
+    const changelist = [1]posix.Kevent{.{
         .ident = @intCast(fd),
         .filter = std.c.EVFILT.READ,
         .flags = std.c.EV.ADD,
@@ -168,11 +169,11 @@ fn kqueueAddFd(kq: i32, fd: std.posix.fd_t, tag: usize) !void {
         .data = 0,
         .udata = tag,
     }};
-    _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+    _ = try posix.kevent(kq, &changelist, &.{}, null);
 }
 
 fn kqueueAddSignal(kq: i32, sig: u6) !void {
-    const changelist = [1]std.posix.Kevent{.{
+    const changelist = [1]posix.Kevent{.{
         .ident = sig,
         .filter = std.c.EVFILT.SIGNAL,
         .flags = std.c.EV.ADD,
@@ -180,11 +181,11 @@ fn kqueueAddSignal(kq: i32, sig: u6) !void {
         .data = 0,
         .udata = 0,
     }};
-    _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+    _ = try posix.kevent(kq, &changelist, &.{}, null);
 }
 
 fn kqueueAddTimer(kq: i32, ident: usize, interval_ms: isize) !void {
-    const changelist = [1]std.posix.Kevent{.{
+    const changelist = [1]posix.Kevent{.{
         .ident = ident,
         .filter = std.c.EVFILT.TIMER,
         .flags = std.c.EV.ADD,
@@ -192,12 +193,12 @@ fn kqueueAddTimer(kq: i32, ident: usize, interval_ms: isize) !void {
         .data = interval_ms,
         .udata = 0,
     }};
-    _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+    _ = try posix.kevent(kq, &changelist, &.{}, null);
 }
 
-fn kqueueSetPtyWrite(kq: i32, pty_fd: std.posix.fd_t, enable: bool) void {
+fn kqueueSetPtyWrite(kq: i32, pty_fd: posix.fd_t, enable: bool) void {
     const flags: u16 = std.c.EV.ADD | if (enable) @as(u16, std.c.EV.ENABLE) else @as(u16, std.c.EV.DISABLE);
-    const changelist = [1]std.posix.Kevent{.{
+    const changelist = [1]posix.Kevent{.{
         .ident = @intCast(pty_fd),
         .filter = std.c.EVFILT.WRITE,
         .flags = flags,
@@ -205,7 +206,7 @@ fn kqueueSetPtyWrite(kq: i32, pty_fd: std.posix.fd_t, enable: bool) void {
         .data = 0,
         .udata = @intFromEnum(KqueueTag.pty),
     }};
-    _ = std.posix.kevent(kq, &changelist, &.{}, null) catch |err| {
+    _ = posix.kevent(kq, &changelist, &.{}, null) catch |err| {
         std.log.debug("kqueueSetPtyWrite failed: {}", .{err});
     };
 }
@@ -349,7 +350,7 @@ fn refreshCursorBlinkOnUserInput(
 ) void {
     cursor_visible_blink.* = true;
     cursor_blink_active.* = true;
-    last_input_ns.* = std.time.nanoTimestamp();
+    last_input_ns.* = posix.nanoTimestamp();
 }
 
 fn applyCursorBlinkTimerTick(
@@ -364,7 +365,7 @@ fn applyCursorBlinkTimerTick(
     // Sample time here, not from the pre-epoll_wait loop timestamp: last_input_ns may be
     // updated later in the same iteration (focus_in / input), and reusing an older
     // `loop_now` makes idle_ns negative and misroutes the idle vs blink branches.
-    const idle_ns = std.time.nanoTimestamp() - last_input_ns;
+    const idle_ns = posix.nanoTimestamp() - last_input_ns;
     if (idle_ns > idle_timeout_ns) {
         if (cursor_blink_active.*) {
             cursor_blink_active.* = false;
@@ -382,18 +383,18 @@ fn applyCursorBlinkTimerTick(
 // Signal handler
 // =============================================================================
 
-const SIG_CHLD = if (is_linux) linux.SIG.CHLD else std.c.SIG.CHLD;
-const SIG_TERM = if (is_linux) linux.SIG.TERM else std.c.SIG.TERM;
-const SIG_INT = if (is_linux) linux.SIG.INT else std.c.SIG.INT;
-const SIG_HUP = if (is_linux) linux.SIG.HUP else std.c.SIG.HUP;
-const SIG_USR1 = if (is_linux) linux.SIG.USR1 else std.c.SIG.USR1;
-const SIG_USR2 = if (is_linux) linux.SIG.USR2 else std.c.SIG.USR2;
+const SIG_CHLD: u32 = if (is_linux) @intFromEnum(linux.SIG.CHLD) else @intFromEnum(std.c.SIG.CHLD);
+const SIG_TERM: u32 = if (is_linux) @intFromEnum(linux.SIG.TERM) else @intFromEnum(std.c.SIG.TERM);
+const SIG_INT: u32 = if (is_linux) @intFromEnum(linux.SIG.INT) else @intFromEnum(std.c.SIG.INT);
+const SIG_HUP: u32 = if (is_linux) @intFromEnum(linux.SIG.HUP) else @intFromEnum(std.c.SIG.HUP);
+const SIG_USR1: u32 = if (is_linux) @intFromEnum(linux.SIG.USR1) else @intFromEnum(std.c.SIG.USR1);
+const SIG_USR2: u32 = if (is_linux) @intFromEnum(linux.SIG.USR2) else @intFromEnum(std.c.SIG.USR2);
 
-fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend) bool {
+fn handleSignal(sig_fd: posix.fd_t, signo_override: ?u32, backend: *Backend) bool {
     const signo: u32 = signo_override orelse blk: {
         if (!is_linux) return true; // macOS always provides signo_override via kqueue
         var siginfo: linux.signalfd_siginfo = undefined;
-        _ = std.posix.read(sig_fd, std.mem.asBytes(&siginfo)) catch return true;
+        _ = posix.read(sig_fd, std.mem.asBytes(&siginfo)) catch return true;
         break :blk siginfo.signo;
     };
 
@@ -401,7 +402,7 @@ fn handleSignal(sig_fd: std.posix.fd_t, signo_override: ?u32, backend: *Backend)
         SIG_CHLD => blk: {
             // Reap zombie children (clipboard helpers, etc.) without exiting.
             // PTY child death is detected by read() returning 0 in the event loop.
-            // Use raw syscall to handle ECHILD gracefully (std.posix.waitpid panics on it).
+            // Use raw syscall to handle ECHILD gracefully (posix.waitpid panics on it).
             if (is_linux) {
                 while (true) {
                     // Use raw syscall: wait4(-1, NULL, WNOHANG, NULL)
@@ -461,18 +462,18 @@ fn dispatchClipboardCopy(data: []const u8) void {
         _ = std.c.signal(SIG_PIPE, std.c.SIG.IGN);
     }
 
-    const pipe_fds = std.posix.pipe() catch return;
-    const pid = std.posix.fork() catch {
-        std.posix.close(pipe_fds[0]);
-        std.posix.close(pipe_fds[1]);
+    const pipe_fds = posix.pipe() catch return;
+    const pid = posix.fork() catch {
+        posix.close(pipe_fds[0]);
+        posix.close(pipe_fds[1]);
         return;
     };
 
     if (pid == 0) {
         // Child: redirect stdin from pipe read end
-        std.posix.dup2(pipe_fds[0], 0) catch std.posix.exit(1);
-        std.posix.close(pipe_fds[0]);
-        std.posix.close(pipe_fds[1]);
+        posix.dup2(pipe_fds[0], 0) catch posix.exit(1);
+        posix.close(pipe_fds[0]);
+        posix.close(pipe_fds[1]);
 
         // Use minimal environment to avoid LD_PRELOAD/PATH hijacking
         var display_env_buf: [128]u8 = undefined;
@@ -483,37 +484,37 @@ fn dispatchClipboardCopy(data: []const u8) void {
         var ci: usize = 0;
         clip_env[ci] = "PATH=/usr/local/bin:/usr/bin:/bin";
         ci += 1;
-        if (std.posix.getenv("DISPLAY")) |v| {
+        if (posix.getenv("DISPLAY")) |v| {
             clip_env[ci] = (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{v}) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
-        if (std.posix.getenv("XAUTHORITY")) |v| {
+        if (posix.getenv("XAUTHORITY")) |v| {
             clip_env[ci] = (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{v}) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
-        if (std.posix.getenv("WAYLAND_DISPLAY")) |v| {
+        if (posix.getenv("WAYLAND_DISPLAY")) |v| {
             clip_env[ci] = (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{v}) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
-        if (std.posix.getenv("XDG_RUNTIME_DIR")) |v| {
+        if (posix.getenv("XDG_RUNTIME_DIR")) |v| {
             clip_env[ci] = (std.fmt.bufPrintZ(&xdg_env_buf, "XDG_RUNTIME_DIR={s}", .{v}) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
         const clip_envp: [*:null]const ?[*:0]const u8 = &clip_env;
-        _ = std.posix.execvpeZ(
+        _ = posix.execvpeZ(
             argv[0].?,
             argv,
             clip_envp,
         ) catch {};
-        std.posix.exit(1);
+        posix.exit(1);
     }
 
     // Parent: write data to pipe write end, close read end immediately
-    std.posix.close(pipe_fds[0]);
+    posix.close(pipe_fds[0]);
     if (data.len > 0) {
-        _ = std.posix.write(pipe_fds[1], data) catch {};
+        _ = posix.write(pipe_fds[1], data) catch {};
     }
-    std.posix.close(pipe_fds[1]); // EOF signals end of data to child
+    posix.close(pipe_fds[1]); // EOF signals end of data to child
 
     // Restore SIGPIPE handling
     if (is_linux) {
@@ -603,7 +604,7 @@ fn handleBackendEvent(
             backend_focused.* = true;
             cursor_visible_blink.* = true;
             cursor_blink_active.* = true;
-            last_input_ns.* = std.time.nanoTimestamp();
+            last_input_ns.* = posix.nanoTimestamp();
             last_render_ns.* = 0;
             term.markDirty(term.cursor_x, term.cursor_y);
             if (term.focus_events) {
@@ -909,6 +910,10 @@ fn drainBackendEvents(
 // =============================================================================
 
 pub fn main(init: std.process.Init.Minimal) !void {
+    // Publish environ to the posix shim so compile-time callers of
+    // posix.getenv (pty.zig, wire.zig, ...) can look up env vars without
+    // plumbing it through every call.
+    posix.environ = init.environ;
     // Debug: GPA for leak detection; Release: lightweight allocator
     var gpa = if (builtin.mode == .Debug)
         std.heap.DebugAllocator(.{}){}
@@ -935,19 +940,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (std.mem.eql(u8, argv[i], "-w")) {
                 if (i + 1 >= argv.len) {
                     const stderr_msg = "zt: -w requires a window id\n";
-                    _ = std.posix.write(2, stderr_msg) catch {};
+                    _ = posix.write(2, stderr_msg) catch {};
                     std.process.exit(1);
                 }
                 i += 1;
                 embed_window = std.fmt.parseInt(u32, argv[i], 10) catch {
                     const stderr_msg = "zt: -w requires a numeric window id\n";
-                    _ = std.posix.write(2, stderr_msg) catch {};
+                    _ = posix.write(2, stderr_msg) catch {};
                     std.process.exit(1);
                 };
             } else if (std.mem.eql(u8, argv[i], "-e")) {
                 if (i + 1 >= argv.len) {
                     const stderr_msg = "zt: -e requires a command\n";
-                    _ = std.posix.write(2, stderr_msg) catch {};
+                    _ = posix.write(2, stderr_msg) catch {};
                     std.process.exit(1);
                 }
                 // Everything after -e is the command + args
@@ -991,11 +996,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     // 7. Setup signals
     const sig_fd = try setupSignals();
-    defer if (sig_fd >= 0) std.posix.close(sig_fd);
+    defer if (sig_fd >= 0) posix.close(sig_fd);
 
     // 8. Setup cursor blink timer (500ms)
     const timer_fd = try createTimerFd(500_000_000);
-    defer if (timer_fd >= 0) std.posix.close(timer_fd);
+    defer if (timer_fd >= 0) posix.close(timer_fd);
 
     // 9. Setup event loop (epoll on Linux, kqueue on macOS)
     const evloop_fd: i32 = if (is_linux) blk: {
@@ -1004,9 +1009,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
         if (isize_val < 0) return error.EpollCreateFailed;
         break :blk @intCast(isize_val);
     } else blk: {
-        break :blk try std.posix.kqueue();
+        break :blk try posix.kqueue();
     };
-    defer std.posix.close(evloop_fd);
+    defer posix.close(evloop_fd);
 
     if (is_linux) {
         try epollAdd(evloop_fd, pty.master_fd, @intFromEnum(EpollTag.pty));
@@ -1060,7 +1065,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // false while unfocused: skip cursor timer toggles (avoids stale idle blink + extra wakeups)
     var backend_focused = true;
     var last_pressed_button: MouseButton = .none;
-    var last_input_ns: i128 = std.time.nanoTimestamp();
+    var last_input_ns: i128 = posix.nanoTimestamp();
     const cursor_idle_timeout_ns: i128 = 5 * std.time.ns_per_s;
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
@@ -1071,7 +1076,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var sync_update_start_ns: i128 = 0; // timestamp when sync_update was first seen
 
     while (running) {
-        const loop_now = std.time.nanoTimestamp();
+        const loop_now = posix.nanoTimestamp();
         // Adaptive frame rate: smoothly reduce render frequency during heavy output
         // Tier 0: <64KB  → frame_min_ns (default 8ms = 120fps)
         // Tier 1: 64KB+  → frame_min_ns * 2 (default 16ms = 60fps)
@@ -1177,7 +1182,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     @intFromEnum(EpollTag.timer) => {
                         // Read timer to acknowledge
                         var exp: u64 = 0;
-                        _ = std.posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
+                        _ = posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
                         applyCursorBlinkTimerTick(
                             &term,
                             backend_focused,
@@ -1243,13 +1248,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // display and event delivery. Never block indefinitely — cap at
             // 16ms (~60hz) so the UI stays responsive even when idle.
             const macos_timeout: i32 = if (event_timeout < 0) 16 else @min(event_timeout, 16);
-            var timeout_buf: std.posix.timespec = .{
+            var timeout_buf: posix.timespec = .{
                 .sec = @divFloor(@as(isize, macos_timeout), 1000),
                 .nsec = @rem(@as(isize, macos_timeout), 1000) * 1_000_000,
             };
-            const timeout_spec: ?*const std.posix.timespec = &timeout_buf;
-            var kevents: [16]std.posix.Kevent = undefined;
-            const n = std.posix.kevent(evloop_fd, &.{}, &kevents, timeout_spec) catch 0;
+            const timeout_spec: ?*const posix.timespec = &timeout_buf;
+            var kevents: [16]posix.Kevent = undefined;
+            const n = posix.kevent(evloop_fd, &.{}, &kevents, timeout_spec) catch 0;
 
             for (kevents[0..n]) |kev| {
                 if (kev.filter == std.c.EVFILT.READ) {
@@ -1425,7 +1430,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 // Do not paint on the BSU frame — wait for ESU (or timeout) so the batch
                 // is not visibly torn across frames.
                 continue;
-            } else if (std.time.nanoTimestamp() - sync_update_start_ns > 3_000_000_000) {
+            } else if (posix.nanoTimestamp() - sync_update_start_ns > 3_000_000_000) {
                 term.sync_update = false;
                 sync_update_start_ns = 0;
                 last_render_ns = 0; // force immediate render after timeout
@@ -1537,7 +1542,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (!all_dirty) backend.markDirtyRows(y * config.cell_height, (y + 1) * config.cell_height - 1);
         }
         term.clearDirty();
-        last_render_ns = std.time.nanoTimestamp();
+        last_render_ns = posix.nanoTimestamp();
         bytes_since_render = 0;
 
         // Update IME cursor position only on render (avoids XIM request storms during heavy output)

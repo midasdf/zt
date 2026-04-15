@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const linux = std.os.linux;
-const posix = std.posix;
+const posix = @import("posix.zig");
 const builtin = @import("builtin");
 const is_macos = builtin.os.tag == .macos;
 const is_linux = builtin.os.tag == .linux;
@@ -141,7 +141,7 @@ pub const Pty = struct {
                 .{ .ACCMODE = .RDWR },
                 0,
             ) catch {
-                std.posix.exit(1);
+                posix.exit(1);
             };
 
             // c. Set controlling terminal
@@ -160,9 +160,9 @@ pub const Pty = struct {
             }
 
             // d. Redirect stdin/stdout/stderr
-            posix.dup2(slave_fd, 0) catch std.posix.exit(1);
-            posix.dup2(slave_fd, 1) catch std.posix.exit(1);
-            posix.dup2(slave_fd, 2) catch std.posix.exit(1);
+            posix.dup2(slave_fd, 0) catch posix.exit(1);
+            posix.dup2(slave_fd, 1) catch posix.exit(1);
+            posix.dup2(slave_fd, 2) catch posix.exit(1);
 
             // e. Close original slave fd (now duped to 0/1/2)
             if (slave_fd > 2) posix.close(slave_fd);
@@ -178,10 +178,10 @@ pub const Pty = struct {
             const shell_env = std.fmt.bufPrintZ(&shell_env_buf, "SHELL={s}", .{shell_path}) catch "SHELL=/bin/sh";
 
             // Inherit key environment variables from parent
-            const home_val = std.posix.getenv("HOME") orelse "/root";
-            const user_val = std.posix.getenv("USER") orelse "root";
-            const lang_val = std.posix.getenv("LANG") orelse "C.UTF-8";
-            const path_val = std.posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
+            const home_val = posix.getenv("HOME") orelse "/root";
+            const user_val = posix.getenv("USER") orelse "root";
+            const lang_val = posix.getenv("LANG") orelse "C.UTF-8";
+            const path_val = posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
             const home_env = std.fmt.bufPrintZ(&home_env_buf, "HOME={s}", .{home_val}) catch "HOME=/root";
             const user_env = std.fmt.bufPrintZ(&user_env_buf, "USER={s}", .{user_val}) catch "USER=root";
             var lang_env_buf: [64]u8 = undefined;
@@ -221,11 +221,11 @@ pub const Pty = struct {
                 var xauth_env_buf: [256]u8 = undefined;
                 var xdg_runtime_buf: [256]u8 = undefined;
                 var dbus_env_buf: [256]u8 = undefined;
-                const display_env: ?[*:0]const u8 = if (std.posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{std.posix.getenv("DISPLAY").?}) catch null) else null;
-                const wayland_env: ?[*:0]const u8 = if (std.posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{std.posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
-                const xauth_env: ?[*:0]const u8 = if (std.posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{std.posix.getenv("XAUTHORITY").?}) catch null) else null;
-                const xdg_runtime_env: ?[*:0]const u8 = if (std.posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{std.posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
-                const dbus_env: ?[*:0]const u8 = if (std.posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{std.posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
+                const display_env: ?[*:0]const u8 = if (posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{posix.getenv("DISPLAY").?}) catch null) else null;
+                const wayland_env: ?[*:0]const u8 = if (posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
+                const xauth_env: ?[*:0]const u8 = if (posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{posix.getenv("XAUTHORITY").?}) catch null) else null;
+                const xdg_runtime_env: ?[*:0]const u8 = if (posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
+                const dbus_env: ?[*:0]const u8 = if (posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
                 if (display_env) |e| {
                     env_arr[ei] = e;
                     ei += 1;
@@ -272,7 +272,7 @@ pub const Pty = struct {
                     _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
             }
-            std.posix.exit(1);
+            posix.exit(1);
         }
 
         // === Parent process ===
@@ -294,7 +294,7 @@ pub const Pty = struct {
         posix.kill(self.child_pid, posix.SIG.TERM) catch {};
         posix.close(self.master_fd);
         // Use WNOHANG: child may already be reaped by SIGCHLD handler.
-        // Use raw syscall because std.posix.waitpid panics on ECHILD.
+        // Use raw syscall because posix.waitpid panics on ECHILD.
         if (is_linux) {
             // wait4(pid, NULL, WNOHANG, NULL)
             _ = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, linux.W.NOHANG, 0);
@@ -345,7 +345,7 @@ test "Pty: spawn and read echo output" {
     defer pty.deinit();
 
     // Wait for output
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    posix.sleep(100 * std.time.ns_per_ms);
 
     var buf: [256]u8 = undefined;
     const n = pty.read(&buf) catch 0;

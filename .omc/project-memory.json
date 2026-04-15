@@ -101,14 +101,14 @@
   "hotPaths": [
     {
       "path": "src/main.zig",
-      "accessCount": 144,
-      "lastAccessed": 1776091801802,
+      "accessCount": 155,
+      "lastAccessed": 1776211917203,
       "type": "directory"
     },
     {
       "path": "src/backend/x11.zig",
-      "accessCount": 61,
-      "lastAccessed": 1775839246994,
+      "accessCount": 68,
+      "lastAccessed": 1776211963157,
       "type": "file"
     },
     {
@@ -125,32 +125,56 @@
     },
     {
       "path": "src/backend/wayland.zig",
-      "accessCount": 32,
-      "lastAccessed": 1775839247818,
+      "accessCount": 35,
+      "lastAccessed": 1776211994536,
       "type": "file"
     },
     {
       "path": "src",
-      "accessCount": 10,
-      "lastAccessed": 1776090889490,
+      "accessCount": 18,
+      "lastAccessed": 1776212026366,
       "type": "directory"
     },
     {
       "path": "src/backend/fbdev.zig",
-      "accessCount": 7,
-      "lastAccessed": 1775831893467,
+      "accessCount": 14,
+      "lastAccessed": 1776211739597,
       "type": "file"
     },
     {
       "path": "src/backend/macos.zig",
+      "accessCount": 11,
+      "lastAccessed": 1776211662634,
+      "type": "file"
+    },
+    {
+      "path": "src/posix.zig",
+      "accessCount": 9,
+      "lastAccessed": 1776212040365,
+      "type": "file"
+    },
+    {
+      "path": "",
       "accessCount": 7,
-      "lastAccessed": 1775834823960,
+      "lastAccessed": 1776211526856,
+      "type": "directory"
+    },
+    {
+      "path": "src/pty.zig",
+      "accessCount": 7,
+      "lastAccessed": 1776212031171,
       "type": "file"
     },
     {
       "path": "src/backend/wayland/seat.zig",
-      "accessCount": 3,
-      "lastAccessed": 1775832126275,
+      "accessCount": 6,
+      "lastAccessed": 1776211722034,
+      "type": "file"
+    },
+    {
+      "path": "src/backend/wayland/wire.zig",
+      "accessCount": 4,
+      "lastAccessed": 1776211638496,
       "type": "file"
     },
     {
@@ -161,9 +185,15 @@
     },
     {
       "path": "src/backend/wayland",
-      "accessCount": 2,
-      "lastAccessed": 1775832127575,
+      "accessCount": 3,
+      "lastAccessed": 1776211693502,
       "type": "directory"
+    },
+    {
+      "path": "src/backend/wayland/core.zig",
+      "accessCount": 3,
+      "lastAccessed": 1776211725804,
+      "type": "file"
     },
     {
       "path": "src/render.zig",
@@ -172,10 +202,10 @@
       "type": "file"
     },
     {
-      "path": "",
+      "path": "src/backend/wayland/clipboard.zig",
       "accessCount": 2,
-      "lastAccessed": 1776092883776,
-      "type": "directory"
+      "lastAccessed": 1776211717919,
+      "type": "file"
     },
     {
       "path": "src/backend",
@@ -190,16 +220,16 @@
       "type": "file"
     },
     {
-      "path": "src/pty.zig",
-      "accessCount": 1,
-      "lastAccessed": 1776090656895,
-      "type": "file"
-    },
-    {
       "path": "config.zig",
       "accessCount": 1,
       "lastAccessed": 1776092960678,
       "type": "directory"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-04-15-zt-zig-0.16-migration.md",
+      "accessCount": 1,
+      "lastAccessed": 1776197821024,
+      "type": "file"
     }
   ],
   "userDirectives": []

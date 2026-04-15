@@ -1,6 +1,11 @@
 const std = @import("std");
 const config = @import("config");
+const posix = @import("../posix.zig");
 const input_mod = @import("../input.zig");
+
+// Manual extern: translate-c (0.16) can't render `extern xcb_extension_t xcb_shm_id;`
+// because xcb_extension_t is an opaque struct.
+extern var xcb_shm_id: opaque {};
 
 const c = @cImport({
     @cInclude("xcb/xcb.h");
@@ -342,7 +347,7 @@ pub const X11Backend = struct {
 
         // 10. Query SHM extension first_event for completion events
         var shm_event_base: u8 = 0;
-        if (c.xcb_get_extension_data(connection, &c.xcb_shm_id)) |ext| {
+        if (c.xcb_get_extension_data(connection, @ptrCast(&xcb_shm_id))) |ext| {
             if (ext.*.present != 0) {
                 shm_event_base = ext.*.first_event;
             }
@@ -784,7 +789,7 @@ pub const X11Backend = struct {
         // Keep dirty state so the next frame will include these regions.
         // Timeout after 100ms in case the SHM_COMPLETION event was lost.
         if (self.shm_busy) {
-            const now = std.time.nanoTimestamp();
+            const now = posix.nanoTimestamp();
             if (now - self.shm_busy_ns < 100_000_000) return;
             self.shm_busy = false;
         }
@@ -814,7 +819,7 @@ pub const X11Backend = struct {
             shm_offset,
         );
         self.shm_busy = true;
-        self.shm_busy_ns = std.time.nanoTimestamp();
+        self.shm_busy_ns = posix.nanoTimestamp();
 
         // Lazy-init second buffer on first present, then swap
         const back: u1 = front ^ 1;
@@ -915,7 +920,7 @@ pub const X11Backend = struct {
         // to disambiguate (e.g., "n" waits to see if "a" follows for "な"
         // or "n" follows for "ん"). Emitting a fallback would leak raw ASCII.
         if (self.has_pending_xim) {
-            const now = std.time.nanoTimestamp();
+            const now = posix.nanoTimestamp();
             if (now - self.xim_pending_ns > 5_000_000_000) {
                 self.has_pending_xim = false;
                 self.suppress_xim_result = false;
@@ -1056,7 +1061,7 @@ pub const X11Backend = struct {
                                 self.pending_xim_keycode = key.*.detail;
                                 self.pending_xim_mods = xcbStateToMods(key.*.state);
                                 self.has_pending_xim = true;
-                                self.xim_pending_ns = std.time.nanoTimestamp();
+                                self.xim_pending_ns = posix.nanoTimestamp();
                                 _ = c.xcb_xim_forward_event(xim, self.xic, key);
                                 // Flush immediately so the IM server receives the
                                 // forwarded key. Without this, the key sits in libxcb's
