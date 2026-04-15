@@ -279,8 +279,9 @@ pub const Pty = struct {
         // Set master_fd nonblocking
         {
             const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
-            const O_NONBLOCK: usize = @intCast(@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
-            _ = try posix.fcntl(master_fd, posix.F.SETFL, cur_flags | O_NONBLOCK);
+            const O_NONBLOCK: u32 = @bitCast(posix.O{ .NONBLOCK = true });
+            const new_flags: usize = @as(u32, @bitCast(cur_flags)) | O_NONBLOCK;
+            _ = try posix.fcntl(master_fd, posix.F.SETFL, new_flags);
         }
 
         return Pty{

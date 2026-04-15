@@ -34,6 +34,12 @@ pub const kill = std.posix.kill;
 pub const unexpectedErrno = std.posix.unexpectedErrno;
 
 // Missing-in-0.16 shims -----------------------------------------------------
+//
+// All functions below are Linux-only — the Zig 0.16 stdlib still uses these
+// platform-specific syscall wrappers. macOS targets must be ported separately
+// (kqueue/kevent above are the only macOS-aware shims here).
+const linux_only_msg = "posix shim: this wrapper is Linux-only; macOS port pending";
+
 pub const WriteError = error{
     WouldBlock,
     BrokenPipe,
@@ -46,33 +52,38 @@ pub const WriteError = error{
 };
 
 pub inline fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
-    const rc = linux.write(fd, bytes.ptr, bytes.len);
-    return switch (linux.errno(rc)) {
-        .SUCCESS => @intCast(rc),
-        .INTR => 0,
-        .AGAIN => error.WouldBlock,
-        .BADF => error.Unexpected,
-        .DESTADDRREQ => error.Unexpected,
-        .DQUOT => error.DiskQuota,
-        .FAULT => unreachable,
-        .FBIG => error.FileTooBig,
-        .INVAL => error.Unexpected,
-        .IO => error.InputOutput,
-        .NOSPC => error.NoSpaceLeft,
-        .PERM => error.Unexpected,
-        .PIPE => error.BrokenPipe,
-        .CONNRESET => error.ConnectionResetByPeer,
-        else => |err| std.posix.unexpectedErrno(err),
-    };
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+    while (true) {
+        const rc = linux.write(fd, bytes.ptr, bytes.len);
+        switch (linux.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue, // std.posix.write semantics — retry transparently
+            .AGAIN => return error.WouldBlock,
+            .BADF => return error.Unexpected,
+            .DESTADDRREQ => return error.Unexpected,
+            .DQUOT => return error.DiskQuota,
+            .FAULT => unreachable,
+            .FBIG => return error.FileTooBig,
+            .INVAL => return error.Unexpected,
+            .IO => return error.InputOutput,
+            .NOSPC => return error.NoSpaceLeft,
+            .PERM => return error.Unexpected,
+            .PIPE => return error.BrokenPipe,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
 }
 
 pub inline fn close(fd: fd_t) void {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     _ = linux.close(fd);
 }
 
 pub const PipeError = error{ SystemFdQuotaExceeded, ProcessFdQuotaExceeded, Unexpected };
 
 pub inline fn pipe() PipeError![2]fd_t {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var fds: [2]i32 = undefined;
     const rc = linux.pipe(&fds);
     return switch (linux.errno(rc)) {
@@ -84,6 +95,7 @@ pub inline fn pipe() PipeError![2]fd_t {
 }
 
 pub inline fn pipe2(flags: linux.O) PipeError![2]fd_t {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var fds: [2]i32 = undefined;
     const rc = linux.pipe2(&fds, flags);
     return switch (linux.errno(rc)) {
@@ -97,6 +109,7 @@ pub inline fn pipe2(flags: linux.O) PipeError![2]fd_t {
 pub const ForkError = error{ SystemResources, Unexpected };
 
 pub inline fn fork() ForkError!linux.pid_t {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.fork();
     return switch (linux.errno(rc)) {
         .SUCCESS => @intCast(@as(isize, @bitCast(rc))),
@@ -108,6 +121,7 @@ pub inline fn fork() ForkError!linux.pid_t {
 pub const Dup2Error = error{Unexpected};
 
 pub inline fn dup2(old_fd: fd_t, new_fd: fd_t) Dup2Error!void {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.dup2(old_fd, new_fd);
     return switch (linux.errno(rc)) {
         .SUCCESS => {},
@@ -116,6 +130,7 @@ pub inline fn dup2(old_fd: fd_t, new_fd: fd_t) Dup2Error!void {
 }
 
 pub inline fn exit(status: u8) noreturn {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     linux.exit_group(status);
 }
 
@@ -127,6 +142,7 @@ pub var environ: std.process.Environ = .empty;
 /// Block the current thread for `nanoseconds`. Replacement for
 /// `std.Thread.sleep` (removed in Zig 0.16).
 pub inline fn sleep(nanoseconds: u64) void {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var req: timespec = .{
         .sec = @intCast(nanoseconds / std.time.ns_per_s),
         .nsec = @intCast(nanoseconds % std.time.ns_per_s),
@@ -138,8 +154,11 @@ pub inline fn sleep(nanoseconds: u64) void {
 }
 
 /// Monotonic-clock nanoseconds since boot. Replacement for
-/// `std.time.nanoTimestamp` (removed in Zig 0.16).
+/// `std.time.nanoTimestamp` (removed in Zig 0.16). Note: 0.15 used REALTIME;
+/// MONOTONIC is preferable for the delta-only callers in zt and avoids
+/// NTP/DST-jump artefacts.
 pub inline fn nanoTimestamp() i128 {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var ts: timespec = undefined;
     _ = linux.clock_gettime(.MONOTONIC, &ts);
     return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
@@ -149,26 +168,76 @@ pub inline fn getenv(key: []const u8) ?[]const u8 {
     return environ.getPosix(key);
 }
 
+pub const ExecveError = error{
+    AccessDenied,
+    FileNotFound,
+    NotDir,
+    NameTooLong,
+    SystemResources,
+    InvalidExe,
+    FileBusy,
+    IsDir,
+    SymLinkLoop,
+    Unexpected,
+};
+
+inline fn execveErrno(rc: usize) ExecveError {
+    return switch (linux.errno(rc)) {
+        .ACCES => error.AccessDenied,
+        .NOENT => error.FileNotFound,
+        .NOTDIR => error.NotDir,
+        .NAMETOOLONG => error.NameTooLong,
+        .NOMEM => error.SystemResources,
+        .NOEXEC => error.InvalidExe,
+        .TXTBSY => error.FileBusy,
+        .ISDIR => error.IsDir,
+        .LOOP => error.SymLinkLoop,
+        else => error.Unexpected,
+    };
+}
+
 /// Fork + exec replacement for `std.posix.execvpeZ` (removed in 0.16).
-/// Falls back to raw execve via PATH search.
+/// Mirrors std.posix.execvpeZ semantics: continue PATH walk only on
+/// "could be elsewhere" errors (NOENT/NOTDIR/ACCES); preserve the most
+/// specific error otherwise so callers see the real failure cause.
 pub inline fn execvpeZ(
     file: [*:0]const u8,
     argv: [*:null]const ?[*:0]const u8,
     envp: [*:null]const ?[*:0]const u8,
-) error{Unexpected} {
-    // Try file as an absolute or relative path first.
-    _ = linux.execve(file, argv, envp);
-    // Then walk PATH.
+) ExecveError {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+    const file_slice = std.mem.span(file);
+
+    // If the path contains a slash, treat as literal — no PATH walk.
+    if (std.mem.indexOfScalar(u8, file_slice, '/') != null) {
+        return execveErrno(linux.execve(file, argv, envp));
+    }
+
     const path = getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     var it = std.mem.splitScalar(u8, path, ':');
-    const file_slice = std.mem.span(file);
+    var last_err: ExecveError = error.FileNotFound;
     while (it.next()) |dir| {
-        if (dir.len == 0) continue;
-        const full = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, file_slice }) catch continue;
-        _ = linux.execve(full.ptr, argv, envp);
+        const dir_use = if (dir.len == 0) "." else dir;
+        const full = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir_use, file_slice }) catch {
+            last_err = error.NameTooLong;
+            continue;
+        };
+        const err = execveErrno(linux.execve(full.ptr, argv, envp));
+        switch (err) {
+            // Recoverable — keep walking PATH.
+            error.FileNotFound, error.NotDir => continue,
+            error.AccessDenied => {
+                // Remember EACCES but keep looking; std.posix returns EACCES
+                // only if no other entry succeeded.
+                last_err = err;
+                continue;
+            },
+            // Unrecoverable — surface immediately so caller sees real cause.
+            else => return err,
+        }
     }
-    return error.Unexpected;
+    return last_err;
 }
 
 // kqueue/kevent — macOS only. Stubs on Linux keep the file semantically valid
@@ -221,6 +290,7 @@ pub const OpenError = error{
 };
 
 pub inline fn open(path: []const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len >= buf.len) return error.NameTooLong;
     @memcpy(buf[0..path.len], path);
@@ -230,10 +300,15 @@ pub inline fn open(path: []const u8, flags: linux.O, mode: linux.mode_t) OpenErr
 
 pub const FcntlError = error{ Locked, ProcessFdQuotaExceeded, SystemFdQuotaExceeded, Unexpected };
 
-pub inline fn fcntl(fd: fd_t, cmd: i32, arg: usize) FcntlError!usize {
+/// Returns the cmd-specific result on success (e.g. `F_GETFL` flags word).
+/// Truncates the raw `usize` syscall return to `i32` to match the kernel
+/// fcntl ABI and avoid leaking sign-extended errno-encoded `usize` values
+/// into call sites that mask flags.
+pub inline fn fcntl(fd: fd_t, cmd: i32, arg: usize) FcntlError!i32 {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.fcntl(fd, cmd, arg);
     return switch (linux.errno(rc)) {
-        .SUCCESS => rc,
+        .SUCCESS => @bitCast(@as(u32, @truncate(rc))),
         .ACCES, .AGAIN => error.Locked,
         .MFILE => error.ProcessFdQuotaExceeded,
         else => |err| std.posix.unexpectedErrno(err),
@@ -243,6 +318,7 @@ pub inline fn fcntl(fd: fd_t, cmd: i32, arg: usize) FcntlError!usize {
 pub const TruncateError = error{ FileTooBig, InputOutput, AccessDenied, Unexpected };
 
 pub inline fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.ftruncate(fd, @intCast(length));
     return switch (linux.errno(rc)) {
         .SUCCESS => {},
@@ -256,6 +332,7 @@ pub inline fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
 pub const SocketError = error{ AddressFamilyNotSupported, ProtocolFamilyNotAvailable, ProcessFdQuotaExceeded, SystemFdQuotaExceeded, SystemResources, ProtocolNotSupported, SocketTypeNotSupported, PermissionDenied, Unexpected };
 
 pub inline fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!fd_t {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.socket(domain, socket_type, protocol);
     return switch (linux.errno(rc)) {
         .SUCCESS => @intCast(rc),
@@ -273,6 +350,7 @@ pub inline fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!f
 pub const ConnectError = error{ PermissionDenied, AddressInUse, AddressNotAvailable, AddressFamilyNotSupported, AlreadyConnected, ConnectionRefused, ConnectionResetByPeer, ConnectionTimedOut, NetworkUnreachable, FileNotFound, WouldBlock, Unexpected };
 
 pub inline fn connect(sockfd: fd_t, sock_addr: *const anyopaque, len: u32) ConnectError!void {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.connect(sockfd, sock_addr, len);
     return switch (linux.errno(rc)) {
         .SUCCESS => {},
@@ -292,6 +370,7 @@ pub inline fn connect(sockfd: fd_t, sock_addr: *const anyopaque, len: u32) Conne
 }
 
 pub inline fn openZ(path: [*:0]const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
+    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const rc = linux.open(path, flags, mode);
     return switch (linux.errno(rc)) {
         .SUCCESS => @intCast(rc),
