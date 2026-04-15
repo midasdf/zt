@@ -219,6 +219,8 @@ pub const Connection = struct {
         payload: []const u8,
         fds: []const posix.fd_t,
     ) !void {
+        // Wayland messages are capped at 64KiB (size is a u16 in the header).
+        if (8 + payload.len > std.math.maxInt(u16)) return error.MessageTooLarge;
         const msg_size: u16 = @intCast(8 + payload.len);
         const header = encodeHeader(object_id, opcode, msg_size);
 

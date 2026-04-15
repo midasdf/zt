@@ -379,13 +379,13 @@ pub const Parser = struct {
             // Not ST — store ESC only for printable data bytes;
             // control bytes (CAN, SUB, BEL, ESC) fall through to handlers below
             if (byte >= 0x20 and byte != 0x7F) {
-                if (self.osc_len < 8192) {
+                // Atomic pair: either both bytes fit or neither is written
+                // (the old per-byte guard could store the ESC and silently
+                // drop the follow-up, producing a truncated OSC payload).
+                if (self.osc_len + 2 <= self.osc_buf.len) {
                     self.osc_buf[self.osc_len] = 0x1B;
-                    self.osc_len += 1;
-                }
-                if (self.osc_len < 8192) {
-                    self.osc_buf[self.osc_len] = byte;
-                    self.osc_len += 1;
+                    self.osc_buf[self.osc_len + 1] = byte;
+                    self.osc_len += 2;
                 }
                 return .none;
             }
@@ -898,7 +898,10 @@ fn handleOsc8(param: []const u8, term: *Term) void {
 
     // Allocate new entry (ring buffer)
     const slot = (term.hyperlink_next_id - 1) % 64;
-    // Invalidate cells referencing the old slot before reuse
+    // Invalidate cells referencing the old slot before reuse.
+    // TODO(perf): this is O(cols * rows) per reused slot — introduce a
+    // per-slot generation counter so stale cell refs can be detected at
+    // render time without an up-front scan.
     const old_id: u16 = @intCast(slot + 1);
     if (term.hyperlink_table[slot].len > 0) {
         for (term.hyperlink_ids) |*hid| {

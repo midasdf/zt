@@ -534,6 +534,10 @@ pub const Term = struct {
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
+        // Reject degenerate dimensions up front: a zero in either axis
+        // would zero-divide in the alt-buffer recovery branch below and
+        // produce a bogus row_map anyway.
+        if (new_cols == 0 or new_rows == 0) return error.InvalidSize;
         const new_total = @as(usize, new_cols) * @as(usize, new_rows);
 
         // Allocate all new buffers before modifying any state.
@@ -671,6 +675,7 @@ pub const Term = struct {
             const new_alt_ul = if (self.alt_ul_color_rgb != null) try self.allocator.alloc(?[3]u8, new_total) else null;
             errdefer if (new_alt_ul) |naul| self.allocator.free(naul);
             const new_alt_hl = if (self.alt_hyperlink_ids != null) try self.allocator.alloc(u16, new_total) else null;
+            errdefer if (new_alt_hl) |nhl| self.allocator.free(nhl);
 
             // Initialize new alt buffers then copy existing content BEFORE freeing old
             if (new_alt_cells) |nac| @memset(nac, Cell{});
@@ -1036,13 +1041,21 @@ pub const Term = struct {
 
     pub fn insertLines(self: *Self, n: u32) void {
         if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
-        const count: usize = @min(@min(n, self.scroll_bottom - self.cursor_y + 1), 512);
+        const count: usize = @min(n, self.scroll_bottom - self.cursor_y + 1);
         if (count == 0) return;
         const cols: usize = self.cols;
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        var saved: [512]u32 = undefined;
+        // Small-fast-path stack buffer; fall back to allocator for
+        // unusually large scroll regions (e.g. 8K-display tmux panes).
+        var stack_saved: [256]u32 = undefined;
+        const saved: []u32 = if (count <= stack_saved.len)
+            stack_saved[0..count]
+        else
+            self.allocator.alloc(u32, count) catch return; // OOM: skip silently
+        defer if (count > stack_saved.len) self.allocator.free(saved);
+
         for (0..count) |s| {
             const phys = self.row_map[bot - s];
             saved[s] = phys;
@@ -1065,13 +1078,19 @@ pub const Term = struct {
 
     pub fn deleteLines(self: *Self, n: u32) void {
         if (self.cursor_y < self.scroll_top or self.cursor_y > self.scroll_bottom) return;
-        const count: usize = @min(@min(n, self.scroll_bottom - self.cursor_y + 1), 512);
+        const count: usize = @min(n, self.scroll_bottom - self.cursor_y + 1);
         if (count == 0) return;
         const cols: usize = self.cols;
         const bot: usize = self.scroll_bottom;
         const cy: usize = self.cursor_y;
 
-        var saved: [512]u32 = undefined;
+        var stack_saved: [256]u32 = undefined;
+        const saved: []u32 = if (count <= stack_saved.len)
+            stack_saved[0..count]
+        else
+            self.allocator.alloc(u32, count) catch return;
+        defer if (count > stack_saved.len) self.allocator.free(saved);
+
         for (0..count) |s| {
             const phys = self.row_map[cy + s];
             saved[s] = phys;
