@@ -2896,6 +2896,12 @@ test "CUP respects DECOM origin mode" {
 }
 
 test "Fuzz: random byte sequences do not panic or leak" {
+    // Silence VT parser warnings during the random byte stream — they would
+    // otherwise corrupt the test runner's --listen=- IPC framing on stderr.
+    const prev_log_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_log_level;
+
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
     var parser = Parser{};

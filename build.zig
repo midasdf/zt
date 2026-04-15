@@ -74,8 +74,19 @@ pub fn build(b: *std.Build) void {
         exe.linker_allow_shlib_undefined = true;
         exe_mod.link_libc = true;
 
-        // translate-c for xkbcommon (used by wayland seat; x11.zig still uses
-        // @cImport directly due to opaque xcb_extension_t — see x11.zig comment)
+        // translate-c for xcb + shm + xim + xkb (x11.zig).
+        // src/c_x11.h renames xcb_shm_id → _zt_xcb_shm_id_stub so translate-c
+        // can process xcb/shm.h without hitting the opaque-extern limitation;
+        // the real xcb_shm_id is declared manually in x11.zig.
+        const c_x11 = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_x11.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_x11", c_x11.createModule());
+
+        // translate-c for xkbcommon (shared with wayland backend)
         const c_xkb_x11 = b.addTranslateC(.{
             .root_source_file = b.path("src/c_xkb.h"),
             .target = target,
@@ -132,6 +143,14 @@ pub fn build(b: *std.Build) void {
         test_mod.linkSystemLibrary("xkbcommon", .{});
         test_mod.linkSystemLibrary("xkbcommon-x11", .{});
         test_mod.link_libc = true;
+
+        const c_x11_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_x11.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_x11", c_x11_test.createModule());
 
         const c_xkb_x11_test = b.addTranslateC(.{
             .root_source_file = b.path("src/c_xkb.h"),

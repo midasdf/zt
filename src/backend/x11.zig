@@ -3,18 +3,14 @@ const config = @import("config");
 const posix = @import("../posix.zig");
 const input_mod = @import("../input.zig");
 
-// Manual extern: translate-c (0.16) can't render `extern xcb_extension_t xcb_shm_id;`
-// because xcb_extension_t is an opaque struct.
+// xcb_shm_id is declared manually because translate-c (Zig 0.16) cannot render
+// `extern xcb_extension_t xcb_shm_id;` — xcb_extension_t is an opaque struct and
+// translate-c emits @compileError for opaque-typed extern variables. The c_x11.h
+// wrapper renames it to _zt_xcb_shm_id_stub (never referenced) so translate-c
+// succeeds, while the real symbol is linked via this declaration.
 extern var xcb_shm_id: opaque {};
 
-const c = @cImport({
-    @cInclude("xcb/xcb.h");
-    @cInclude("xcb/shm.h");
-    @cInclude("sys/shm.h");
-    @cInclude("xcb-imdkit/imclient.h");
-    @cInclude("xkbcommon/xkbcommon.h");
-    @cInclude("xkbcommon/xkbcommon-x11.h");
-});
+const c = @import("c_x11");
 
 pub const MouseEvent = struct {
     x: u32, // pixel x
