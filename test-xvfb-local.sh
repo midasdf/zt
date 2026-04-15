@@ -5,8 +5,18 @@
 PASS=0
 FAIL=0
 TOTAL=0
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ZT_DEBUG=/tmp/zt-debug
 ZT_RELEASE=/tmp/zt-release
+ZT_DEBUG_PREFIX=/tmp/zt-debug-prefix
+ZT_RELEASE_PREFIX=/tmp/zt-release-prefix
+if [ -z "${ZIG:-}" ]; then
+    if [ -x "$HOME/opt/zig-0.16.0/zig" ]; then
+        ZIG="$HOME/opt/zig-0.16.0/zig"
+    else
+        ZIG=zig
+    fi
+fi
 ZT_PID=""
 WINDOW_ID=""
 XVFB_PID=""
@@ -74,9 +84,26 @@ else
     exit 1
 fi
 
+# ── 0. Build binaries used by the integration tests ──
+section "0. Build Test Binaries"
+if "$ZIG" build -Dbackend=x11 -p "$ZT_DEBUG_PREFIX" >/dev/null 2>&1 &&
+    cp "$ZT_DEBUG_PREFIX/bin/zt" "$ZT_DEBUG"
+then
+    pass "debug binary built"
+else
+    fail "debug build" "failed"
+fi
+if "$ZIG" build -Dbackend=x11 -Doptimize=ReleaseFast -Dstrip=true -p "$ZT_RELEASE_PREFIX" >/dev/null 2>&1 &&
+    cp "$ZT_RELEASE_PREFIX/bin/zt" "$ZT_RELEASE"
+then
+    pass "release binary built"
+else
+    fail "release build" "failed"
+fi
+
 # ── 1. Unit Tests ──
 section "1. Unit Tests"
-if (cd /home/midasdf/zt && zig build test >/dev/null 2>&1); then
+if (cd "$ROOT_DIR" && "$ZIG" build test >/dev/null 2>&1); then
     pass "zig build test"
 else
     fail "zig build test" "failed"

@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const linux = std.os.linux;
-const posix = std.posix;
+const posix = @import("posix.zig");
 const builtin = @import("builtin");
 const is_macos = builtin.os.tag == .macos;
 const is_linux = builtin.os.tag == .linux;
@@ -12,11 +12,7 @@ comptime {
     }
 }
 
-const c = if (is_macos) @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-}) else struct {};
+const c = if (is_macos) @import("c_pty_macos") else struct {};
 
 // ioctl constants — stored as u32 for Linux (linux.ioctl takes u32).
 // On macOS, std.c.ioctl takes c_int, so callers use @bitCast(TIOCSWINSZ)
@@ -141,7 +137,7 @@ pub const Pty = struct {
                 .{ .ACCMODE = .RDWR },
                 0,
             ) catch {
-                std.posix.exit(1);
+                posix.exit(1);
             };
 
             // c. Set controlling terminal
@@ -160,9 +156,9 @@ pub const Pty = struct {
             }
 
             // d. Redirect stdin/stdout/stderr
-            posix.dup2(slave_fd, 0) catch std.posix.exit(1);
-            posix.dup2(slave_fd, 1) catch std.posix.exit(1);
-            posix.dup2(slave_fd, 2) catch std.posix.exit(1);
+            posix.dup2(slave_fd, 0) catch posix.exit(1);
+            posix.dup2(slave_fd, 1) catch posix.exit(1);
+            posix.dup2(slave_fd, 2) catch posix.exit(1);
 
             // e. Close original slave fd (now duped to 0/1/2)
             if (slave_fd > 2) posix.close(slave_fd);
@@ -178,10 +174,10 @@ pub const Pty = struct {
             const shell_env = std.fmt.bufPrintZ(&shell_env_buf, "SHELL={s}", .{shell_path}) catch "SHELL=/bin/sh";
 
             // Inherit key environment variables from parent
-            const home_val = std.posix.getenv("HOME") orelse "/root";
-            const user_val = std.posix.getenv("USER") orelse "root";
-            const lang_val = std.posix.getenv("LANG") orelse "C.UTF-8";
-            const path_val = std.posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
+            const home_val = posix.getenv("HOME") orelse "/root";
+            const user_val = posix.getenv("USER") orelse "root";
+            const lang_val = posix.getenv("LANG") orelse "C.UTF-8";
+            const path_val = posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
             const home_env = std.fmt.bufPrintZ(&home_env_buf, "HOME={s}", .{home_val}) catch "HOME=/root";
             const user_env = std.fmt.bufPrintZ(&user_env_buf, "USER={s}", .{user_val}) catch "USER=root";
             var lang_env_buf: [64]u8 = undefined;
@@ -221,11 +217,11 @@ pub const Pty = struct {
                 var xauth_env_buf: [256]u8 = undefined;
                 var xdg_runtime_buf: [256]u8 = undefined;
                 var dbus_env_buf: [256]u8 = undefined;
-                const display_env: ?[*:0]const u8 = if (std.posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{std.posix.getenv("DISPLAY").?}) catch null) else null;
-                const wayland_env: ?[*:0]const u8 = if (std.posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{std.posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
-                const xauth_env: ?[*:0]const u8 = if (std.posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{std.posix.getenv("XAUTHORITY").?}) catch null) else null;
-                const xdg_runtime_env: ?[*:0]const u8 = if (std.posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{std.posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
-                const dbus_env: ?[*:0]const u8 = if (std.posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{std.posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
+                const display_env: ?[*:0]const u8 = if (posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{posix.getenv("DISPLAY").?}) catch null) else null;
+                const wayland_env: ?[*:0]const u8 = if (posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
+                const xauth_env: ?[*:0]const u8 = if (posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{posix.getenv("XAUTHORITY").?}) catch null) else null;
+                const xdg_runtime_env: ?[*:0]const u8 = if (posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
+                const dbus_env: ?[*:0]const u8 = if (posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
                 if (display_env) |e| {
                     env_arr[ei] = e;
                     ei += 1;
@@ -272,15 +268,16 @@ pub const Pty = struct {
                     _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
             }
-            std.posix.exit(1);
+            posix.exit(1);
         }
 
         // === Parent process ===
         // Set master_fd nonblocking
         {
             const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
-            const O_NONBLOCK: usize = @intCast(@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
-            _ = try posix.fcntl(master_fd, posix.F.SETFL, cur_flags | O_NONBLOCK);
+            const O_NONBLOCK: u32 = @bitCast(posix.O{ .NONBLOCK = true });
+            const new_flags: usize = @as(u32, @bitCast(cur_flags)) | O_NONBLOCK;
+            _ = try posix.fcntl(master_fd, posix.F.SETFL, new_flags);
         }
 
         return Pty{
@@ -294,12 +291,40 @@ pub const Pty = struct {
         posix.kill(self.child_pid, posix.SIG.TERM) catch {};
         posix.close(self.master_fd);
         // Use WNOHANG: child may already be reaped by SIGCHLD handler.
-        // Use raw syscall because std.posix.waitpid panics on ECHILD.
-        if (is_linux) {
-            // wait4(pid, NULL, WNOHANG, NULL)
-            _ = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, linux.W.NOHANG, 0);
-        } else {
-            _ = std.c.waitpid(self.child_pid, null, 1); // WNOHANG=1
+        // Use raw syscall: std.posix.waitpid is absent from Zig 0.16 stdlib (verified).
+        // Poll up to 5 times (50ms each) for child to exit after SIGTERM.
+        var reaped = false;
+        for (0..5) |_| {
+            posix.sleep(50 * std.time.ns_per_ms);
+            if (is_linux) {
+                const rc = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, linux.W.NOHANG, 0);
+                const err = linux.errno(rc);
+                if (err == .SUCCESS or err == .CHILD) {
+                    reaped = true;
+                    break;
+                }
+            } else {
+                const rc = std.c.waitpid(self.child_pid, null, 1); // WNOHANG=1
+                if (rc > 0) {
+                    reaped = true;
+                    break;
+                }
+                if (std.c.getErrno(rc) == .CHILD) {
+                    reaped = true;
+                    break;
+                }
+            }
+        }
+        if (!reaped) {
+            // Child survived SIGTERM; escalate to SIGKILL (unblockable).
+            posix.kill(self.child_pid, posix.SIG.KILL) catch {};
+            // Blocking wait — SIGKILL delivery is immediate so this returns quickly.
+            // ECHILD means SIGCHLD handler already reaped it; either way we're done.
+            if (is_linux) {
+                _ = linux.syscall4(.wait4, @as(usize, @intCast(self.child_pid)), 0, 0, 0);
+            } else {
+                _ = std.c.waitpid(self.child_pid, null, 0);
+            }
         }
     }
 
@@ -345,7 +370,7 @@ test "Pty: spawn and read echo output" {
     defer pty.deinit();
 
     // Wait for output
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    posix.sleep(100 * std.time.ns_per_ms);
 
     var buf: [256]u8 = undefined;
     const n = pty.read(&buf) catch 0;

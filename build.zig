@@ -8,13 +8,22 @@ pub fn build(b: *std.Build) void {
     const is_x11 = std.mem.eql(u8, backend_opt, "x11");
     const is_wayland = std.mem.eql(u8, backend_opt, "wayland");
     const is_macos = std.mem.eql(u8, backend_opt, "macos");
+    if (!is_x11 and !is_wayland and !is_macos and !std.mem.eql(u8, backend_opt, "fbdev")) {
+        std.debug.panic("invalid -Dbackend='{s}'; expected fbdev, x11, wayland, or macos", .{backend_opt});
+    }
 
     const keymap_opt = b.option([]const u8, "keymap", "Keyboard layout: us or jp (default: us)") orelse "us";
     const use_jp_keymap = std.mem.eql(u8, keymap_opt, "jp");
+    if (!use_jp_keymap and !std.mem.eql(u8, keymap_opt, "us")) {
+        std.debug.panic("invalid -Dkeymap='{s}'; expected us or jp", .{keymap_opt});
+    }
 
     const scale_opt = b.option(u32, "scale", "Pixel scale factor: 1, 2, or 4 (default: 1)") orelse 1;
     const max_fps_opt = b.option(u32, "max_fps", "Maximum frame rate: 0 = unlimited (default: 120)") orelse 120;
     const pty_buf_kb_opt = b.option(u32, "pty_buf_kb", "PTY read buffer size in KB (default: 1024)") orelse 1024;
+    if (pty_buf_kb_opt == 0) {
+        @panic("invalid -Dpty_buf_kb=0; expected a positive buffer size");
+    }
     const shell_opt_raw = b.option([]const u8, "shell", "Shell path (default: /bin/sh)") orelse "/bin/sh";
     const shell_opt: [:0]const u8 = b.allocator.dupeZ(u8, shell_opt_raw) catch @panic("OOM");
 
@@ -27,7 +36,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(u32, "max_fps", max_fps_opt);
     options.addOption(u32, "pty_buf_kb", pty_buf_kb_opt);
     options.addOption([:0]const u8, "shell", shell_opt);
-    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.6.2") catch @panic("OOM"));
+    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.7.0") catch @panic("OOM"));
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
@@ -54,23 +63,60 @@ pub fn build(b: *std.Build) void {
     });
 
     if (is_x11) {
-        exe.linkSystemLibrary("xcb");
-        exe.linkSystemLibrary("xcb-shm");
-        exe.linkSystemLibrary("xcb-xkb");
-        exe.linkSystemLibrary("xcb-imdkit");
-        exe.linkSystemLibrary("xcb-util");
-        exe.linkSystemLibrary("xkbcommon");
-        exe.linkSystemLibrary("xkbcommon-x11");
+        exe_mod.linkSystemLibrary("xcb", .{});
+        exe_mod.linkSystemLibrary("xcb-shm", .{});
+        exe_mod.linkSystemLibrary("xcb-xkb", .{});
+        exe_mod.linkSystemLibrary("xcb-imdkit", .{});
+        exe_mod.linkSystemLibrary("xcb-util", .{});
+        exe_mod.linkSystemLibrary("xkbcommon", .{});
+        exe_mod.linkSystemLibrary("xkbcommon-x11", .{});
         // Allow cross-compilation against shared libs with newer glibc
         exe.linker_allow_shlib_undefined = true;
-        exe.linkLibC();
+        exe_mod.link_libc = true;
+
+        // translate-c for xcb + shm + xim + xkb (x11.zig).
+        // src/c_x11.h renames xcb_shm_id → _zt_xcb_shm_id_stub so translate-c
+        // can process xcb/shm.h without hitting the opaque-extern limitation;
+        // the real xcb_shm_id is declared manually in x11.zig.
+        const c_x11 = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_x11.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_x11", c_x11.createModule());
+
+        // translate-c for xkbcommon (shared with wayland backend)
+        const c_xkb_x11 = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_xkb", c_xkb_x11.createModule());
     } else if (is_wayland) {
-        exe.linkSystemLibrary("xkbcommon");
-        exe.linkLibC();
+        exe_mod.linkSystemLibrary("xkbcommon", .{});
+        exe_mod.link_libc = true;
+
+        const c_xkb_wl = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_xkb", c_xkb_wl.createModule());
     } else if (is_macos) {
-        exe.linkFramework("Cocoa");
-        exe.linkFramework("QuartzCore");
-        exe.linkLibC();
+        exe_mod.linkFramework("Cocoa", .{});
+        exe_mod.linkFramework("QuartzCore", .{});
+        exe_mod.link_libc = true;
+
+        const c_pty_macos = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_pty_macos.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        exe_mod.addImport("c_pty_macos", c_pty_macos.createModule());
     }
 
     b.installArtifact(exe);
@@ -89,21 +135,53 @@ pub fn build(b: *std.Build) void {
     });
 
     if (is_x11) {
-        unit_tests.linkSystemLibrary("xcb");
-        unit_tests.linkSystemLibrary("xcb-shm");
-        unit_tests.linkSystemLibrary("xcb-xkb");
-        unit_tests.linkSystemLibrary("xcb-imdkit");
-        unit_tests.linkSystemLibrary("xcb-util");
-        unit_tests.linkSystemLibrary("xkbcommon");
-        unit_tests.linkSystemLibrary("xkbcommon-x11");
-        unit_tests.linkLibC();
+        test_mod.linkSystemLibrary("xcb", .{});
+        test_mod.linkSystemLibrary("xcb-shm", .{});
+        test_mod.linkSystemLibrary("xcb-xkb", .{});
+        test_mod.linkSystemLibrary("xcb-imdkit", .{});
+        test_mod.linkSystemLibrary("xcb-util", .{});
+        test_mod.linkSystemLibrary("xkbcommon", .{});
+        test_mod.linkSystemLibrary("xkbcommon-x11", .{});
+        test_mod.link_libc = true;
+
+        const c_x11_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_x11.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_x11", c_x11_test.createModule());
+
+        const c_xkb_x11_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_xkb", c_xkb_x11_test.createModule());
     } else if (is_wayland) {
-        unit_tests.linkSystemLibrary("xkbcommon");
-        unit_tests.linkLibC();
+        test_mod.linkSystemLibrary("xkbcommon", .{});
+        test_mod.link_libc = true;
+
+        const c_xkb_wl_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_xkb.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_xkb", c_xkb_wl_test.createModule());
     } else if (is_macos) {
-        unit_tests.linkFramework("Cocoa");
-        unit_tests.linkFramework("QuartzCore");
-        unit_tests.linkLibC();
+        test_mod.linkFramework("Cocoa", .{});
+        test_mod.linkFramework("QuartzCore", .{});
+        test_mod.link_libc = true;
+
+        const c_pty_macos_test = b.addTranslateC(.{
+            .root_source_file = b.path("src/c_pty_macos.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        test_mod.addImport("c_pty_macos", c_pty_macos_test.createModule());
     }
 
     const run_unit_tests = b.addRunArtifact(unit_tests);

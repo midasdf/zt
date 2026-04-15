@@ -89,9 +89,9 @@ pub fn FontBlob(comptime blob: []const u8) type {
                 var valid: [CACHE_SIZE]bool = [_]bool{false} ** CACHE_SIZE;
             };
 
-            // XOR folding: mix high bits into low bits to reduce collisions
-            // for CJK ranges where codepoints differ only in upper bits
-            const folded = codepoint ^ (codepoint >> 8);
+            // XOR folding: mix all 21 bits into low 8 bits to reduce collisions
+            // for CJK ranges (U+4E00-U+9FFF) where bits 16+ differ
+            const folded: u21 = (codepoint ^ (codepoint >> 8) ^ (codepoint >> 16)) & 0xFF;
             const idx = folded % S.CACHE_SIZE;
             if (S.valid[idx] and S.keys[idx] == codepoint) {
                 return S.vals[idx];
@@ -175,10 +175,16 @@ fn parseBdf(comptime bdf_data: []const u8) struct {
                 };
                 glyph_idx += 1;
             } else {
-                // Parse hex row
+                // Parse hex row; zero-fill short rows so bitmap stays aligned
                 var i: usize = 0;
-                while (i < bytes_per_row * 2 and i + 1 < line.len) : (i += 2) {
-                    all_bitmap[bitmap_offset] = parseHexByte(line[i], line[i + 1]);
+                var row_bytes: usize = 0;
+                while (row_bytes < bytes_per_row) : (row_bytes += 1) {
+                    if (i + 1 < line.len) {
+                        all_bitmap[bitmap_offset] = parseHexByte(line[i], line[i + 1]);
+                        i += 2;
+                    } else {
+                        all_bitmap[bitmap_offset] = 0; // zero-fill remainder
+                    }
                     bitmap_offset += 1;
                 }
             }
@@ -284,7 +290,10 @@ fn parseUint(comptime T: type, s: []const u8) T {
     var val: T = 0;
     for (s) |c| {
         if (c < '0' or c > '9') break;
-        val = val * 10 + @as(T, @intCast(c - '0'));
+        const digit: T = @intCast(c - '0');
+        // Saturate on overflow rather than wrap silently
+        val = std.math.mul(T, val, 10) catch std.math.maxInt(T);
+        val = std.math.add(T, val, digit) catch std.math.maxInt(T);
     }
     return val;
 }

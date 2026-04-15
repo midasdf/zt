@@ -8,7 +8,7 @@
 ///     The fd argument is sent via SCM_RIGHTS and occupies ZERO bytes in payload.
 ///   - All event parsing advances through payload using wire.getString / wire.getUint.
 const std = @import("std");
-const posix = std.posix;
+const posix = @import("../../posix.zig");
 const linux = std.os.linux;
 const wire = @import("wire.zig");
 
@@ -69,8 +69,9 @@ pub const ClipboardState = struct {
     primary_has_text: bool = false,
 
     // Paste pipe (async read)
+    // Buffer is 1 MiB; content beyond that is truncated with a warning logged.
     paste_pipe_fd: posix.fd_t = -1,
-    paste_buf: [16384]u8 = undefined,
+    paste_buf: [1024 * 1024]u8 = undefined,
     paste_len: usize = 0,
 };
 
@@ -191,7 +192,8 @@ pub fn readPastePipe(state: *ClipboardState) bool {
         if (n == 0) return false; // EOF
         state.paste_len += n;
     }
-    // Buffer full — treat as done (truncate at 4096)
+    // Buffer full — truncated. Log a warning so the caller is aware.
+    std.log.warn("clipboard: paste data truncated at {} bytes (buffer full)", .{state.paste_buf.len});
     return false;
 }
 

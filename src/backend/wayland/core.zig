@@ -3,7 +3,7 @@
 /// Handles wl_display, wl_registry, wl_compositor, wl_shm, wl_shm_pool,
 /// wl_buffer, and wl_surface interactions.
 const std = @import("std");
-const posix = std.posix;
+const posix = @import("../../posix.zig");
 const linux = std.os.linux;
 const wire = @import("wire.zig");
 
@@ -332,8 +332,20 @@ pub const ShmBuffer = struct {
         const new_page_size = std.mem.alignForward(usize, raw_size, page_sz);
         const new_total_size = new_page_size * 2;
 
-        // 1. Destroy old wl_buffer objects
-        for (self.buffer_ids) |buf_id| {
+        // 1. Destroy old wl_buffer objects.
+        // Fast-path: we destroy and immediately reuse the buffer IDs. This is
+        // safe as long as the compositor processes the destroy before any
+        // subsequent attach of the new buffer — guaranteed by Wayland's
+        // in-order protocol. If the compositor still holds an attachment,
+        // the wl_buffer.release event will be received after the destroy,
+        // which is harmless (the object is already gone server-side).
+        // Callers must ensure resizeBuffers() is NOT called on a buffer that
+        // is currently attached (i.e., wait for wl_buffer.release or commit a
+        // different buffer first).
+        for (self.buffer_ids, self.released) |buf_id, rel| {
+            if (!rel) {
+                std.log.warn("core: destroying wl_buffer id={d} that has not been released by compositor — potential protocol race", .{buf_id});
+            }
             conn.sendMessage(buf_id, 0, &.{}, &.{}) catch {};
         }
 
@@ -344,7 +356,7 @@ pub const ShmBuffer = struct {
             const new_data = try posix.mmap(
                 null,
                 new_total_size,
-                posix.PROT.READ | posix.PROT.WRITE,
+                .{ .READ = true, .WRITE = true },
                 .{ .TYPE = .SHARED },
                 self.fd,
                 0,
@@ -364,6 +376,10 @@ pub const ShmBuffer = struct {
             conn.id_alloc.next(),
         };
         for (self.buffer_ids, 0..) |buf_id, i| {
+            // Guard: i * new_page_size must fit in i32 (Wayland offset is i32).
+            // In practice new_page_size <= 2^31 and i <= 1, so this only fires
+            // if someone requests an absurdly large buffer (>2GB per page).
+            std.debug.assert(@as(usize, i) * new_page_size <= @as(usize, std.math.maxInt(i32)));
             const offset: i32 = @intCast(@as(usize, i) * new_page_size);
             var payload: [24]u8 = undefined;
             var pos: usize = 0;
@@ -423,7 +439,7 @@ pub fn createShmBuffers(
     const data_ptr = try posix.mmap(
         null,
         total_size,
-        posix.PROT.READ | posix.PROT.WRITE,
+        .{ .READ = true, .WRITE = true },
         .{ .TYPE = .SHARED },
         fd,
         0,

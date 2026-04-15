@@ -1,5 +1,5 @@
 const std = @import("std");
-const posix = std.posix;
+const posix = @import("../posix.zig");
 const linux = std.os.linux;
 const config = @import("config");
 const input_mod = @import("../input.zig");

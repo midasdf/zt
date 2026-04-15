@@ -1,15 +1,16 @@
 const std = @import("std");
 const config = @import("config");
+const posix = @import("../posix.zig");
 const input_mod = @import("../input.zig");
 
-const c = @cImport({
-    @cInclude("xcb/xcb.h");
-    @cInclude("xcb/shm.h");
-    @cInclude("sys/shm.h");
-    @cInclude("xcb-imdkit/imclient.h");
-    @cInclude("xkbcommon/xkbcommon.h");
-    @cInclude("xkbcommon/xkbcommon-x11.h");
-});
+// xcb_shm_id is declared manually because translate-c (Zig 0.16) cannot render
+// `extern xcb_extension_t xcb_shm_id;` — xcb_extension_t is an opaque struct and
+// translate-c emits @compileError for opaque-typed extern variables. The c_x11.h
+// wrapper renames it to _zt_xcb_shm_id_stub (never referenced) so translate-c
+// succeeds, while the real symbol is linked via this declaration.
+extern var xcb_shm_id: opaque {};
+
+const c = @import("c_x11");
 
 pub const MouseEvent = struct {
     x: u32, // pixel x
@@ -298,6 +299,8 @@ pub const X11Backend = struct {
         if (xembed_info_reply) |r| xembed_info_atom = r.*.atom;
 
         // 7. Set up SHM (second buffer created lazily on first present)
+        // Sanity-cap dimensions to prevent u32 overflow from malicious ConfigureNotify
+        if (width > 16384 or height > 16384) return error.DimensionTooLarge;
         const buffer_size = stride * height;
         const shm_id = c.shmget(c.IPC_PRIVATE, buffer_size, c.IPC_CREAT | 0o600);
         if (shm_id < 0) return error.ShmGetFailed;
@@ -342,7 +345,7 @@ pub const X11Backend = struct {
 
         // 10. Query SHM extension first_event for completion events
         var shm_event_base: u8 = 0;
-        if (c.xcb_get_extension_data(connection, &c.xcb_shm_id)) |ext| {
+        if (c.xcb_get_extension_data(connection, @ptrCast(&xcb_shm_id))) |ext| {
             if (ext.*.present != 0) {
                 shm_event_base = ext.*.first_event;
             }
@@ -651,6 +654,8 @@ pub const X11Backend = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Free any pending event that was stashed during ConfigureNotify coalescing
+        if (self.pending_event) |pe| std.c.free(pe);
         // Clean up XIM
         if (self.xim) |xim| {
             if (self.xim_connected) {
@@ -784,7 +789,7 @@ pub const X11Backend = struct {
         // Keep dirty state so the next frame will include these regions.
         // Timeout after 100ms in case the SHM_COMPLETION event was lost.
         if (self.shm_busy) {
-            const now = std.time.nanoTimestamp();
+            const now = posix.nanoTimestamp();
             if (now - self.shm_busy_ns < 100_000_000) return;
             self.shm_busy = false;
         }
@@ -814,7 +819,7 @@ pub const X11Backend = struct {
             shm_offset,
         );
         self.shm_busy = true;
-        self.shm_busy_ns = std.time.nanoTimestamp();
+        self.shm_busy_ns = posix.nanoTimestamp();
 
         // Lazy-init second buffer on first present, then swap
         const back: u1 = front ^ 1;
@@ -858,6 +863,7 @@ pub const X11Backend = struct {
 
     pub fn resize(self: *Self, w: u32, h: u32) !void {
         if (w == self.width and h == self.height) return;
+        if (w > 16384 or h > 16384) return error.DimensionTooLarge;
 
         const new_stride = w * 4;
         const new_size = new_stride * h;
@@ -915,7 +921,7 @@ pub const X11Backend = struct {
         // to disambiguate (e.g., "n" waits to see if "a" follows for "な"
         // or "n" follows for "ん"). Emitting a fallback would leak raw ASCII.
         if (self.has_pending_xim) {
-            const now = std.time.nanoTimestamp();
+            const now = posix.nanoTimestamp();
             if (now - self.xim_pending_ns > 5_000_000_000) {
                 self.has_pending_xim = false;
                 self.suppress_xim_result = false;
@@ -1023,12 +1029,12 @@ pub const X11Backend = struct {
                     }
 
                     // Ctrl+Shift+C → copy selection to clipboard
-                    if (evdev_keycode == 46 and mods.ctrl and mods.shift and !mods.alt) {
+                    if (evdev_keycode == input_mod.KEY.C and mods.ctrl and mods.shift and !mods.alt) {
                         return .{ .copy_selection = {} };
                     }
 
                     // Ctrl+Shift+V → paste from clipboard
-                    if (evdev_keycode == 47 and mods.ctrl and mods.shift and !mods.alt) {
+                    if (evdev_keycode == input_mod.KEY.V and mods.ctrl and mods.shift and !mods.alt) {
                         self.requestPaste();
                         continue; // don't return null — drain remaining XCB events
                     }
@@ -1045,7 +1051,7 @@ pub const X11Backend = struct {
                                 // the leaked space character it sends back.
                                 // For any other key, clear stale suppress flag so
                                 // committed text from actual input isn't discarded.
-                                const is_ime_toggle = evdev_keycode == 57 and mods.shift and !mods.alt and !mods.meta;
+                                const is_ime_toggle = evdev_keycode == input_mod.KEY.SPACE and mods.shift and !mods.alt and !mods.meta;
                                 if (is_ime_toggle) {
                                     self.suppress_xim_result = true;
                                 } else {
@@ -1056,7 +1062,7 @@ pub const X11Backend = struct {
                                 self.pending_xim_keycode = key.*.detail;
                                 self.pending_xim_mods = xcbStateToMods(key.*.state);
                                 self.has_pending_xim = true;
-                                self.xim_pending_ns = std.time.nanoTimestamp();
+                                self.xim_pending_ns = posix.nanoTimestamp();
                                 _ = c.xcb_xim_forward_event(xim, self.xic, key);
                                 // Flush immediately so the IM server receives the
                                 // forwarded key. Without this, the key sits in libxcb's
@@ -1091,7 +1097,7 @@ pub const X11Backend = struct {
 
                     // Suppress IME toggle keys (Shift+Space) — don't produce text
                     // Only when IME is actually connected; otherwise Shift+Space should work normally
-                    if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt and self.xim_connected and self.xic != 0) {
+                    if (evdev_keycode == input_mod.KEY.SPACE and mods.shift and !mods.ctrl and !mods.alt and self.xim_connected and self.xic != 0) {
                         continue; // don't return null — drain remaining XCB events
                     }
 

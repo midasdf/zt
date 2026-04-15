@@ -286,7 +286,7 @@ fn buildJpSymbols(map: *[256]?KeyEntry) void {
     map[KEY.RIGHTBRACE] = .{ .normal = '[', .shifted = '{' };
     map[KEY.SEMICOLON] = .{ .normal = ';', .shifted = '+' };
     map[KEY.APOSTROPHE] = .{ .normal = ':', .shifted = '*' };
-    map[KEY.GRAVE] = .{ .normal = ']', .shifted = '}' }; // Hankaku/Zenkaku position, but used as ] on some JIS
+    // GRAVE on JIS is the Hankaku/Zenkaku IME toggle key; leave null (no character emitted).
     map[KEY.BACKSLASH] = .{ .normal = ']', .shifted = '}' };
     map[KEY.RO] = .{ .normal = '\\', .shifted = '_' };
     map[KEY.YEN] = .{ .normal = '\\', .shifted = '|' }; // ¥ key → backslash for terminal
@@ -453,9 +453,10 @@ pub fn translateKey(keycode: u16, mods: Modifiers, decckm: bool, decbkm: bool) [
     // --- Printable keys from keymap ---
     if (keycode < 256) {
         if (keymap[keycode]) |entry| {
-            // Ctrl+letter (A-Z only)
-            if (mods.ctrl and entry.normal >= 'a' and entry.normal <= 'z') {
-                const ctrl_char: u8 = entry.normal - 'a' + 1; // 0x01..0x1A
+            // Ctrl+letter (A-Z only); toLower is defensive for any uppercase normals
+            const normal_lower = std.ascii.toLower(entry.normal);
+            if (mods.ctrl and normal_lower >= 'a' and normal_lower <= 'z') {
+                const ctrl_char: u8 = normal_lower - 'a' + 1; // 0x01..0x1A
                 if (mods.alt) {
                     S.buf[0] = 0x1b;
                     S.buf[1] = ctrl_char;
@@ -497,15 +498,18 @@ pub fn translateKey(keycode: u16, mods: Modifiers, decckm: bool, decbkm: bool) [
 /// Write a u8 value as decimal digits into buf. Returns number of bytes written.
 fn writeU8(buf: []u8, val: u8) usize {
     if (val >= 100) {
+        std.debug.assert(buf.len >= 3);
         buf[0] = '0' + val / 100;
         buf[1] = '0' + (val / 10) % 10;
         buf[2] = '0' + val % 10;
         return 3;
     } else if (val >= 10) {
+        std.debug.assert(buf.len >= 2);
         buf[0] = '0' + val / 10;
         buf[1] = '0' + val % 10;
         return 2;
     } else {
+        std.debug.assert(buf.len >= 1);
         buf[0] = '0' + val;
         return 1;
     }

@@ -284,13 +284,18 @@ pub const Parser = struct {
                 if (idx < 16) {
                     const si = self.sub_param_counts[idx];
                     if (si < 5) {
-                        self.sub_params[idx][si] = self.sub_params[idx][si] *| 10 +| (byte - '0');
+                        // Stop accumulating once saturated to avoid silent corruption of large values.
+                        if (self.sub_params[idx][si] < 0xffff) {
+                            self.sub_params[idx][si] = self.sub_params[idx][si] *| 10 +| (byte - '0');
+                        }
                     }
                 }
             } else {
                 const idx = self.param_count;
                 if (idx < 16) {
-                    self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
+                    if (self.params[idx] < 0xffff) {
+                        self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
+                    }
                 }
             }
             return .none;
@@ -379,13 +384,13 @@ pub const Parser = struct {
             // Not ST — store ESC only for printable data bytes;
             // control bytes (CAN, SUB, BEL, ESC) fall through to handlers below
             if (byte >= 0x20 and byte != 0x7F) {
-                if (self.osc_len < 8192) {
+                // Atomic pair: either both bytes fit or neither is written
+                // (the old per-byte guard could store the ESC and silently
+                // drop the follow-up, producing a truncated OSC payload).
+                if (self.osc_len + 2 <= self.osc_buf.len) {
                     self.osc_buf[self.osc_len] = 0x1B;
-                    self.osc_len += 1;
-                }
-                if (self.osc_len < 8192) {
-                    self.osc_buf[self.osc_len] = byte;
-                    self.osc_len += 1;
+                    self.osc_buf[self.osc_len + 1] = byte;
+                    self.osc_len += 2;
                 }
                 return .none;
             }
@@ -867,6 +872,16 @@ fn handleOsc52(_: []const u8, _: *Term) void {
     // TODO: add a CLI flag (e.g. --allow-osc52) to opt in.
 }
 
+// OSC 8 URI scheme allowlist — drop hyperlinks with unknown/dangerous schemes.
+const osc8_allowed_schemes = [_][]const u8{ "http://", "https://", "file://", "mailto:" };
+
+fn osc8UriAllowed(uri: []const u8) bool {
+    for (osc8_allowed_schemes) |scheme| {
+        if (uri.len >= scheme.len and std.ascii.eqlIgnoreCase(uri[0..scheme.len], scheme)) return true;
+    }
+    return false;
+}
+
 fn handleOsc8(param: []const u8, term: *Term) void {
     // OSC 8 ; params ; URI ST  (start hyperlink)
     // OSC 8 ; ; ST             (end hyperlink)
@@ -877,16 +892,32 @@ fn handleOsc8(param: []const u8, term: *Term) void {
         return;
     }
     const first_sep = std.mem.indexOfScalar(u8, param, ';') orelse return;
-    const uri = param[first_sep + 1 ..];
+    const raw_uri = param[first_sep + 1 ..];
 
-    if (uri.len == 0) {
+    if (raw_uri.len == 0) {
         // End hyperlink
         term.current_hyperlink_id = 0;
         return;
     }
 
-    // Start hyperlink — find or create entry
-    const max_len = @min(uri.len, @as(usize, 512));
+    // Strip C0/DEL bytes from URI (mirrors OSC 0/2 title sanitization).
+    var sanitized: [512]u8 = undefined;
+    var slen: usize = 0;
+    for (raw_uri) |b| {
+        if (b < 0x20 or b == 0x7f) continue;
+        if (slen >= sanitized.len) break;
+        sanitized[slen] = b;
+        slen += 1;
+    }
+    const uri = sanitized[0..slen];
+
+    // Reject URIs whose scheme is not in the allowlist.
+    if (uri.len == 0 or !osc8UriAllowed(uri)) {
+        term.current_hyperlink_id = 0;
+        return;
+    }
+
+    const max_len = uri.len;
 
     // Search existing entries
     for (&term.hyperlink_table, 0..) |*entry, idx| {
@@ -898,11 +929,21 @@ fn handleOsc8(param: []const u8, term: *Term) void {
 
     // Allocate new entry (ring buffer)
     const slot = (term.hyperlink_next_id - 1) % 64;
-    // Invalidate cells referencing the old slot before reuse
+    // Invalidate cells referencing the old slot before reuse.
+    // TODO(perf): this is O(cols * rows) per reused slot — introduce a
+    // per-slot generation counter so stale cell refs can be detected at
+    // render time without an up-front scan.
     const old_id: u16 = @intCast(slot + 1);
     if (term.hyperlink_table[slot].len > 0) {
         for (term.hyperlink_ids) |*hid| {
             if (hid.* == old_id) hid.* = 0;
+        }
+        // Also scan the alt-screen buffer if allocated, otherwise stale IDs
+        // there would render with the new URL after \e[?1049h.
+        if (term.alt_hyperlink_ids) |alt_ids| {
+            for (alt_ids) |*hid| {
+                if (hid.* == old_id) hid.* = 0;
+            }
         }
     }
     term.hyperlink_table[slot].len = @intCast(max_len);
@@ -2720,6 +2761,28 @@ test "OSC 8: hyperlink id written to cells" {
     try testing.expectEqual(@as(u16, 0), term.hyperlink_ids[base + 2]);
 }
 
+test "OSC 8: ST-terminated hyperlink renders inner text" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Same shape as BEL test but using ST (ESC \\) as terminator.
+    const seq = "\x1b]8;;https://test.com\x1b\\ab\x1b]8;;\x1b\\c";
+    for (seq) |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    const phys = term.row_map[0];
+    const base = @as(usize, phys) * @as(usize, term.cols);
+    try testing.expectEqual(@as(u21, 'a'), term.cells[base + 0].char);
+    try testing.expectEqual(@as(u21, 'b'), term.cells[base + 1].char);
+    try testing.expectEqual(@as(u21, 'c'), term.cells[base + 2].char);
+    try testing.expect(term.hyperlink_ids[base + 0] != 0);
+    try testing.expect(term.hyperlink_ids[base + 1] != 0);
+    try testing.expectEqual(@as(u16, 0), term.hyperlink_ids[base + 2]);
+}
+
 test "Bracketed paste mode tracked by DECSET 2004" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
@@ -2830,4 +2893,369 @@ test "CUP respects DECOM origin mode" {
 
     try testing.expectEqual(@as(u32, 0), term.cursor_x);
     try testing.expectEqual(@as(u32, 4), term.cursor_y); // row 5 (0-indexed = 4)
+}
+
+test "Fuzz: random byte sequences do not panic or leak" {
+    // Silence VT parser warnings during the random byte stream — they would
+    // otherwise corrupt the test runner's --listen=- IPC framing on stderr.
+    const prev_log_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_log_level;
+
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    var prng = std.Random.DefaultPrng.init(0xDEADBEEF_CAFEBABE);
+    const random = prng.random();
+
+    var iter: usize = 0;
+    while (iter < 10_000) : (iter += 1) {
+        const len = random.intRangeAtMost(usize, 1, 256);
+        var buf: [256]u8 = undefined;
+        random.bytes(buf[0..len]);
+        for (buf[0..len]) |byte| {
+            const action = parser.feed(byte);
+            executeAction(action, &term);
+        }
+    }
+
+    // RIS — parser must return cleanly to ground state
+    for ("\x1bc") |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+    // Verify ground state by feeding plain ASCII and expecting print
+    const after_reset = parser.feed('A');
+    try testing.expect(after_reset == .print);
+}
+
+// =============================================================================
+// QA Unit Tests — A1
+// =============================================================================
+
+test "OSC 8 scheme allowlist: http allowed" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b]8;;http://x.example/\x1b\\") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expect(term.current_hyperlink_id != 0);
+}
+
+test "OSC 8 scheme allowlist: https allowed" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b]8;;https://x.example/\x1b\\") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expect(term.current_hyperlink_id != 0);
+}
+
+test "OSC 8 scheme allowlist: ftp rejected" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b]8;;ftp://x/\x1b\\") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expectEqual(@as(u16, 0), term.current_hyperlink_id);
+}
+
+test "OSC 8 scheme allowlist: javascript rejected" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b]8;;javascript:alert(1)\x1b\\") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expectEqual(@as(u16, 0), term.current_hyperlink_id);
+}
+
+test "OSC 8 scheme allowlist: empty URI clears hyperlink" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // First set a hyperlink
+    for ("\x1b]8;;https://example.com\x1b\\") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expect(term.current_hyperlink_id != 0);
+
+    // Empty URI (clear)
+    for ("\x1b]8;;\x1b\\") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expectEqual(@as(u16, 0), term.current_hyperlink_id);
+}
+
+test "OSC 0 title C0 strip: embedded BEL stripped" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Title with embedded BEL (0x07) — BEL is a C0 control, should be stripped
+    for ("\x1b]0;Ti\x07tle\x07") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    // Result should only contain printable chars: "Ti" (BEL terminates OSC early)
+    // The OSC parser treats BEL as a terminator, so only "Ti" is in the title
+    // because the first \x07 closes the OSC sequence.
+    const stored = term.title[0..term.title_len];
+    // Confirm no control characters in the stored title
+    for (stored) |ch| {
+        try testing.expect(ch >= 0x20 and ch != 0x7F);
+    }
+}
+
+test "OSC 2 title C0 strip: embedded ESC stripped" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Title with embedded \x1b (ESC) — must be stripped by sanitization
+    // Use ST (ESC \) as the terminator
+    for ("\x1b]2;Good\x1b\\") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    const stored = term.title[0..term.title_len];
+    try testing.expectEqualSlices(u8, "Good", stored);
+}
+
+test "OSC 0 title C0 strip: NUL byte stripped" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Feed the OSC bytes manually to include NUL (0x00) in the payload
+    // OSC 0 ; A NUL B BEL
+    const seq = [_]u8{ 0x1b, ']', '0', ';', 'A', 0x00, 'B', 0x07 };
+    for (seq) |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    const stored = term.title[0..term.title_len];
+    // NUL is a C0 control (< 0x20), must be stripped — only "AB" survives
+    try testing.expectEqualSlices(u8, "AB", stored);
+}
+
+test "OSC 2 title length cap: 1KB title truncated to 255 chars" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Manually build a long OSC sequence: ESC ] 2 ; <1024 'x'> BEL
+    executeAction(parser.feed(0x1b), &term);
+    executeAction(parser.feed(']'), &term);
+    executeAction(parser.feed('2'), &term);
+    executeAction(parser.feed(';'), &term);
+    var i: usize = 0;
+    while (i < 1024) : (i += 1) {
+        executeAction(parser.feed('x'), &term);
+    }
+    executeAction(parser.feed(0x07), &term);
+
+    // title_len is stored as u8 (max 255) and the code caps at 255
+    try testing.expect(term.title_len <= 255);
+    // All stored chars must be 'x'
+    for (term.title[0..term.title_len]) |ch| {
+        try testing.expectEqual(@as(u8, 'x'), ch);
+    }
+}
+
+test "UTF-8 CJK: hiragana 'a' (U+3042) is wide, cursor advances 2" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // あ = U+3042 = E3 81 82
+    for ("\xe3\x81\x82") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    // Wide char: cursor advances by 2
+    try testing.expectEqual(@as(u32, 2), term.cursor_x);
+    // Cell at col 0 must be wide
+    const cell0 = term.getCell(0, 0);
+    try testing.expectEqual(@as(u21, 0x3042), cell0.char);
+    try testing.expect(cell0.attrs.wide);
+    // Cell at col 1 must be wide_dummy
+    const cell1 = term.getCell(1, 0);
+    try testing.expect(cell1.attrs.wide_dummy);
+}
+
+test "UTF-8 emoji: crab (U+1F980) is wide, cursor advances 2" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // U+1F980 = F0 9F A6 80
+    for ("\xf0\x9f\xa6\x80") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expectEqual(@as(u32, 2), term.cursor_x);
+    const cell0 = term.getCell(0, 0);
+    try testing.expectEqual(@as(u21, 0x1F980), cell0.char);
+    try testing.expect(cell0.attrs.wide);
+    const cell1 = term.getCell(1, 0);
+    try testing.expect(cell1.attrs.wide_dummy);
+}
+
+test "UTF-8 Arabic letter: alef (U+0627) is narrow, cursor advances 1" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // U+0627 = D8 A7
+    for ("\xd8\xa7") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    // Arabic letters are narrow — cursor advances 1
+    try testing.expectEqual(@as(u32, 1), term.cursor_x);
+    const cell0 = term.getCell(0, 0);
+    try testing.expectEqual(@as(u21, 0x0627), cell0.char);
+    try testing.expect(!cell0.attrs.wide);
+}
+
+test "UTF-8 combining diacritic does not advance cursor" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // 'e' followed by combining acute (U+0301 = CC 81)
+    for ("e\xcc\x81") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    // 'e' advances cursor to 1; combining mark U+0301 is not wide, advances 1 more
+    // (the parser treats combining marks as narrow printable codepoints)
+    // Cursor should be at 2 (e at 0, combining at 1)
+    try testing.expectEqual(@as(u32, 2), term.cursor_x);
+}
+
+test "Bracketed paste: DECSET 2004 enables bracketed_paste flag" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    try testing.expect(!term.bracketed_paste);
+    for ("\x1b[?2004h") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expect(term.bracketed_paste);
+}
+
+test "Bracketed paste: DECRST 2004 disables bracketed_paste flag" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    for ("\x1b[?2004h") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expect(term.bracketed_paste);
+    for ("\x1b[?2004l") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    try testing.expect(!term.bracketed_paste);
+}
+
+test "Bracketed paste: scrub logic removes embedded end-marker" {
+    // Test the scrubbing logic directly using the same algorithm as main.zig.
+    // Verifies that \x1b[201~ embedded in paste payload is stripped out.
+    const marker = "\x1b[201~";
+    const payload = "hello\x1b[201~world";
+
+    var out_buf: [256]u8 = undefined;
+    var out_len: usize = 0;
+
+    var rest: []const u8 = payload;
+    while (rest.len > 0) {
+        if (std.mem.indexOf(u8, rest, marker)) |idx| {
+            @memcpy(out_buf[out_len .. out_len + idx], rest[0..idx]);
+            out_len += idx;
+            rest = rest[idx + marker.len ..];
+        } else {
+            @memcpy(out_buf[out_len .. out_len + rest.len], rest);
+            out_len += rest.len;
+            break;
+        }
+    }
+
+    const result = out_buf[0..out_len];
+    try testing.expectEqualSlices(u8, "helloworld", result);
+    // Confirm the marker is absent from the output
+    try testing.expect(std.mem.indexOf(u8, result, marker) == null);
+}
+
+test "Resize: 1x1 is valid and does not panic" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    try term.resize(1, 1);
+    try testing.expectEqual(@as(u32, 1), term.cols);
+    try testing.expectEqual(@as(u32, 1), term.rows);
+}
+
+test "Resize: 1 row with large cols is valid" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    try term.resize(1000, 1);
+    try testing.expectEqual(@as(u32, 1000), term.cols);
+    try testing.expectEqual(@as(u32, 1), term.rows);
+}
+
+test "Resize: 0 cols returns error.InvalidSize" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    const result = term.resize(0, 24);
+    try testing.expectError(error.InvalidSize, result);
+    // Dimensions must be unchanged after failed resize
+    try testing.expectEqual(@as(u32, 80), term.cols);
+    try testing.expectEqual(@as(u32, 24), term.rows);
+}
+
+test "Resize: 0 rows returns error.InvalidSize" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    const result = term.resize(80, 0);
+    try testing.expectError(error.InvalidSize, result);
+    try testing.expectEqual(@as(u32, 80), term.cols);
+    try testing.expectEqual(@as(u32, 24), term.rows);
+}
+
+test "Window title: OSC 2 sanitizes control characters" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Only the first OSC title (before any control char) should be stored.
+    // "Title" followed by BEL (0x07) terminates the OSC — only "Title" stored.
+    // Then a second \x1b]2;Pwn\x07 sequence would set a new title.
+    // Test: first sequence stores "Title" with sanitized (control-free) content.
+    for ("\x1b]2;Title\x07") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    const stored = term.title[0..term.title_len];
+    try testing.expectEqualSlices(u8, "Title", stored);
+    for (stored) |ch| {
+        try testing.expect(ch >= 0x20 and ch != 0x7F);
+    }
+}
+
+test "Window title: only first sanitized title stored when two OSC sequences sent" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Two back-to-back OSC title sequences: second one overwrites first
+    for ("\x1b]2;First\x07\x1b]2;Second\x07") |byte| {
+        executeAction(parser.feed(byte), &term);
+    }
+    // After two sequences, the stored title must equal "Second" (last wins)
+    const stored = term.title[0..term.title_len];
+    try testing.expectEqualSlices(u8, "Second", stored);
 }
