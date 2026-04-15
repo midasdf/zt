@@ -468,7 +468,10 @@ fn dispatchClipboardCopy(data: []const u8) void {
     };
 
     if (pid == 0) {
-        // Child: redirect stdin from pipe read end
+        // Child: redirect stdin from pipe read end.
+        // All other inherited fds (PTY master, signalfd, epoll_fd, evdev, backend
+        // socket) carry O_CLOEXEC and are closed automatically by the kernel on
+        // execvpeZ.  No explicit closefrom loop is needed.
         posix.dup2(pipe_fds[0], 0) catch posix.exit(1);
         posix.close(pipe_fds[0]);
         posix.close(pipe_fds[1]);
@@ -587,11 +590,17 @@ fn handleBackendEvent(
             const new_cols = rsz.width / config.cell_width;
             const new_rows = rsz.height / config.cell_height;
             if (new_cols > 0 and new_rows > 0) {
+                const old_cols = term.cols;
+                const old_rows = term.rows;
                 term.resize(new_cols, new_rows) catch |err| {
                     std.log.err("term resize: {}", .{err});
+                    return true;
                 };
                 pty_ptr.resize(@intCast(@min(new_cols, 65535)), @intCast(@min(new_rows, 65535))) catch |err| {
                     std.log.err("pty resize: {}", .{err});
+                    // Roll back the terminal resize so term and pty stay in sync.
+                    term.resize(old_cols, old_rows) catch {};
+                    return true;
                 };
                 backend.resize(rsz.width, rsz.height) catch |err| {
                     std.log.err("backend resize: {}", .{err});

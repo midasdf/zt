@@ -303,6 +303,8 @@ pub const X11Backend = struct {
         if (xembed_info_reply) |r| xembed_info_atom = r.*.atom;
 
         // 7. Set up SHM (second buffer created lazily on first present)
+        // Sanity-cap dimensions to prevent u32 overflow from malicious ConfigureNotify
+        if (width > 16384 or height > 16384) return error.DimensionTooLarge;
         const buffer_size = stride * height;
         const shm_id = c.shmget(c.IPC_PRIVATE, buffer_size, c.IPC_CREAT | 0o600);
         if (shm_id < 0) return error.ShmGetFailed;
@@ -656,6 +658,8 @@ pub const X11Backend = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Free any pending event that was stashed during ConfigureNotify coalescing
+        if (self.pending_event) |pe| std.c.free(pe);
         // Clean up XIM
         if (self.xim) |xim| {
             if (self.xim_connected) {
@@ -863,6 +867,7 @@ pub const X11Backend = struct {
 
     pub fn resize(self: *Self, w: u32, h: u32) !void {
         if (w == self.width and h == self.height) return;
+        if (w > 16384 or h > 16384) return error.DimensionTooLarge;
 
         const new_stride = w * 4;
         const new_size = new_stride * h;
@@ -1028,12 +1033,12 @@ pub const X11Backend = struct {
                     }
 
                     // Ctrl+Shift+C → copy selection to clipboard
-                    if (evdev_keycode == 46 and mods.ctrl and mods.shift and !mods.alt) {
+                    if (evdev_keycode == input_mod.KEY.C and mods.ctrl and mods.shift and !mods.alt) {
                         return .{ .copy_selection = {} };
                     }
 
                     // Ctrl+Shift+V → paste from clipboard
-                    if (evdev_keycode == 47 and mods.ctrl and mods.shift and !mods.alt) {
+                    if (evdev_keycode == input_mod.KEY.V and mods.ctrl and mods.shift and !mods.alt) {
                         self.requestPaste();
                         continue; // don't return null — drain remaining XCB events
                     }
@@ -1050,7 +1055,7 @@ pub const X11Backend = struct {
                                 // the leaked space character it sends back.
                                 // For any other key, clear stale suppress flag so
                                 // committed text from actual input isn't discarded.
-                                const is_ime_toggle = evdev_keycode == 57 and mods.shift and !mods.alt and !mods.meta;
+                                const is_ime_toggle = evdev_keycode == input_mod.KEY.SPACE and mods.shift and !mods.alt and !mods.meta;
                                 if (is_ime_toggle) {
                                     self.suppress_xim_result = true;
                                 } else {
@@ -1096,7 +1101,7 @@ pub const X11Backend = struct {
 
                     // Suppress IME toggle keys (Shift+Space) — don't produce text
                     // Only when IME is actually connected; otherwise Shift+Space should work normally
-                    if (evdev_keycode == 57 and mods.shift and !mods.ctrl and !mods.alt and self.xim_connected and self.xic != 0) {
+                    if (evdev_keycode == input_mod.KEY.SPACE and mods.shift and !mods.ctrl and !mods.alt and self.xim_connected and self.xic != 0) {
                         continue; // don't return null — drain remaining XCB events
                     }
 

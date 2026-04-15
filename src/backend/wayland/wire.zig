@@ -165,7 +165,8 @@ pub fn getArray(buf: []const u8, pos: *usize) []const u8 {
 pub const Connection = struct {
     fd: posix.fd_t,
     id_alloc: ObjectIdAllocator = .{},
-    recv_buf: [16384]u8 align(4) = undefined,
+    // 65536 matches the Wayland spec maximum message size (size field is u16).
+    recv_buf: [65536]u8 align(4) = undefined,
     recv_len: usize = 0,
     /// Cursor into recv_buf: how many bytes have been consumed by nextEvent/consumeEvent.
     recv_consumed: usize = 0,
@@ -250,10 +251,14 @@ pub const Connection = struct {
                 .{ .base = payload.ptr, .len = payload.len },
             };
 
-            // Build ancillary data buffer for SCM_RIGHTS
+            // Build ancillary data buffer for SCM_RIGHTS.
+            // cmsg_buf is sized for exactly max_send_fds fds; assert the caller
+            // does not exceed this so the @memcpy below cannot write out of bounds.
+            const max_send_fds = 4;
+            std.debug.assert(fds.len <= max_send_fds);
             const fd_bytes = std.mem.sliceAsBytes(fds);
             const cmsg_space = std.mem.alignForward(usize, @sizeOf(cmsghdr) + fd_bytes.len, @alignOf(cmsghdr));
-            var cmsg_buf: [std.mem.alignForward(usize, @sizeOf(cmsghdr) + 4 * @sizeOf(posix.fd_t), @alignOf(cmsghdr))]u8 align(@alignOf(cmsghdr)) = undefined;
+            var cmsg_buf: [std.mem.alignForward(usize, @sizeOf(cmsghdr) + max_send_fds * @sizeOf(posix.fd_t), @alignOf(cmsghdr))]u8 align(@alignOf(cmsghdr)) = undefined;
 
             const cmsg: *cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
             cmsg.len = @intCast(@sizeOf(cmsghdr) + fd_bytes.len);
@@ -370,6 +375,10 @@ pub const Connection = struct {
                         posix.close(fd_ptr[i]);
                     }
                 }
+                // Guard: a well-formed cmsg must be at least as large as its
+                // header. A truncated or malicious cmsg with len < header size
+                // would make the data_len computation wrap, so bail out early.
+                if (cmsg.len < @sizeOf(cmsghdr)) break;
                 const next = std.mem.alignForward(usize, cmsg.len, @alignOf(cmsghdr));
                 if (next == 0) break;
                 cmsg_ptr += next;

@@ -166,6 +166,9 @@ pub const FbdevBackend = struct {
         @memset(shadow, 0);
 
         // 6. Scan for evdev keyboards
+        // Cap at 8 slots: typical systems have 1-3 keyboard devices; 8 covers
+        // split keyboards, USB + Bluetooth, and virtual input devices without
+        // wasting fd space. Scan up to event31 to find them all.
         var evdev_fds: [8]posix.fd_t = [_]posix.fd_t{-1} ** 8;
         var evdev_count: u8 = 0;
 
@@ -289,6 +292,15 @@ pub const FbdevBackend = struct {
             code: u16,
             value: i32,
         };
+        // Linux kernel struct input_event is 24 bytes on 64-bit and 16 bytes on 32-bit.
+        // Assert that our Zig layout matches the kernel ABI for the current target.
+        comptime {
+            if (@sizeOf(usize) == 8) {
+                std.debug.assert(@sizeOf(InputEventRaw) == 24);
+            } else {
+                std.debug.assert(@sizeOf(InputEventRaw) == 16);
+            }
+        }
         var ev: InputEventRaw = undefined;
         const n = posix.read(fd, std.mem.asBytes(&ev)) catch return null;
         if (n < @sizeOf(InputEventRaw)) return null;
