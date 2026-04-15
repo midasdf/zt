@@ -16,8 +16,8 @@ jobs:
 
       - name: Install Zig
         run: |
-          curl -L "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+          curl -L "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: |
@@ -43,8 +43,8 @@ jobs:
 
       - name: Install Zig
         run: |
-          curl -L "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+          curl -L "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: |
@@ -67,8 +67,8 @@ jobs:
 
       - name: Install Zig
         run: |
-          curl -L "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+          curl -L "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
 
       - name: Enable multiarch and install aarch64 dependencies
         run: |
@@ -115,8 +115,8 @@ jobs:
 
       - name: Install Zig
         run: |
-          curl -L "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+          curl -L "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
 
       - name: Enable multiarch and install aarch64 dependencies
         run: |
