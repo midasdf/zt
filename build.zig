@@ -4,6 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Optional sysroot for cross-compilation (-Dsysroot=/path/to/sysroot).
+    // Expected layout: <sysroot>/include and <sysroot>/lib.
+    // Needed because b.addTranslateC does not inherit --search-prefix.
+    const sysroot_opt = b.option([]const u8, "sysroot", "Sysroot for cross-compile translate-c include/library paths");
+    const sysroot_inc: ?std.Build.LazyPath = if (sysroot_opt) |s|
+        .{ .cwd_relative = b.pathJoin(&.{ s, "include" }) }
+    else
+        null;
+    const sysroot_lib: ?std.Build.LazyPath = if (sysroot_opt) |s|
+        .{ .cwd_relative = b.pathJoin(&.{ s, "lib" }) }
+    else
+        null;
+
     const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev, x11, wayland, or macos") orelse "fbdev";
     const is_x11 = std.mem.eql(u8, backend_opt, "x11");
     const is_wayland = std.mem.eql(u8, backend_opt, "wayland");
@@ -73,6 +86,8 @@ pub fn build(b: *std.Build) void {
         // Allow cross-compilation against shared libs with newer glibc
         exe.linker_allow_shlib_undefined = true;
         exe_mod.link_libc = true;
+        if (sysroot_inc) |p| exe_mod.addIncludePath(p);
+        if (sysroot_lib) |p| exe_mod.addLibraryPath(p);
 
         // translate-c for xcb + shm + xim + xkb (x11.zig).
         // src/c_x11.h renames xcb_shm_id → _zt_xcb_shm_id_stub so translate-c
@@ -84,6 +99,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
         });
+        if (sysroot_inc) |p| c_x11.addIncludePath(p);
         exe_mod.addImport("c_x11", c_x11.createModule());
 
         // translate-c for xkbcommon (shared with wayland backend)
@@ -93,10 +109,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
         });
+        if (sysroot_inc) |p| c_xkb_x11.addIncludePath(p);
         exe_mod.addImport("c_xkb", c_xkb_x11.createModule());
     } else if (is_wayland) {
         exe_mod.linkSystemLibrary("xkbcommon", .{});
         exe_mod.link_libc = true;
+        if (sysroot_inc) |p| exe_mod.addIncludePath(p);
+        if (sysroot_lib) |p| exe_mod.addLibraryPath(p);
 
         const c_xkb_wl = b.addTranslateC(.{
             .root_source_file = b.path("src/c_xkb.h"),
@@ -104,6 +123,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
         });
+        if (sysroot_inc) |p| c_xkb_wl.addIncludePath(p);
         exe_mod.addImport("c_xkb", c_xkb_wl.createModule());
     } else if (is_macos) {
         exe_mod.linkFramework("Cocoa", .{});
