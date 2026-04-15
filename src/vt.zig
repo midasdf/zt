@@ -2720,6 +2720,28 @@ test "OSC 8: hyperlink id written to cells" {
     try testing.expectEqual(@as(u16, 0), term.hyperlink_ids[base + 2]);
 }
 
+test "OSC 8: ST-terminated hyperlink renders inner text" {
+    var term = try Term.init(testing.allocator, 80, 24);
+    defer term.deinit();
+    var parser = Parser{};
+
+    // Same shape as BEL test but using ST (ESC \\) as terminator.
+    const seq = "\x1b]8;;https://test.com\x1b\\ab\x1b]8;;\x1b\\c";
+    for (seq) |byte| {
+        const action = parser.feed(byte);
+        executeAction(action, &term);
+    }
+
+    const phys = term.row_map[0];
+    const base = @as(usize, phys) * @as(usize, term.cols);
+    try testing.expectEqual(@as(u21, 'a'), term.cells[base + 0].char);
+    try testing.expectEqual(@as(u21, 'b'), term.cells[base + 1].char);
+    try testing.expectEqual(@as(u21, 'c'), term.cells[base + 2].char);
+    try testing.expect(term.hyperlink_ids[base + 0] != 0);
+    try testing.expect(term.hyperlink_ids[base + 1] != 0);
+    try testing.expectEqual(@as(u16, 0), term.hyperlink_ids[base + 2]);
+}
+
 test "Bracketed paste mode tracked by DECSET 2004" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
