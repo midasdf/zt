@@ -63,6 +63,11 @@ fn setupSignals() !posix.fd_t {
         linux.sigaddset(&mask, linux.SIG.HUP);
         linux.sigaddset(&mask, linux.SIG.USR1);
         linux.sigaddset(&mask, linux.SIG.USR2);
+        // SIGPIPE: block so a stray write(fd) after the remote end
+        // (pty slave, clipboard helper, ...) closes returns EPIPE
+        // instead of killing the process. Never read from signalfd
+        // for PIPE — we just want it to not terminate us.
+        linux.sigaddset(&mask, linux.SIG.PIPE);
 
         // SIG_BLOCK = 0
         _ = linux.sigprocmask(0, &mask, null);
@@ -87,6 +92,9 @@ fn setupSignals() !posix.fd_t {
         _ = std.c.sigaddset(&mask, std.c.SIG.INT);
         _ = std.c.sigaddset(&mask, std.c.SIG.HUP);
         _ = std.c.sigprocmask(std.c.SIG.BLOCK, &mask, null);
+        // SIGPIPE: ignore globally so bad writes return EPIPE
+        // instead of terminating the process.
+        _ = std.c.signal(std.c.SIG.PIPE, std.c.SIG.IGN);
         return -1;
     }
 }
@@ -449,19 +457,9 @@ fn dispatchClipboardCopy(data: []const u8) void {
         else => return,
     };
 
-    // Block SIGPIPE to prevent write() from killing us if child dies early
-    const SIG_PIPE = if (is_linux) linux.SIG.PIPE else std.c.SIG.PIPE;
-    const SIG_BLOCK: u32 = if (is_linux) linux.SIG.BLOCK else 1; // SIG_BLOCK=1 on macOS/BSD
-    const SIG_UNBLOCK: u32 = if (is_linux) linux.SIG.UNBLOCK else 2;
-    if (is_linux) {
-        var mask = linux.sigemptyset();
-        linux.sigaddset(&mask, SIG_PIPE);
-        _ = linux.sigprocmask(SIG_BLOCK, &mask, null);
-    } else if (is_macos) {
-        // macOS: use signal(SIGPIPE, SIG_IGN) around the write
-        _ = std.c.signal(SIG_PIPE, std.c.SIG.IGN);
-    }
-
+    // SIGPIPE is blocked (Linux) or ignored (macOS) process-wide at
+    // setupSignals(), so write() to a dead clipboard helper simply
+    // returns EPIPE instead of terminating us.
     const pipe_fds = posix.pipe() catch return;
     const pid = posix.fork() catch {
         posix.close(pipe_fds[0]);
@@ -515,15 +513,6 @@ fn dispatchClipboardCopy(data: []const u8) void {
         _ = posix.write(pipe_fds[1], data) catch {};
     }
     posix.close(pipe_fds[1]); // EOF signals end of data to child
-
-    // Restore SIGPIPE handling
-    if (is_linux) {
-        var mask = linux.sigemptyset();
-        linux.sigaddset(&mask, SIG_PIPE);
-        _ = linux.sigprocmask(SIG_UNBLOCK, &mask, null);
-    } else if (is_macos) {
-        _ = std.c.signal(SIG_PIPE, std.c.SIG.DFL);
-    }
 }
 
 fn handleBackendEvent(
