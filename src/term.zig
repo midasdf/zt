@@ -472,6 +472,20 @@ pub const Term = struct {
         self.dirty_flag = true;
     }
 
+    /// Drop any active selection and force a full-screen repaint so the
+    /// selection highlight is cleared from the framebuffer.
+    ///
+    /// Why: setting `all_dirty = true` alone is not enough — the render loop
+    /// gates on `hasDirty()` which reads `dirty_flag`. Skipping `dirty_flag`
+    /// lets pure-control-sequence output (SGR, DSR, CUP-to-same-position)
+    /// slip through without a repaint, leaving the inverted selection
+    /// colors stuck on screen until the next incidental markDirty.
+    pub fn clearSelection(self: *Self) void {
+        self.selection = null;
+        self.dirty_flag = true;
+        self.all_dirty = true;
+    }
+
     pub fn scrollUp(self: *Self, n: u32) void {
         if (n == 0) return;
         const cols: usize = self.cols;
@@ -1451,6 +1465,22 @@ test "Term: hasDirty with single bit" {
     try testing.expect(!term.hasDirty());
     term.markDirty(4, 1);
     try testing.expect(term.hasDirty());
+}
+
+test "Term: clearSelection forces repaint via dirty_flag" {
+    // Regression: main.zig's "content changed → drop selection" paths used
+    // to set only `all_dirty = true`. Because `hasDirty()` reads `dirty_flag`
+    // (not `all_dirty`), the render loop could skip a frame and leave the
+    // selection highlight stuck on screen.
+    var term = try Term.init(testing.allocator, 5, 3);
+    defer term.deinit();
+    term.clearDirty();
+    term.selection = .{ .start_x = 0, .start_y = 0, .end_x = 2, .end_y = 0, .active = false };
+    try testing.expect(!term.hasDirty());
+    term.clearSelection();
+    try testing.expect(term.selection == null);
+    try testing.expect(term.hasDirty());
+    try testing.expect(term.isAllDirty());
 }
 
 test "Selection: coversWideLeftCell includes right column of wide glyph" {

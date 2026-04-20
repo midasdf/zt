@@ -1187,8 +1187,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                                 bytes_since_render += bytes_read;
                                 // Clear selection when terminal content changes
                                 if (term.selection != null) {
-                                    term.selection = null;
-                                    term.all_dirty = true;
+                                    term.clearSelection();
                                 }
                                 vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                                 // Flush VT responses after each chunk to prevent overflow
@@ -1306,8 +1305,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                             bytes_since_render += bytes_read;
                             // Clear selection when terminal content changes
                             if (term.selection != null) {
-                                term.selection = null;
-                                term.all_dirty = true;
+                                term.clearSelection();
                             }
                             vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                             // Flush VT responses after each chunk to prevent overflow
@@ -1385,8 +1383,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 extra_total += extra;
                 // Clear selection when terminal content changes
                 if (term.selection != null) {
-                    term.selection = null;
-                    term.all_dirty = true;
+                    term.clearSelection();
                 }
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
                 // Flush VT responses after each chunk to prevent overflow
