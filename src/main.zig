@@ -219,103 +219,81 @@ fn kqueueSetPtyWrite(kq: i32, pty_fd: posix.fd_t, enable: bool) void {
     };
 }
 
+const PtyWriteQueue = struct {
+    allocator: std.mem.Allocator,
+    pending: std.ArrayListUnmanaged(u8) = .empty,
+
+    fn init(allocator: std.mem.Allocator) PtyWriteQueue {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *PtyWriteQueue) void {
+        self.pending.deinit(self.allocator);
+    }
+
+    fn len(self: *const PtyWriteQueue) usize {
+        return self.pending.items.len;
+    }
+
+    fn append(self: *PtyWriteQueue, data: []const u8) !void {
+        try self.pending.appendSlice(self.allocator, data);
+    }
+
+    fn discardPrefix(self: *PtyWriteQueue, count: usize) void {
+        if (count >= self.pending.items.len) {
+            self.pending.clearRetainingCapacity();
+            return;
+        }
+
+        const remaining = self.pending.items.len - count;
+        std.mem.copyForwards(u8, self.pending.items[0..remaining], self.pending.items[count..]);
+        self.pending.items.len = remaining;
+    }
+};
+
+fn setPtyWriteInterest(evloop_fd: i32, pty_fd: posix.fd_t, enabled: bool) void {
+    if (is_linux) {
+        epollSetPtyEvents(evloop_fd, pty_fd, enabled);
+    } else {
+        kqueueSetPtyWrite(evloop_fd, pty_fd, enabled);
+    }
+}
+
 /// Write to PTY with buffering on WouldBlock.
-/// Uses a 64KB buffer to avoid truncation on large pastes or IME commits.
+/// The pending queue is dynamic so large pastes or VT responses are not truncated.
 fn ptyBufferedWrite(
     pty_ptr: *Pty,
     data: []const u8,
-    write_buf: *[65536]u8,
-    write_pending: *usize,
+    write_queue: *PtyWriteQueue,
     epoll_fd: i32,
 ) bool {
-    // If there's pending data, append to buffer (retry-write remaining on overflow)
-    if (write_pending.* > 0) {
-        const space = write_buf.len - write_pending.*;
-        if (data.len <= space) {
-            @memcpy(write_buf[write_pending.* .. write_pending.* + data.len], data);
-            write_pending.* += data.len;
+    if (data.len == 0) return true;
+
+    if (write_queue.len() > 0) {
+        if (!ptyFlushPending(pty_ptr, write_queue, epoll_fd)) return false;
+        if (write_queue.len() > 0) {
+            write_queue.append(data) catch return false;
+            setPtyWriteInterest(epoll_fd, pty_ptr.master_fd, true);
             return true;
         }
-        // Buffer full — try flushing pending data first to make room
-        const flushed = pty_ptr.write(write_buf[0..write_pending.*]) catch |err| switch (err) {
-            error.WouldBlock => 0,
-            else => return false,
-        };
-        if (flushed > 0) {
-            const remaining = write_pending.* - flushed;
-            if (remaining > 0) {
-                std.mem.copyForwards(u8, write_buf[0..remaining], write_buf[flushed .. flushed + remaining]);
-            }
-            write_pending.* = remaining;
-        }
-        // Append after flush — chunk if data exceeds remaining space
-        const space2 = write_buf.len - write_pending.*;
-        if (data.len <= space2) {
-            @memcpy(write_buf[write_pending.* .. write_pending.* + data.len], data);
-            write_pending.* += data.len;
-            return true;
-        }
-        // Write what fits, then chunk the rest via direct writes
-        if (space2 > 0) {
-            @memcpy(write_buf[write_pending.* .. write_pending.* + space2], data[0..space2]);
-            write_pending.* += space2;
-        }
-        // Flush buffer then write remaining data in chunks
-        var rest = data[space2..];
-        while (rest.len > 0) {
-            if (write_pending.* > 0) {
-                const f = pty_ptr.write(write_buf[0..write_pending.*]) catch |err| switch (err) {
-                    error.WouldBlock => 0,
-                    else => return false,
-                };
-                if (f > 0) {
-                    const rem = write_pending.* - f;
-                    if (rem > 0) std.mem.copyForwards(u8, write_buf[0..rem], write_buf[f .. f + rem]);
-                    write_pending.* = rem;
-                }
-                if (write_pending.* == write_buf.len) return true; // still full, retry later
-            }
-            const chunk = @min(rest.len, write_buf.len - write_pending.*);
-            if (chunk == 0) return true; // buffer full, will retry on next flush
-            @memcpy(write_buf[write_pending.* .. write_pending.* + chunk], rest[0..chunk]);
-            write_pending.* += chunk;
-            rest = rest[chunk..];
-        }
-        return true;
     }
 
-    // Try direct write
-    const written = pty_ptr.write(data) catch |err| switch (err) {
-        error.WouldBlock => {
-            // Buffer everything — chunk if data exceeds buffer capacity
-            const to_buf = @min(data.len, write_buf.len);
-            if (data.len > write_buf.len)
-                std.log.warn("PTY write truncated: {d} bytes dropped", .{data.len - write_buf.len});
-            @memcpy(write_buf[0..to_buf], data[0..to_buf]);
-            write_pending.* = to_buf;
-            if (is_linux) {
-                epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
-            } else {
-                kqueueSetPtyWrite(epoll_fd, pty_ptr.master_fd, true);
-            }
+    var rest = data;
+    while (rest.len > 0) {
+        const written = pty_ptr.write(rest) catch |err| switch (err) {
+            error.WouldBlock => {
+                write_queue.append(rest) catch return false;
+                setPtyWriteInterest(epoll_fd, pty_ptr.master_fd, true);
+                return true;
+            },
+            else => return false,
+        };
+        if (written == 0) {
+            write_queue.append(rest) catch return false;
+            setPtyWriteInterest(epoll_fd, pty_ptr.master_fd, true);
             return true;
-        },
-        else => return false,
-    };
-
-    // Partial write — buffer the rest (truncate to buffer capacity)
-    if (written < data.len) {
-        const remaining = data.len - written;
-        const to_buf = @min(remaining, write_buf.len);
-        if (remaining > write_buf.len)
-            std.log.warn("PTY write truncated: {d} bytes dropped", .{remaining - write_buf.len});
-        @memcpy(write_buf[0..to_buf], data[written .. written + to_buf]);
-        write_pending.* = to_buf;
-        if (is_linux) {
-            epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, true);
-        } else {
-            kqueueSetPtyWrite(epoll_fd, pty_ptr.master_fd, true);
         }
+        rest = rest[written..];
     }
     return true;
 }
@@ -323,31 +301,40 @@ fn ptyBufferedWrite(
 /// Flush pending write buffer.
 fn ptyFlushPending(
     pty_ptr: *Pty,
-    write_buf: *[65536]u8,
-    write_pending: *usize,
+    write_queue: *PtyWriteQueue,
     epoll_fd: i32,
 ) bool {
-    if (write_pending.* == 0) return true;
+    if (write_queue.len() == 0) return true;
 
-    const written = pty_ptr.write(write_buf[0..write_pending.*]) catch |err| switch (err) {
+    const written = pty_ptr.write(write_queue.pending.items) catch |err| switch (err) {
         error.WouldBlock => return true, // try again later
         else => return false,
     };
 
-    if (written >= write_pending.*) {
-        write_pending.* = 0;
-        if (is_linux) {
-            epollSetPtyEvents(epoll_fd, pty_ptr.master_fd, false);
-        } else {
-            kqueueSetPtyWrite(epoll_fd, pty_ptr.master_fd, false);
-        }
-    } else {
-        // Shift remaining data to front
-        const remaining = write_pending.* - written;
-        std.mem.copyForwards(u8, write_buf[0..remaining], write_buf[written .. written + remaining]);
-        write_pending.* = remaining;
+    if (written > 0) {
+        write_queue.discardPrefix(written);
+    }
+    if (write_queue.len() == 0) {
+        setPtyWriteInterest(epoll_fd, pty_ptr.master_fd, false);
     }
     return true;
+}
+
+test "PtyWriteQueue preserves data beyond fixed buffer sizes" {
+    var queue = PtyWriteQueue.init(std.testing.allocator);
+    defer queue.deinit();
+
+    var data: [70 * 1024]u8 = undefined;
+    @memset(&data, 'x');
+
+    try queue.append(&data);
+    try std.testing.expectEqual(@as(usize, data.len), queue.len());
+
+    queue.discardPrefix(65536);
+    try std.testing.expectEqual(@as(usize, data.len - 65536), queue.len());
+
+    queue.discardPrefix(queue.len());
+    try std.testing.expectEqual(@as(usize, 0), queue.len());
 }
 
 /// Reset cursor blink idle tracking on user input (all backend dispatch paths use handleBackendEvent).
@@ -523,8 +510,7 @@ fn handleBackendEvent(
     term: *Term,
     pty_ptr: *Pty,
     backend: *Backend,
-    write_buf: *[65536]u8,
-    write_pending: *usize,
+    write_queue: *PtyWriteQueue,
     evloop_fd: i32,
     cursor_visible_blink: *bool,
     cursor_blink_active: *bool,
@@ -539,7 +525,7 @@ fn handleBackendEvent(
             if (key_ev.pressed) {
                 const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm, term.decbkm);
                 if (bytes.len > 0) {
-                    if (!ptyBufferedWrite(pty_ptr, bytes, write_buf, write_pending, evloop_fd)) {
+                    if (!ptyBufferedWrite(pty_ptr, bytes, write_queue, evloop_fd)) {
                         return false;
                     }
                 }
@@ -549,7 +535,7 @@ fn handleBackendEvent(
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
             const text = text_ev.slice();
             if (text.len > 0) {
-                if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) {
+                if (!ptyBufferedWrite(pty_ptr, text, write_queue, evloop_fd)) {
                     return false;
                 }
             }
@@ -564,25 +550,25 @@ fn handleBackendEvent(
                     // clipboard payload to prevent injection: an attacker-controlled
                     // string containing \x1b[201~<cmd>\n would close the paste window
                     // early and have the remainder interpreted as typed input.
-                    if (!ptyBufferedWrite(pty_ptr, "\x1b[200~", write_buf, write_pending, evloop_fd)) return false;
+                    if (!ptyBufferedWrite(pty_ptr, "\x1b[200~", write_queue, evloop_fd)) return false;
                     const marker = "\x1b[201~";
                     var rest = text;
                     while (rest.len > 0) {
                         if (std.mem.indexOf(u8, rest, marker)) |idx| {
                             // Write span before the marker, skip the marker itself.
                             if (idx > 0) {
-                                if (!ptyBufferedWrite(pty_ptr, rest[0..idx], write_buf, write_pending, evloop_fd)) return false;
+                                if (!ptyBufferedWrite(pty_ptr, rest[0..idx], write_queue, evloop_fd)) return false;
                             }
                             rest = rest[idx + marker.len ..];
                         } else {
-                            if (!ptyBufferedWrite(pty_ptr, rest, write_buf, write_pending, evloop_fd)) return false;
+                            if (!ptyBufferedWrite(pty_ptr, rest, write_queue, evloop_fd)) return false;
                             break;
                         }
                     }
-                    if (!ptyBufferedWrite(pty_ptr, "\x1b[201~", write_buf, write_pending, evloop_fd)) return false;
+                    if (!ptyBufferedWrite(pty_ptr, "\x1b[201~", write_queue, evloop_fd)) return false;
                 } else {
                     // Non-bracketed mode: forward raw paste without framing.
-                    if (!ptyBufferedWrite(pty_ptr, text, write_buf, write_pending, evloop_fd)) return false;
+                    if (!ptyBufferedWrite(pty_ptr, text, write_queue, evloop_fd)) return false;
                 }
             }
         },
@@ -622,7 +608,7 @@ fn handleBackendEvent(
             last_render_ns.* = 0;
             term.markDirty(term.cursor_x, term.cursor_y);
             if (term.focus_events) {
-                if (!ptyBufferedWrite(pty_ptr, "\x1b[I", write_buf, write_pending, evloop_fd)) {
+                if (!ptyBufferedWrite(pty_ptr, "\x1b[I", write_queue, evloop_fd)) {
                     return false;
                 }
             }
@@ -633,7 +619,7 @@ fn handleBackendEvent(
             cursor_visible_blink.* = true;
             term.markDirty(term.cursor_x, term.cursor_y);
             if (term.focus_events) {
-                if (!ptyBufferedWrite(pty_ptr, "\x1b[O", write_buf, write_pending, evloop_fd)) {
+                if (!ptyBufferedWrite(pty_ptr, "\x1b[O", write_queue, evloop_fd)) {
                     return false;
                 }
             }
@@ -657,7 +643,7 @@ fn handleBackendEvent(
             if (term.mouse_mode != .none) {
                 const seq = encodeMouseEvent(term, mouse_ev, cx, cy, last_pressed_button);
                 if (seq.len > 0) {
-                    if (!ptyBufferedWrite(pty_ptr, seq.slice(), write_buf, write_pending, evloop_fd)) {
+                    if (!ptyBufferedWrite(pty_ptr, seq.slice(), write_queue, evloop_fd)) {
                         return false;
                     }
                 }
@@ -898,8 +884,7 @@ fn drainBackendEvents(
     term: *Term,
     pty_ptr: *Pty,
     backend: *Backend,
-    write_buf: *[65536]u8,
-    write_pending: *usize,
+    write_queue: *PtyWriteQueue,
     evloop_fd: i32,
     cursor_visible_blink: *bool,
     cursor_blink_active: *bool,
@@ -912,7 +897,7 @@ fn drainBackendEvents(
     var drain: u32 = 0;
     while (drain < max_events) : (drain += 1) {
         const event = backend.pollEvents() orelse break;
-        if (!handleBackendEvent(&event, term, pty_ptr, backend, write_buf, write_pending, evloop_fd, cursor_visible_blink, cursor_blink_active, last_input_ns, last_render_ns, backend_focused, last_pressed_button)) {
+        if (!handleBackendEvent(&event, term, pty_ptr, backend, write_queue, evloop_fd, cursor_visible_blink, cursor_blink_active, last_input_ns, last_render_ns, backend_focused, last_pressed_button)) {
             return false;
         }
     }
@@ -1095,8 +1080,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const cursor_idle_timeout_ns: i128 = 5 * std.time.ns_per_s;
     var prev_cursor_x: u32 = 0;
     var prev_cursor_y: u32 = 0;
-    var write_buf: [65536]u8 = undefined;
-    var write_pending: usize = 0;
+    var write_queue = PtyWriteQueue.init(allocator);
+    defer write_queue.deinit();
     var last_render_ns: i128 = 0;
     var bytes_since_render: usize = 0;
     var sync_update_start_ns: i128 = 0; // timestamp when sync_update was first seen
@@ -1130,8 +1115,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
         // Proactively flush pending writes before blocking on events.
         // This ensures buffered keystrokes reach the child ASAP, preventing
         // input starvation when heavy output keeps the write buffer occupied.
-        if (write_pending > 0) {
-            if (!ptyFlushPending(&pty, &write_buf, &write_pending, evloop_fd)) {
+        if (write_queue.len() > 0) {
+            if (!ptyFlushPending(&pty, &write_queue, evloop_fd)) {
                 running = false;
                 continue;
             }
@@ -1142,7 +1127,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // fd is no longer readable. Drain a bounded amount every loop so input
             // never appears "stuck" waiting for unrelated socket traffic.
             if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                if (!drainBackendEvents(&term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button, 8192)) {
+                if (!drainBackendEvents(&term, &pty, &backend, &write_queue, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button, 8192)) {
                     running = false;
                     continue;
                 }
@@ -1165,7 +1150,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         }
                         // Flush pending writes if EPOLLOUT
                         if (ev.events & linux.EPOLL.OUT != 0) {
-                            if (!ptyFlushPending(&pty, &write_buf, &write_pending, evloop_fd)) {
+                            if (!ptyFlushPending(&pty, &write_queue, evloop_fd)) {
                                 running = false;
                                 break;
                             }
@@ -1192,17 +1177,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
                                 vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                                 // Flush VT responses after each chunk to prevent overflow
                                 if (term.vt_response_len > 0) {
-                                    if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+                                    if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_queue, evloop_fd)) {
                                         running = false;
                                         break;
                                     }
                                     term.vt_response_len = 0;
                                 }
-                                // If the write buffer is more than half full, stop
+                                // If queued writes build up, stop
                                 // draining and let epoll pump EPOLLOUT to flush it
-                                // first — prevents VT responses being silently dropped
-                                // when write_pending approaches the 64 KB buffer cap.
-                                if (write_pending > write_buf.len / 2) break;
+                                // first, keeping VT responses from starving input.
+                                if (write_queue.len() > config.pty_buf_size / 2) break;
                             }
                         }
                     },
@@ -1225,7 +1209,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     @intFromEnum(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
-                            if (!drainBackendEvents(&term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button, 8192)) {
+                            if (!drainBackendEvents(&term, &pty, &backend, &write_queue, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button, 8192)) {
                                 running = false;
                                 break;
                             }
@@ -1256,7 +1240,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                                             const bytes = input.translateKey(input_event.keycode, mod_state, term.decckm, term.decbkm);
                                             if (bytes.len > 0) {
                                                 had_input = true;
-                                                if (!ptyBufferedWrite(&pty, bytes, &write_buf, &write_pending, evloop_fd)) {
+                                                if (!ptyBufferedWrite(&pty, bytes, &write_queue, evloop_fd)) {
                                                     running = false;
                                                     break;
                                                 }
@@ -1310,7 +1294,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                             vt.feedBulk(&parser, pty_buf[0..bytes_read], &term, pty.master_fd);
                             // Flush VT responses after each chunk to prevent overflow
                             if (term.vt_response_len > 0) {
-                                if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+                                if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_queue, evloop_fd)) {
                                     running = false;
                                     break;
                                 }
@@ -1321,7 +1305,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {
-                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
+                                if (!handleBackendEvent(&event, &term, &pty, &backend, &write_queue, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
                                     running = false;
                                     break;
                                 }
@@ -1330,7 +1314,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                     }
                 } else if (kev.filter == std.c.EVFILT.WRITE) {
                     // PTY writable
-                    if (!ptyFlushPending(&pty, &write_buf, &write_pending, evloop_fd)) {
+                    if (!ptyFlushPending(&pty, &write_queue, evloop_fd)) {
                         running = false;
                         break;
                     }
@@ -1354,7 +1338,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // never appears because Cocoa callbacks never fire.
             if (config.backend == .macos) {
                 while (backend.pollEvents()) |event| {
-                    if (!handleBackendEvent(&event, &term, &pty, &backend, &write_buf, &write_pending, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
+                    if (!handleBackendEvent(&event, &term, &pty, &backend, &write_queue, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button)) {
                         running = false;
                         break;
                     }
@@ -1388,7 +1372,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 vt.feedBulk(&parser, pty_buf[0..extra], &term, pty.master_fd);
                 // Flush VT responses after each chunk to prevent overflow
                 if (term.vt_response_len > 0) {
-                    if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+                    if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_queue, evloop_fd)) {
                         running = false;
                         break;
                     }
@@ -1399,7 +1383,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
         // Flush VT response buffer (DA1, DSR, DECRQSS, etc.) via buffered PTY write
         if (term.vt_response_len > 0) {
-            if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_buf, &write_pending, evloop_fd)) {
+            if (!ptyBufferedWrite(&pty, term.vt_response_buf[0..term.vt_response_len], &write_queue, evloop_fd)) {
                 running = false;
             }
             term.vt_response_len = 0;

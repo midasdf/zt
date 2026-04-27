@@ -1206,6 +1206,7 @@ pub const Term = struct {
         const cols: usize = self.cols;
         const blank = self.blankCell();
         const bg_rgb_val: ?[3]u8 = self.current_bg_rgb;
+        var wrote_truecolor_bg = false;
         switch (mode) {
             0 => {
                 self.fixWideBoundaries(@as(usize, self.cursor_y) * cols + self.cursor_x, @as(usize, self.rows) * cols);
@@ -1218,6 +1219,7 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            if (bg_rgb_val != null) wrote_truecolor_bg = true;
                             self.ul_color_rgb[idx] = null;
                             self.hyperlink_ids[idx] = 0;
                         }
@@ -1236,6 +1238,7 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            if (bg_rgb_val != null) wrote_truecolor_bg = true;
                             self.ul_color_rgb[idx] = null;
                             self.hyperlink_ids[idx] = 0;
                         }
@@ -1252,6 +1255,7 @@ pub const Term = struct {
                             self.cells[idx] = blank;
                             self.fg_rgb[idx] = null;
                             self.bg_rgb[idx] = bg_rgb_val;
+                            if (bg_rgb_val != null) wrote_truecolor_bg = true;
                             self.ul_color_rgb[idx] = null;
                             self.hyperlink_ids[idx] = 0;
                         }
@@ -1261,6 +1265,7 @@ pub const Term = struct {
             },
             else => {},
         }
+        if (wrote_truecolor_bg) self.has_truecolor_cells = true;
     }
 
     /// Selective erase line: only erase cells without DECSCA protection
@@ -1270,6 +1275,7 @@ pub const Term = struct {
         const blank = self.blankCell();
         const bg_rgb_val: ?[3]u8 = self.current_bg_rgb;
         const row_start = @as(usize, self.cursor_y) * cols;
+        var wrote_truecolor_bg = false;
         switch (mode) {
             0 => {
                 self.fixWideBoundaries(row_start + self.cursor_x, row_start + cols);
@@ -1279,6 +1285,7 @@ pub const Term = struct {
                         self.cells[idx] = blank;
                         self.fg_rgb[idx] = null;
                         self.bg_rgb[idx] = bg_rgb_val;
+                        if (bg_rgb_val != null) wrote_truecolor_bg = true;
                         self.ul_color_rgb[idx] = null;
                         self.hyperlink_ids[idx] = 0;
                     }
@@ -1293,6 +1300,7 @@ pub const Term = struct {
                         self.cells[idx] = blank;
                         self.fg_rgb[idx] = null;
                         self.bg_rgb[idx] = bg_rgb_val;
+                        if (bg_rgb_val != null) wrote_truecolor_bg = true;
                         self.ul_color_rgb[idx] = null;
                         self.hyperlink_ids[idx] = 0;
                     }
@@ -1307,6 +1315,7 @@ pub const Term = struct {
                         self.cells[idx] = blank;
                         self.fg_rgb[idx] = null;
                         self.bg_rgb[idx] = bg_rgb_val;
+                        if (bg_rgb_val != null) wrote_truecolor_bg = true;
                         self.ul_color_rgb[idx] = null;
                         self.hyperlink_ids[idx] = 0;
                     }
@@ -1315,6 +1324,7 @@ pub const Term = struct {
             },
             else => {},
         }
+        if (wrote_truecolor_bg) self.has_truecolor_cells = true;
     }
 
     // TrueColor helpers (indexed by physical cell position)
@@ -1626,4 +1636,40 @@ test "Term: insertChars shifts TrueColor RGB alongside cells" {
     // Old col 2 → now col 4
     try testing.expectEqual(@as(u21, 'C'), term.cells[base + 4].char);
     try testing.expectEqual(@as(?[3]u8, .{ 20, 40, 60 }), term.fg_rgb[base + 4]);
+}
+
+test "Term: selectiveEraseLine tracks truecolor BCE background" {
+    var term = try Term.init(testing.allocator, 6, 2);
+    defer term.deinit();
+
+    term.cursor_x = 2;
+    term.cursor_y = 0;
+    term.current_bg_rgb = .{ 1, 2, 3 };
+    term.selectiveEraseLine(0);
+
+    const phys = term.row_map[0];
+    const base = phys * @as(usize, term.cols);
+    try testing.expect(term.has_truecolor_cells);
+    try testing.expectEqual(@as(?[3]u8, null), term.bg_rgb[base + 1]);
+    try testing.expectEqual(@as(?[3]u8, .{ 1, 2, 3 }), term.bg_rgb[base + 2]);
+    try testing.expectEqual(@as(?[3]u8, .{ 1, 2, 3 }), term.bg_rgb[base + 5]);
+}
+
+test "Term: selectiveEraseDisplay tracks truecolor BCE background" {
+    var term = try Term.init(testing.allocator, 4, 3);
+    defer term.deinit();
+
+    term.cursor_x = 1;
+    term.cursor_y = 1;
+    term.current_bg_rgb = .{ 4, 5, 6 };
+    term.selectiveEraseDisplay(0);
+
+    const phys0 = term.row_map[0];
+    const phys1 = term.row_map[1];
+    const base0 = phys0 * @as(usize, term.cols);
+    const base1 = phys1 * @as(usize, term.cols);
+    try testing.expect(term.has_truecolor_cells);
+    try testing.expectEqual(@as(?[3]u8, null), term.bg_rgb[base0 + 3]);
+    try testing.expectEqual(@as(?[3]u8, null), term.bg_rgb[base1 + 0]);
+    try testing.expectEqual(@as(?[3]u8, .{ 4, 5, 6 }), term.bg_rgb[base1 + 1]);
 }

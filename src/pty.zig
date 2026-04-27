@@ -47,6 +47,17 @@ fn makeLoginShellArg0(shell_path: []const u8, buf: *[256]u8) [:0]const u8 {
     return buf[0 .. 1 + copy_len :0];
 }
 
+fn makeExecArgv(
+    allocator: std.mem.Allocator,
+    eargv: []const [:0]const u8,
+) std.mem.Allocator.Error![:null]?[*:0]const u8 {
+    var exec_ptrs = try allocator.allocSentinel(?[*:0]const u8, eargv.len, null);
+    for (eargv, 0..) |arg, idx| {
+        exec_ptrs[idx] = arg.ptr;
+    }
+    return exec_ptrs;
+}
+
 pub const Pty = struct {
     master_fd: posix.fd_t,
     child_pid: posix.pid_t,
@@ -248,14 +259,17 @@ pub const Pty = struct {
 
             // h. execvpe (PATH-searching exec)
             if (exec_argv) |eargv| {
-                // -e mode: build null-terminated argv for execvpe
-                var exec_ptrs: [64:null]?[*:0]const u8 = .{null} ** 64;
-                const count = @min(eargv.len, 63);
-                for (0..count) |idx| {
-                    exec_ptrs[idx] = eargv[idx].ptr;
+                if (eargv.len == 0) {
+                    _ = posix.write(2, "zt: -e requires a command\n") catch {};
+                    posix.exit(1);
                 }
+                // -e mode: build null-terminated argv for execvpe without truncating.
+                const exec_ptrs = makeExecArgv(std.heap.page_allocator, eargv) catch {
+                    _ = posix.write(2, "zt: -e argv allocation failed\n") catch {};
+                    posix.exit(1);
+                };
                 const exec_path: [*:0]const u8 = eargv[0].ptr;
-                _ = posix.execvpeZ(exec_path, &exec_ptrs, env) catch {
+                _ = posix.execvpeZ(exec_path, exec_ptrs.ptr, env) catch {
                     _ = posix.write(2, "zt: execvpe failed\n") catch {};
                 };
             } else {
@@ -359,6 +373,20 @@ test "Pty: login shell argv0 uses portable leading dash" {
     try testing.expectEqualSlices(u8, "-fish", makeLoginShellArg0("/usr/bin/fish", &buf));
     try testing.expectEqualSlices(u8, "-zsh", makeLoginShellArg0("zsh", &buf));
     try testing.expectEqualSlices(u8, "-bin", makeLoginShellArg0("/usr/bin/", &buf));
+}
+
+test "Pty: exec argv builder keeps all arguments" {
+    var args: [80][:0]const u8 = undefined;
+    for (&args) |*arg| {
+        arg.* = "arg";
+    }
+
+    const exec_ptrs = try makeExecArgv(testing.allocator, &args);
+    defer testing.allocator.free(exec_ptrs);
+
+    try testing.expectEqual(@as(usize, args.len), exec_ptrs.len);
+    try testing.expectEqual(args[0].ptr, exec_ptrs[0].?);
+    try testing.expectEqual(args[79].ptr, exec_ptrs[79].?);
 }
 
 test "Pty: spawn and read echo output" {

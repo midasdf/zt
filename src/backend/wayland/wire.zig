@@ -211,6 +211,48 @@ pub const Connection = struct {
         }
     }
 
+    fn waitWritable(self: *Connection) void {
+        var pfd = [1]linux.pollfd{.{
+            .fd = self.fd,
+            .events = linux.POLL.OUT,
+            .revents = 0,
+        }};
+        _ = linux.poll(&pfd, 1, 100);
+    }
+
+    fn sendRaw(self: *Connection, bytes: []const u8) !void {
+        var sent: usize = 0;
+        while (sent < bytes.len) {
+            const iov = [1]posix.iovec_const{
+                .{ .base = bytes[sent..].ptr, .len = bytes.len - sent },
+            };
+            const msghdr = linux.msghdr_const{
+                .name = null,
+                .namelen = 0,
+                .iov = &iov,
+                .iovlen = 1,
+                .control = null,
+                .controllen = 0,
+                .flags = 0,
+            };
+            const rc = linux.sendmsg(self.fd, &msghdr, linux.MSG.NOSIGNAL);
+            switch (linux.errno(rc)) {
+                .SUCCESS => {
+                    if (rc == 0) {
+                        self.waitWritable();
+                        continue;
+                    }
+                    sent += rc;
+                },
+                .AGAIN => {
+                    self.waitWritable();
+                },
+                .INTR => {},
+                else => return error.SendFailed,
+            }
+        }
+    }
+
     /// Write a Wayland message to the send buffer (flushed lazily).
     /// fds are sent via SCM_RIGHTS and do NOT contribute to message size.
     pub fn sendMessage(
@@ -231,6 +273,14 @@ pub const Connection = struct {
             if (self.send_len + total > self.send_buf.len) {
                 try self.flush();
             }
+            if (total > self.send_buf.len) {
+                var msg_buf: [65536]u8 = undefined;
+                std.mem.writeInt(u32, msg_buf[0..4], header[0], .little);
+                std.mem.writeInt(u32, msg_buf[4..8], header[1], .little);
+                @memcpy(msg_buf[8..][0..payload.len], payload);
+                try self.sendRaw(msg_buf[0..total]);
+                return;
+            }
             std.mem.writeInt(u32, self.send_buf[self.send_len..][0..4], header[0], .little);
             std.mem.writeInt(u32, self.send_buf[self.send_len + 4 ..][0..4], header[1], .little);
             self.send_len += 8;
@@ -241,15 +291,14 @@ pub const Connection = struct {
             if (self.send_len > 0) {
                 try self.flush();
             }
-            // Send header + payload with SCM_RIGHTS fds in one sendmsg call
-            var hdr_bytes: [8]u8 = undefined;
-            std.mem.writeInt(u32, hdr_bytes[0..4], header[0], .little);
-            std.mem.writeInt(u32, hdr_bytes[4..8], header[1], .little);
-
-            const iov = [2]posix.iovec_const{
-                .{ .base = &hdr_bytes, .len = 8 },
-                .{ .base = payload.ptr, .len = payload.len },
-            };
+            // Send header + payload with SCM_RIGHTS on the first successful byte.
+            // If sendmsg only accepts part of the data, the ancillary fds have
+            // already been transferred and must not be attached to retries.
+            const total = 8 + payload.len;
+            var msg_buf: [65536]u8 = undefined;
+            std.mem.writeInt(u32, msg_buf[0..4], header[0], .little);
+            std.mem.writeInt(u32, msg_buf[4..8], header[1], .little);
+            @memcpy(msg_buf[8..][0..payload.len], payload);
 
             // Build ancillary data buffer for SCM_RIGHTS.
             // cmsg_buf is sized for exactly max_send_fds fds; assert the caller
@@ -266,33 +315,37 @@ pub const Connection = struct {
             cmsg.type = 1; // SCM_RIGHTS
             @memcpy(cmsg_buf[@sizeOf(cmsghdr)..][0..fd_bytes.len], fd_bytes);
 
-            const msghdr = linux.msghdr_const{
-                .name = null,
-                .namelen = 0,
-                .iov = &iov,
-                .iovlen = if (payload.len > 0) 2 else 1,
-                .control = &cmsg_buf,
-                .controllen = @intCast(cmsg_space),
-                .flags = 0,
-            };
-
-            while (true) {
+            var sent: usize = 0;
+            var attach_fds = true;
+            while (sent < total) {
+                const iov = [1]posix.iovec_const{
+                    .{ .base = msg_buf[sent..total].ptr, .len = total - sent },
+                };
+                const msghdr = linux.msghdr_const{
+                    .name = null,
+                    .namelen = 0,
+                    .iov = &iov,
+                    .iovlen = 1,
+                    .control = if (attach_fds) &cmsg_buf else null,
+                    .controllen = if (attach_fds) @intCast(cmsg_space) else 0,
+                    .flags = 0,
+                };
                 const rc = linux.sendmsg(self.fd, &msghdr, linux.MSG.NOSIGNAL);
-                const rc_isize: isize = @bitCast(rc);
-                if (rc_isize < 0) {
-                    const err: u32 = @intCast(-@as(i32, @intCast(rc_isize)));
-                    if (err == @intFromEnum(posix.E.AGAIN)) {
-                        var pfd = [1]linux.pollfd{.{
-                            .fd = self.fd,
-                            .events = linux.POLL.OUT,
-                            .revents = 0,
-                        }};
-                        _ = linux.poll(&pfd, 1, 100);
-                        continue;
-                    }
-                    return error.SendFailed;
+                switch (linux.errno(rc)) {
+                    .SUCCESS => {
+                        if (rc == 0) {
+                            self.waitWritable();
+                            continue;
+                        }
+                        sent += rc;
+                        attach_fds = false;
+                    },
+                    .AGAIN => {
+                        self.waitWritable();
+                    },
+                    .INTR => {},
+                    else => return error.SendFailed,
                 }
-                break;
             }
         }
     }
@@ -427,38 +480,7 @@ pub const Connection = struct {
     /// Handles EAGAIN from non-blocking socket by polling for writability.
     pub fn flush(self: *Connection) !void {
         if (self.send_len == 0) return;
-        var sent: usize = 0;
-        while (sent < self.send_len) {
-            const iov = [1]posix.iovec_const{
-                .{ .base = self.send_buf[sent..].ptr, .len = self.send_len - sent },
-            };
-            const msghdr = linux.msghdr_const{
-                .name = null,
-                .namelen = 0,
-                .iov = &iov,
-                .iovlen = 1,
-                .control = null,
-                .controllen = 0,
-                .flags = 0,
-            };
-            const rc = linux.sendmsg(self.fd, &msghdr, linux.MSG.NOSIGNAL);
-            const rc_isize: isize = @bitCast(rc);
-            if (rc_isize < 0) {
-                const err: u32 = @intCast(-@as(i32, @intCast(rc_isize)));
-                if (err == @intFromEnum(posix.E.AGAIN)) {
-                    // Socket buffer full — poll for writability (up to 100ms)
-                    var pfd = [1]linux.pollfd{.{
-                        .fd = self.fd,
-                        .events = linux.POLL.OUT,
-                        .revents = 0,
-                    }};
-                    _ = linux.poll(&pfd, 1, 100);
-                    continue;
-                }
-                return error.SendFailed;
-            }
-            sent += @intCast(rc_isize);
-        }
+        try self.sendRaw(self.send_buf[0..self.send_len]);
         self.send_len = 0;
     }
 };
@@ -576,4 +598,39 @@ test "ObjectIdAllocator free list overflow" {
         alloc.release(100 + i); // silently drops beyond capacity
     }
     try std.testing.expectEqual(@as(u32, alloc.free_list.len), alloc.free_count);
+}
+
+test "Connection.sendMessage sends large no-fd message directly" {
+    var fds: [2]i32 = undefined;
+    const rc = linux.socketpair(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0, &fds);
+    if (linux.errno(rc) != .SUCCESS) return error.SkipZigTest;
+    var conn = Connection{ .fd = fds[0] };
+    defer conn.deinit();
+    defer posix.close(fds[1]);
+
+    var payload: [5000]u8 = undefined;
+    for (&payload, 0..) |*byte, idx| {
+        byte.* = @intCast(idx % 251);
+    }
+
+    try conn.sendMessage(7, 9, &payload, &.{});
+
+    var got: [5008]u8 = undefined;
+    var got_len: usize = 0;
+    while (got_len < got.len) {
+        const n = try posix.read(fds[1], got[got_len..]);
+        if (n == 0) break;
+        got_len += n;
+    }
+
+    try std.testing.expectEqual(@as(usize, got.len), got_len);
+    const words = [2]u32{
+        std.mem.readInt(u32, got[0..4], .little),
+        std.mem.readInt(u32, got[4..8], .little),
+    };
+    const hdr = decodeHeader(&words);
+    try std.testing.expectEqual(@as(u32, 7), hdr.object_id);
+    try std.testing.expectEqual(@as(u16, 9), hdr.opcode);
+    try std.testing.expectEqual(@as(u16, got.len), hdr.size);
+    try std.testing.expectEqualSlices(u8, &payload, got[8..]);
 }
