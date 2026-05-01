@@ -835,6 +835,19 @@ pub const Term = struct {
             self.alt_ul_color_rgb = new_alt_ul;
             self.alt_hyperlink_ids = new_alt_hl;
         }
+
+        // Resize the scrollback ring to match the new column count and clamp
+        // view_offset to whatever the (unchanged) scrollback.count allows.
+        // OOM here leaves stale-cols scrollback but a functional terminal —
+        // acceptable for v1 since scrollback is a read-only history view.
+        if (config.scrollback_lines > 0) {
+            self.scrollback.resize(new_cols) catch |err| {
+                std.log.err("scrollback resize: {}", .{err});
+            };
+            if (self.view_offset > self.scrollback.count) {
+                self.view_offset = self.scrollback.count;
+            }
+        }
     }
 
     pub fn switchScreen(self: *Self, alt: bool) !void {
@@ -1655,6 +1668,43 @@ test "Term: scrollViewport clears stale selection" {
     term.selection = .{ .start_x = 0, .start_y = 0, .end_x = 2, .end_y = 0, .active = false };
     term.scrollViewportUp(1);
     try testing.expect(term.selection == null);
+}
+
+test "Term: resize forwards to scrollback and preserves content" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 4);
+    defer term.deinit();
+
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(1, 0, .{ .char = 'B' });
+    term.setCell(2, 0, .{ .char = 'C' });
+    term.setCell(3, 0, .{ .char = 'D' });
+    term.setCell(4, 0, .{ .char = 'E' });
+    term.scroll_bottom = 3;
+    term.scrollUp(1);
+    term.view_offset = 1;
+
+    try term.resize(3, 4);
+    try testing.expectEqual(@as(u32, 3), term.scrollback.cols);
+    const v = term.scrollback.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, 'B'), v.cells[1].char);
+    try testing.expectEqual(@as(u21, 'C'), v.cells[2].char);
+    // view_offset was 1, scrollback.count is 1, no clamp needed.
+    try testing.expectEqual(@as(u32, 1), term.view_offset);
+}
+
+test "Term: resize clamps view_offset down when scrollback shrinks below it" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    // count = 1
+    term.view_offset = 5; // intentionally exceeds count
+
+    try term.resize(3, 3);
+    try testing.expect(term.view_offset <= term.scrollback.count);
 }
 
 test "Term: scrollDown moves rows via row_map" {
