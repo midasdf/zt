@@ -151,6 +151,71 @@ pub const Scrollback = struct {
         if (self.count < self.capacity) self.count += 1;
     }
 
+    pub fn resize(self: *Self, new_cols: u32) !void {
+        std.debug.assert(new_cols > 0);
+        if (new_cols == self.cols) return;
+
+        const new_total: usize = @as(usize, self.capacity) * @as(usize, new_cols);
+
+        const new_cells = try self.allocator.alloc(Cell, new_total);
+        errdefer self.allocator.free(new_cells);
+        const new_fg = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_fg);
+        const new_bg = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_bg);
+        const new_ul = try self.allocator.alloc(?[3]u8, new_total);
+        errdefer self.allocator.free(new_ul);
+        const new_hl = try self.allocator.alloc(u16, new_total);
+
+        @memset(new_cells, Cell{});
+        @memset(new_fg, null);
+        @memset(new_bg, null);
+        @memset(new_ul, null);
+        @memset(new_hl, 0);
+
+        const copy_cols: usize = @min(self.cols, new_cols);
+        var slot: u32 = 0;
+        while (slot < self.capacity) : (slot += 1) {
+            const old_start: usize = @as(usize, slot) * @as(usize, self.cols);
+            const new_start: usize = @as(usize, slot) * @as(usize, new_cols);
+            @memcpy(new_cells[new_start .. new_start + copy_cols], self.cells[old_start .. old_start + copy_cols]);
+            @memcpy(new_fg[new_start .. new_start + copy_cols], self.fg_rgb[old_start .. old_start + copy_cols]);
+            @memcpy(new_bg[new_start .. new_start + copy_cols], self.bg_rgb[old_start .. old_start + copy_cols]);
+            @memcpy(new_ul[new_start .. new_start + copy_cols], self.ul_color_rgb[old_start .. old_start + copy_cols]);
+            @memcpy(new_hl[new_start .. new_start + copy_cols], self.hyperlink_ids[old_start .. old_start + copy_cols]);
+
+            // Wide-char boundary fix: a wide-left glyph stranded at the new
+            // last column has its right half (the wide_dummy) dropped — blank
+            // the orphan to prevent a half-rendered glyph.
+            if (new_cols < self.cols and copy_cols > 0) {
+                const last = new_start + copy_cols - 1;
+                if (new_cells[last].attrs.wide) {
+                    new_cells[last] = .{};
+                    new_fg[last] = null;
+                    new_bg[last] = null;
+                    new_ul[last] = null;
+                    new_hl[last] = 0;
+                }
+            }
+
+            // Clamp used_cols to the new width.
+            if (self.used_cols[slot] > new_cols) self.used_cols[slot] = @intCast(new_cols);
+        }
+
+        self.allocator.free(self.cells);
+        self.allocator.free(self.fg_rgb);
+        self.allocator.free(self.bg_rgb);
+        self.allocator.free(self.ul_color_rgb);
+        self.allocator.free(self.hyperlink_ids);
+
+        self.cells = new_cells;
+        self.fg_rgb = new_fg;
+        self.bg_rgb = new_bg;
+        self.ul_color_rgb = new_ul;
+        self.hyperlink_ids = new_hl;
+        self.cols = new_cols;
+    }
+
     pub fn rowAt(self: *const Self, age: u32) ScrollbackView {
         std.debug.assert(self.count > 0);
         const a = if (age >= self.count) self.count - 1 else age;
@@ -284,4 +349,82 @@ test "Scrollback: rowAt clamps age to count-1" {
     // rather than panicking — defensive contract for callers.
     const view = sb.rowAt(99);
     try testing.expectEqual(@as(u21, 'A'), view.cells[0].char);
+}
+
+test "Scrollback: resize shrinks rows and preserves leading content" {
+    var sb = try Scrollback.init(testing.allocator, 5, 5);
+    defer sb.deinit();
+
+    const cells = [_]Cell{
+        .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' },
+        .{ .char = 'D' }, .{ .char = 'E' },
+    };
+    const empty_rgb = [_]?[3]u8{null} ** 5;
+    const empty_hl = [_]u16{0} ** 5;
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+
+    try sb.resize(3);
+    try testing.expectEqual(@as(u32, 3), sb.cols);
+    const v = sb.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, 'B'), v.cells[1].char);
+    try testing.expectEqual(@as(u21, 'C'), v.cells[2].char);
+    try testing.expectEqual(@as(u16, 3), v.used_cols);
+}
+
+test "Scrollback: resize grows rows and pads with blanks" {
+    var sb = try Scrollback.init(testing.allocator, 5, 3);
+    defer sb.deinit();
+
+    const cells = [_]Cell{ .{ .char = 'X' }, .{ .char = 'Y' }, .{ .char = 'Z' } };
+    const empty_rgb = [_]?[3]u8{null} ** 3;
+    const empty_hl = [_]u16{0} ** 3;
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+
+    try sb.resize(6);
+    try testing.expectEqual(@as(u32, 6), sb.cols);
+    const v = sb.rowAt(0);
+    try testing.expectEqual(@as(u21, 'X'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, 'Y'), v.cells[1].char);
+    try testing.expectEqual(@as(u21, 'Z'), v.cells[2].char);
+    try testing.expectEqual(@as(u21, ' '), v.cells[3].char);
+    try testing.expectEqual(@as(u21, ' '), v.cells[5].char);
+}
+
+test "Scrollback: resize fixes wide-char left half stranded at new last column" {
+    var sb = try Scrollback.init(testing.allocator, 5, 4);
+    defer sb.deinit();
+
+    const cells = [_]Cell{
+        .{ .char = 'A' },
+        .{ .char = '日', .attrs = .{ .wide = true } },
+        .{ .char = ' ', .attrs = .{ .wide_dummy = true } },
+        .{ .char = 'B' },
+    };
+    const empty_rgb = [_]?[3]u8{null} ** 4;
+    const empty_hl = [_]u16{0} ** 4;
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+
+    // Shrink to 2 cols — the wide char's right half (col 2) is dropped, so
+    // the wide left half at col 1 must be replaced with blank.
+    try sb.resize(2);
+    const v = sb.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, ' '), v.cells[1].char);
+    try testing.expect(!v.cells[1].attrs.wide);
+}
+
+test "Scrollback: resize is no-op when new_cols == old_cols" {
+    var sb = try Scrollback.init(testing.allocator, 5, 4);
+    defer sb.deinit();
+
+    const cells = [_]Cell{ .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' }, .{ .char = 'D' } };
+    const empty_rgb = [_]?[3]u8{null} ** 4;
+    const empty_hl = [_]u16{0} ** 4;
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+
+    try sb.resize(4);
+    const v = sb.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, 'D'), v.cells[3].char);
 }
