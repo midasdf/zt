@@ -1584,4 +1584,5 @@ test {
     _ = @import("pty.zig");
     _ = @import("input.zig");
     _ = @import("render.zig");
+    _ = @import("scrollback.zig");
 }
