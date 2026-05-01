@@ -633,6 +633,52 @@ fn handleBackendEvent(
             const cx = @min(col, term.cols -| 1);
             const cy = @min(row, term.rows -| 1);
 
+            // Wheel routing — handled before shift/selection so Shift+wheel
+            // also scrolls scrollback (main) or sends arrow keys (alt).
+            const is_wheel = mouse_ev.button == .wheel_up or mouse_ev.button == .wheel_down;
+            if (is_wheel and mouse_ev.action == .press) {
+                const up = mouse_ev.button == .wheel_up;
+                // 1) App captures mouse → forward as VT mouse event.
+                if (term.mouse_mode != .none) {
+                    const seq = encodeMouseEvent(term, mouse_ev, cx, cy, last_pressed_button);
+                    if (seq.len > 0) {
+                        if (!ptyBufferedWrite(pty_ptr, seq.slice(), write_queue, evloop_fd)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                // 2) Main screen with scrollback enabled → scroll history.
+                if (config.scrollback_lines > 0 and !term.is_alt_screen) {
+                    if (up) {
+                        term.scrollViewportUp(config.scrollback_wheel_lines);
+                    } else {
+                        term.scrollViewportDown(config.scrollback_wheel_lines);
+                    }
+                    return true;
+                }
+                // 3) Alt screen (or scrollback disabled) → translate to arrow
+                //    keys so less/man/vim continue to behave naturally.
+                if (term.is_alt_screen) {
+                    const seq: []const u8 = if (up)
+                        (if (term.decckm) "\x1bOA" else "\x1b[A")
+                    else
+                        (if (term.decckm) "\x1bOB" else "\x1b[B");
+                    const lines: u32 = if (config.scrollback_lines > 0)
+                        config.scrollback_wheel_lines
+                    else
+                        3;
+                    var i: u32 = 0;
+                    while (i < lines) : (i += 1) {
+                        if (!ptyBufferedWrite(pty_ptr, seq, write_queue, evloop_fd)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                return true; // main screen, scrollback compiled out → drop
+            }
+
             // Shift held → terminal selection (bypass app mouse capture)
             if (mouse_ev.modifiers.shift) {
                 handleTerminalSelection(term, mouse_ev, cx, cy);
@@ -824,9 +870,9 @@ fn handleTerminalSelection(term: *Term, ev: BackendMouseEvent, cx: u32, cy: u32)
                 term.markDirtyRange(.{ .start = 0, .end = total });
             },
             .wheel_up, .wheel_down => {
-                // When no app captures mouse and in alt screen,
-                // translate wheel to arrow keys for less/man etc.
-                // TODO: scrollback when implemented
+                // Unreachable — wheel events are routed at the dispatcher
+                // (handleBackendEvent .mouse arm) before getting here. Kept
+                // as an explicit no-op so the switch stays exhaustive.
             },
             else => {},
         },
