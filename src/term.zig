@@ -589,6 +589,48 @@ pub const Term = struct {
         self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
     }
 
+    inline fn scrollMarkDirty(self: *Self) void {
+        // Selection coordinates are viewport-relative and assume the live grid.
+        // After view_offset changes those coordinates would point at scrollback
+        // rows we are not prepared to copy correctly — clear so a stale
+        // selection cannot render as garbage or cover the wrong cells.
+        self.selection = null;
+        self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cols) * @as(usize, self.rows) });
+        self.all_dirty = true;
+        self.dirty_flag = true;
+    }
+
+    pub fn scrollViewportUp(self: *Self, n: u32) void {
+        if (config.scrollback_lines == 0) return;
+        const max: u32 = self.scrollback.count;
+        const new_off = self.view_offset +| n;
+        const clamped: u32 = if (new_off > max) max else new_off;
+        if (clamped == self.view_offset) return;
+        self.view_offset = clamped;
+        self.scrollMarkDirty();
+    }
+
+    pub fn scrollViewportDown(self: *Self, n: u32) void {
+        if (config.scrollback_lines == 0) return;
+        if (self.view_offset == 0) return;
+        self.view_offset = if (n >= self.view_offset) 0 else self.view_offset - n;
+        self.scrollMarkDirty();
+    }
+
+    pub fn scrollViewportToTop(self: *Self) void {
+        if (config.scrollback_lines == 0) return;
+        if (self.view_offset == self.scrollback.count) return;
+        self.view_offset = self.scrollback.count;
+        self.scrollMarkDirty();
+    }
+
+    pub fn scrollViewportToBottom(self: *Self) void {
+        if (config.scrollback_lines == 0) return;
+        if (self.view_offset == 0) return;
+        self.view_offset = 0;
+        self.scrollMarkDirty();
+    }
+
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
         // Reject degenerate dimensions up front: a zero in either axis
         // would zero-divide in the alt-buffer recovery branch below and
@@ -1573,6 +1615,46 @@ test "Term: eraseDisplay 3 in alt screen leaves main scrollback intact" {
     try term.switchScreen(true);
     term.eraseDisplay(3);
     try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+}
+
+test "Term: scrollViewport helpers manipulate view_offset with clamps" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    term.scrollUp(1);
+    // count = 2
+
+    term.scrollViewportUp(5); // clamp to count
+    try testing.expectEqual(@as(u32, 2), term.view_offset);
+
+    term.scrollViewportDown(1);
+    try testing.expectEqual(@as(u32, 1), term.view_offset);
+
+    term.scrollViewportToBottom();
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+
+    term.scrollViewportToTop();
+    try testing.expectEqual(@as(u32, 2), term.view_offset);
+
+    // No-op when already at boundaries
+    term.scrollViewportDown(99);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+    term.scrollViewportUp(0);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+}
+
+test "Term: scrollViewport clears stale selection" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+
+    term.selection = .{ .start_x = 0, .start_y = 0, .end_x = 2, .end_y = 0, .active = false };
+    term.scrollViewportUp(1);
+    try testing.expect(term.selection == null);
 }
 
 test "Term: scrollDown moves rows via row_map" {
