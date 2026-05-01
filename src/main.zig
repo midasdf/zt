@@ -522,17 +522,55 @@ fn handleBackendEvent(
     switch (event.*) {
         .key => |key_ev| {
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
-            if (key_ev.pressed) {
-                const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm, term.decbkm);
-                if (bytes.len > 0) {
-                    if (!ptyBufferedWrite(pty_ptr, bytes, write_queue, evloop_fd)) {
-                        return false;
-                    }
+            if (!key_ev.pressed) return true;
+
+            // Scrollback shortcuts — main screen only, scrollback enabled,
+            // shift modifier carves out a user override that does not collide
+            // with PageUp/Home/End sequences apps may want.
+            if (config.scrollback_lines > 0 and !term.is_alt_screen and key_ev.modifiers.shift) {
+                const handled = switch (key_ev.keycode) {
+                    input.KEY.PAGEUP => blk: {
+                        const page: u32 = if (term.rows > 1) term.rows - 1 else 1;
+                        term.scrollViewportUp(page);
+                        break :blk true;
+                    },
+                    input.KEY.PAGEDOWN => blk: {
+                        const page: u32 = if (term.rows > 1) term.rows - 1 else 1;
+                        term.scrollViewportDown(page);
+                        break :blk true;
+                    },
+                    input.KEY.HOME => blk: {
+                        term.scrollViewportToTop();
+                        break :blk true;
+                    },
+                    input.KEY.END => blk: {
+                        term.scrollViewportToBottom();
+                        break :blk true;
+                    },
+                    else => false,
+                };
+                if (handled) return true;
+            }
+
+            // Any normal key auto-jumps to live tail before forwarding the
+            // keystroke — matches user expectation that typing snaps you back
+            // to the prompt.
+            if (config.scrollback_lines > 0 and term.view_offset > 0) {
+                term.scrollViewportToBottom();
+            }
+
+            const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm, term.decbkm);
+            if (bytes.len > 0) {
+                if (!ptyBufferedWrite(pty_ptr, bytes, write_queue, evloop_fd)) {
+                    return false;
                 }
             }
         },
         .text => |text_ev| {
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
+            if (config.scrollback_lines > 0 and term.view_offset > 0) {
+                term.scrollViewportToBottom();
+            }
             const text = text_ev.slice();
             if (text.len > 0) {
                 if (!ptyBufferedWrite(pty_ptr, text, write_queue, evloop_fd)) {
@@ -542,6 +580,9 @@ fn handleBackendEvent(
         },
         .paste => |paste_ev| {
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
+            if (config.scrollback_lines > 0 and term.view_offset > 0) {
+                term.scrollViewportToBottom();
+            }
             const text = paste_ev.slice();
             if (text.len > 0) {
                 if (term.bracketed_paste) {
