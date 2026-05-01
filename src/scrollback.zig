@@ -86,6 +86,91 @@ pub const Scrollback = struct {
         self.head = 0;
         self.count = 0;
     }
+
+    pub fn pushRow(
+        self: *Self,
+        src_cells: []const Cell,
+        src_fg: []const ?[3]u8,
+        src_bg: []const ?[3]u8,
+        src_ul: []const ?[3]u8,
+        src_hl: []const u16,
+    ) void {
+        std.debug.assert(src_cells.len == self.cols);
+        std.debug.assert(src_fg.len == self.cols);
+        std.debug.assert(src_bg.len == self.cols);
+        std.debug.assert(src_ul.len == self.cols);
+        std.debug.assert(src_hl.len == self.cols);
+
+        const slot = self.head;
+        const start: usize = @as(usize, slot) * @as(usize, self.cols);
+        @memcpy(self.cells[start .. start + self.cols], src_cells);
+        @memcpy(self.fg_rgb[start .. start + self.cols], src_fg);
+        @memcpy(self.bg_rgb[start .. start + self.cols], src_bg);
+        @memcpy(self.ul_color_rgb[start .. start + self.cols], src_ul);
+        @memcpy(self.hyperlink_ids[start .. start + self.cols], src_hl);
+
+        // Per-row truecolor scan
+        var has_tc = false;
+        for (src_fg) |v| {
+            if (v != null) {
+                has_tc = true;
+                break;
+            }
+        }
+        if (!has_tc) {
+            for (src_bg) |v| {
+                if (v != null) {
+                    has_tc = true;
+                    break;
+                }
+            }
+        }
+        if (!has_tc) {
+            for (src_ul) |v| {
+                if (v != null) {
+                    has_tc = true;
+                    break;
+                }
+            }
+        }
+        self.has_truecolor[slot] = has_tc;
+
+        // Compute used_cols: trim trailing default blanks for resize accuracy.
+        // A "default blank" is char==' ' and no per-cell metadata override.
+        var uc: u32 = self.cols;
+        while (uc > 0) {
+            const i = uc - 1;
+            const c = src_cells[i];
+            if (c.char != ' ' or src_fg[i] != null or src_bg[i] != null or
+                src_ul[i] != null or src_hl[i] != 0) break;
+            uc -= 1;
+        }
+        self.used_cols[slot] = @intCast(uc);
+
+        self.head = (self.head + 1) % self.capacity;
+        if (self.count < self.capacity) self.count += 1;
+    }
+
+    pub fn rowAt(self: *const Self, age: u32) ScrollbackView {
+        std.debug.assert(self.count > 0);
+        const a = if (age >= self.count) self.count - 1 else age;
+        // newest row sits at slot (head - 1) mod capacity (= age 0).
+        // Row of age k sits at (head - 1 - k) mod capacity.
+        const cap_i: i64 = @intCast(self.capacity);
+        const idx_i: i64 = @as(i64, @intCast(self.head)) - 1 - @as(i64, @intCast(a));
+        const slot: u32 = @intCast(@mod(idx_i, cap_i));
+        const start: usize = @as(usize, slot) * @as(usize, self.cols);
+        const end = start + self.cols;
+        return .{
+            .cells = self.cells[start..end],
+            .fg_rgb = self.fg_rgb[start..end],
+            .bg_rgb = self.bg_rgb[start..end],
+            .ul_color_rgb = self.ul_color_rgb[start..end],
+            .hyperlink_ids = self.hyperlink_ids[start..end],
+            .used_cols = self.used_cols[slot],
+            .has_truecolor = self.has_truecolor[slot],
+        };
+    }
 };
 
 test "Scrollback: init+deinit round-trip" {
@@ -105,4 +190,98 @@ test "Scrollback: clear resets head and count" {
     sb.clear();
     try testing.expectEqual(@as(u32, 0), sb.head);
     try testing.expectEqual(@as(u32, 0), sb.count);
+}
+
+test "Scrollback: pushRow stores cells and rowAt(0) returns newest" {
+    var sb = try Scrollback.init(testing.allocator, 10, 5);
+    defer sb.deinit();
+
+    const cells = [_]Cell{
+        .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' },
+        .{ .char = 'D' }, .{ .char = 'E' },
+    };
+    const empty_rgb = [_]?[3]u8{null} ** 5;
+    const empty_hl = [_]u16{0} ** 5;
+
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+
+    try testing.expectEqual(@as(u32, 1), sb.count);
+    const view = sb.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), view.cells[0].char);
+    try testing.expectEqual(@as(u21, 'E'), view.cells[4].char);
+    try testing.expectEqual(@as(u16, 5), view.used_cols);
+    try testing.expectEqual(false, view.has_truecolor);
+}
+
+test "Scrollback: pushRow trims trailing default blanks for used_cols" {
+    var sb = try Scrollback.init(testing.allocator, 10, 6);
+    defer sb.deinit();
+
+    const cells = [_]Cell{
+        .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' },
+        .{ .char = ' ' }, .{ .char = ' ' }, .{ .char = ' ' },
+    };
+    const empty_rgb = [_]?[3]u8{null} ** 6;
+    const empty_hl = [_]u16{0} ** 6;
+
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+    try testing.expectEqual(@as(u16, 3), sb.rowAt(0).used_cols);
+}
+
+test "Scrollback: pushRow detects truecolor in fg/bg/ul" {
+    var sb = try Scrollback.init(testing.allocator, 10, 3);
+    defer sb.deinit();
+
+    const cells = [_]Cell{ .{ .char = 'X' }, .{ .char = 'Y' }, .{ .char = 'Z' } };
+    const empty_rgb = [_]?[3]u8{null} ** 3;
+    const empty_hl = [_]u16{0} ** 3;
+
+    var fg = [_]?[3]u8{null} ** 3;
+    fg[1] = .{ 200, 100, 50 };
+    sb.pushRow(&cells, &fg, &empty_rgb, &empty_rgb, &empty_hl);
+    try testing.expectEqual(true, sb.rowAt(0).has_truecolor);
+
+    sb.clear();
+    var bg = [_]?[3]u8{null} ** 3;
+    bg[2] = .{ 0, 0, 1 };
+    sb.pushRow(&cells, &empty_rgb, &bg, &empty_rgb, &empty_hl);
+    try testing.expectEqual(true, sb.rowAt(0).has_truecolor);
+
+    sb.clear();
+    var u = [_]?[3]u8{null} ** 3;
+    u[0] = .{ 9, 9, 9 };
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &u, &empty_hl);
+    try testing.expectEqual(true, sb.rowAt(0).has_truecolor);
+}
+
+test "Scrollback: capacity overflow drops oldest" {
+    var sb = try Scrollback.init(testing.allocator, 3, 1);
+    defer sb.deinit();
+
+    const empty_rgb = [_]?[3]u8{null};
+    const empty_hl = [_]u16{0};
+    inline for (0..5) |i| {
+        const cells = [_]Cell{.{ .char = 'A' + @as(u8, i) }};
+        sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+    }
+
+    try testing.expectEqual(@as(u32, 3), sb.count);
+    // Newest = 'E', then 'D', then 'C'. 'A' and 'B' fell off.
+    try testing.expectEqual(@as(u21, 'E'), sb.rowAt(0).cells[0].char);
+    try testing.expectEqual(@as(u21, 'D'), sb.rowAt(1).cells[0].char);
+    try testing.expectEqual(@as(u21, 'C'), sb.rowAt(2).cells[0].char);
+}
+
+test "Scrollback: rowAt clamps age to count-1" {
+    var sb = try Scrollback.init(testing.allocator, 10, 1);
+    defer sb.deinit();
+    const cells = [_]Cell{.{ .char = 'A' }};
+    const empty_rgb = [_]?[3]u8{null};
+    const empty_hl = [_]u16{0};
+    sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl);
+
+    // Asking for an age beyond count returns the oldest available row
+    // rather than panicking — defensive contract for callers.
+    const view = sb.rowAt(99);
+    try testing.expectEqual(@as(u21, 'A'), view.cells[0].char);
 }
