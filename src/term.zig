@@ -1707,6 +1707,16 @@ test "Term: resize clamps view_offset down when scrollback shrinks below it" {
     try testing.expect(term.view_offset <= term.scrollback.count);
 }
 
+test "Term: @sizeOf is unchanged when scrollback_lines == 0" {
+    // Snapshot guards against accidental field bloat creeping into the
+    // disabled path. If this trips, the scrollback comptime gate has a
+    // hole — investigate before bumping. Updating the value is allowed
+    // but should be a deliberate, isolated commit.
+    if (config.scrollback_lines != 0) return error.SkipZigTest;
+    const EXPECTED: usize = 56296;
+    try testing.expectEqual(EXPECTED, @sizeOf(Term));
+}
+
 test "Term: scrollDown moves rows via row_map" {
     var term = try Term.init(testing.allocator, 5, 4);
     defer term.deinit();
