@@ -1486,25 +1486,56 @@ pub fn main(init: std.process.Init.Minimal) !void {
             backend.markDirtyRows(0, back_h - 1);
         }
 
+        // While view_offset > 0 the dirty bitmap maps to live-grid coordinates
+        // but we render a mix of scrollback + offset live grid; force a full
+        // redraw to keep dirty bookkeeping simple. Acceptable: scrolled
+        // browsing is interactive, not throughput-bound.
+        const force_redraw: bool = if (config.scrollback_lines > 0) term.view_offset > 0 else false;
+
         var y: u32 = 0;
         while (y < term.rows) : (y += 1) {
-            if (!all_dirty and !term.isRowDirty(y)) continue;
+            const sb_age: ?u32 = if (config.scrollback_lines > 0) blk: {
+                if (y < term.view_offset) break :blk term.view_offset - 1 - y;
+                break :blk null;
+            } else null;
 
-            // Resolve physical row once per row — eliminates per-cell
-            // bounds checks, row_map lookups, and multiplications
-            const phys_row = term.row_map[y];
-            const row_base = @as(usize, phys_row) * @as(usize, term.cols);
-            const row_cells = term.cells[row_base..][0..term.cols];
-            const row_fg = term.fg_rgb[row_base..][0..term.cols];
-            const row_bg = term.bg_rgb[row_base..][0..term.cols];
-            const row_ul = term.ul_color_rgb[row_base..][0..term.cols];
-            const row_hl = term.hyperlink_ids[row_base..][0..term.cols];
-            const dirty_row_base = @as(usize, y) * @as(usize, term.cols);
+            if (!all_dirty and !force_redraw and !term.isRowDirty(y)) continue;
+
+            // For scrollback rows live_y is unused; for live rows we shift by view_offset.
+            const live_y: u32 = if (sb_age == null)
+                (if (config.scrollback_lines > 0) y - term.view_offset else y)
+            else
+                0;
+
+            // Resolve row source: scrollback view when scrolled into history,
+            // live grid (via row_map) otherwise.
+            var row_cells: []const Cell = undefined;
+            var row_fg: []const ?[3]u8 = undefined;
+            var row_bg: []const ?[3]u8 = undefined;
+            var row_ul: []const ?[3]u8 = undefined;
+            var row_hl: []const u16 = undefined;
+            if (sb_age) |age| {
+                const v = term.scrollback.rowAt(age);
+                row_cells = v.cells;
+                row_fg = v.fg_rgb;
+                row_bg = v.bg_rgb;
+                row_ul = v.ul_color_rgb;
+                row_hl = v.hyperlink_ids;
+            } else {
+                const phys_row = term.row_map[live_y];
+                const row_base = @as(usize, phys_row) * @as(usize, term.cols);
+                row_cells = term.cells[row_base..][0..term.cols];
+                row_fg = term.fg_rgb[row_base..][0..term.cols];
+                row_bg = term.bg_rgb[row_base..][0..term.cols];
+                row_ul = term.ul_color_rgb[row_base..][0..term.cols];
+                row_hl = term.hyperlink_ids[row_base..][0..term.cols];
+            }
+            const dirty_row_base = @as(usize, live_y) * @as(usize, term.cols);
             const sel_opt = term.selection;
 
             var x: u32 = 0;
             while (x < term.cols) : (x += 1) {
-                if (!all_dirty and !term.dirty.isSet(dirty_row_base + x)) continue;
+                if (!all_dirty and !force_redraw and !term.dirty.isSet(dirty_row_base + x)) continue;
 
                 const cell = &row_cells[x];
                 if (cell.attrs.wide_dummy) continue;
@@ -1514,7 +1545,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 const ul_rgb = row_ul[x];
                 const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
                 const vis = term.cursor_visible and cursor_visible_blink;
-                const is_cursor = vis and term.cursor_y == y and (term.cursor_x == x or
+                // Cursor lives on the live grid; hide it while rendering scrollback rows.
+                const is_cursor = vis and sb_age == null and term.cursor_y == live_y and (term.cursor_x == x or
                     (cell.attrs.wide and x + 1 < term.cols and term.cursor_x == x + 1));
 
                 var render_cell = cell.*;
@@ -1522,10 +1554,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 if (row_hl[x] != 0 and render_cell.attrs.underline_style == 0) {
                     render_cell.attrs.underline_style = 1;
                 }
-                const in_selection = if (sel_opt) |sel|
-                    sel.coversWideLeftCell(x, y, cell.attrs.wide, term.cols)
-                else
-                    false;
+                // Selection coordinates are live-grid; suppress on scrollback rows.
+                // (scrollMarkDirty also clears selection on every view_offset change,
+                // so when sb_age != null we shouldn't have a live selection to test —
+                // belt-and-braces.)
+                const in_selection = if (sb_age == null) blk: {
+                    if (sel_opt) |sel| break :blk sel.coversWideLeftCell(x, live_y, cell.attrs.wide, term.cols);
+                    break :blk false;
+                } else false;
 
                 // Invert fg/bg for cursor or selection, but not both
                 // (double inversion cancels out, making cursor invisible)
