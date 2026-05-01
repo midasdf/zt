@@ -546,9 +546,11 @@ pub const Term = struct {
             // Clear recycled row
             self.bceMemset(recycled_phys * cols, (recycled_phys + 1) * cols);
         } else {
-            // Clear recycled rows with BCE
+            // Push then clear each evicted row, oldest first.
+            const push = self.shouldPushScrollback();
             for (0..shift) |s| {
                 const phys = self.row_map[top + s];
+                if (push) self.pushPhysRowToScrollback(phys);
                 self.bceMemset(phys * cols, (phys + 1) * cols);
             }
             // General case: rotate row_map
@@ -1457,6 +1459,24 @@ test "Term: scrollUp(1) full-screen pushes evicted row to scrollback" {
     try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
     try testing.expectEqual(@as(u21, 'B'), v.cells[1].char);
     try testing.expectEqual(@as(u21, 'C'), v.cells[2].char);
+}
+
+test "Term: scrollUp(n) full-screen pushes n rows oldest first" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 4);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(0, 1, .{ .char = 'B' });
+    term.setCell(0, 2, .{ .char = 'C' });
+    term.scroll_bottom = 3;
+
+    term.scrollUp(3);
+
+    try testing.expectEqual(@as(u32, 3), term.scrollback.count);
+    // Newest scrollback row (age 0) is the LAST evicted = 'C'.
+    try testing.expectEqual(@as(u21, 'C'), term.scrollback.rowAt(0).cells[0].char);
+    try testing.expectEqual(@as(u21, 'B'), term.scrollback.rowAt(1).cells[0].char);
+    try testing.expectEqual(@as(u21, 'A'), term.scrollback.rowAt(2).cells[0].char);
 }
 
 test "Term: scrollDown moves rows via row_map" {
