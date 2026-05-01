@@ -1,6 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const config = @import("config");
+const scrollback_mod = @import("scrollback.zig");
+const Scrollback = scrollback_mod.Scrollback;
+const ScrollbackView = scrollback_mod.ScrollbackView;
 
 pub const Cell = struct {
     char: u21 = ' ',
@@ -156,6 +160,13 @@ pub const Term = struct {
     alt_hyperlink_ids: ?[]u16 = null,
     is_alt_screen: bool = false,
 
+    // Scrollback (main screen only). Comptime-gated: when scrollback_lines == 0
+    // these fields collapse to zero-sized `void` and pay no memory cost.
+    scrollback: if (config.scrollback_lines > 0) Scrollback else void =
+        if (config.scrollback_lines > 0) undefined else {},
+    view_offset: if (config.scrollback_lines > 0) u32 else void =
+        if (config.scrollback_lines > 0) 0 else {},
+
     // Cursor
     cursor_x: u32 = 0,
     cursor_y: u32 = 0,
@@ -286,6 +297,10 @@ pub const Term = struct {
             tabs[c] = (c % 8 == 0) and c > 0;
         }
 
+        const sb = if (config.scrollback_lines > 0)
+            try Scrollback.init(allocator, config.scrollback_lines, cols)
+        else {};
+
         return Self{
             .allocator = allocator,
             .cols = cols,
@@ -299,6 +314,8 @@ pub const Term = struct {
             .ul_color_rgb = ul_color_rgb,
             .hyperlink_ids = hyperlink_ids,
             .tabs = tabs,
+            .scrollback = sb,
+            .view_offset = if (config.scrollback_lines > 0) @as(u32, 0) else {},
         };
     }
 
@@ -307,6 +324,7 @@ pub const Term = struct {
         self.allocator.free(self.row_map);
         self.dirty.deinit();
         if (self.tabs.len > 0) self.allocator.free(self.tabs);
+        if (config.scrollback_lines > 0) self.scrollback.deinit();
         if (self.alt_cells) |alt| self.allocator.free(alt);
         if (self.alt_row_map) |arm| self.allocator.free(arm);
         if (self.alt_dirty != null) {
@@ -1361,6 +1379,16 @@ test "Term: init creates grid with default cells" {
     const cell = term.getCell(0, 0);
     try testing.expectEqual(@as(u21, ' '), cell.char);
     try testing.expectEqual(@as(u8, 7), cell.fg);
+}
+
+test "Term: scrollback allocated when scrollback_lines > 0" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 10, 5);
+    defer term.deinit();
+    try testing.expectEqual(@as(u32, config.scrollback_lines), term.scrollback.capacity);
+    try testing.expectEqual(@as(u32, 10), term.scrollback.cols);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
 }
 
 test "Term: setCell / getCell roundtrip" {
