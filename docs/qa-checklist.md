@@ -135,6 +135,58 @@ Check each box after manual verification. Each entry has brief steps and the exp
 
 ---
 
+## Scrollback
+
+### SB1 — Wheel scroll on main
+- [ ] Run `seq 1 5000 | cat`. Mouse-wheel up.
+- **Expected**: earlier numbers come into view; the top of the buffer is reachable.
+- [ ] Wheel down.
+- **Expected**: returns to live tail; current prompt visible.
+
+### SB2 — Shift+key navigation
+- [ ] Shift+PageUp / Shift+PageDown.
+- **Expected**: one viewport-worth (rows-1) of scrollback per press, with one row of overlap.
+- [ ] Shift+Home.
+- **Expected**: jumps to the oldest scrollback row.
+- [ ] Shift+End.
+- **Expected**: jumps to live tail.
+
+### SB3 — Auto jump-to-bottom on input
+- [ ] Scroll up via wheel until earlier output is visible.
+- [ ] Type any printable character (e.g. `a`).
+- **Expected**: view snaps to live tail BEFORE the keystroke renders.
+
+### SB4 — Alt-screen non-pollution
+- [ ] `less /etc/services`. Mouse-wheel inside `less`.
+- **Expected**: `less` itself scrolls; zt scrollback is NOT touched.
+- [ ] Quit `less` (`q`). Wheel-up.
+- **Expected**: original main-screen scrollback is intact.
+
+### SB5 — Mouse-mode app passthrough
+- [ ] Run `btop` (or any app that sets `mouse_mode != .none`). Wheel inside.
+- **Expected**: btop receives the wheel events (its own scrolling works).
+- [ ] Press Shift+PageUp inside btop.
+- **Expected**: scrolls our scrollback (Shift modifier carves a user override).
+
+### SB6 — ED 3 clears scrollback (main only)
+- [ ] Fill scrollback with `seq 1 200`. Type `clear`.
+- **Expected**: viewport blank; Shift+PgUp shows nothing (scrollback wiped).
+- [ ] Fill scrollback again, then `less /etc/services`. Inside `less`, run `:!clear` and quit.
+- **Expected**: main scrollback was NOT cleared by the alt-screen `clear`.
+
+### SB7 — Resize while scrolled
+- [ ] Fill scrollback with `seq 1 1000`. Wheel-up to middle.
+- [ ] Drag the window corner narrower / wider.
+- **Expected**: no crash; view stays sane (truncated/padded but not garbled). Wide CJK glyphs at the new last column do not show as half characters.
+
+### SB8 — Build flag opt-out
+- [ ] Build `-Dscrollback_lines=0` (use `--libc /tmp/libc.txt` for the suzume sframe workaround if Arch + glibc 2.43).
+- **Expected**: clean build; wheel-up does nothing in main screen; binary still functions otherwise.
+- [ ] Build `-Dscrollback_lines=2000`.
+- **Expected**: clean build; scrollback caps at 2000 rows.
+
+---
+
 ## Notes
 
 - All tests assume zt built from current source (`zig build -Dbackend=<backend>`).

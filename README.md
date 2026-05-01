@@ -88,6 +88,12 @@ zig build -Dbackend=x11 -Dmax_fps=60 -Doptimize=ReleaseFast
 # Smaller PTY buffer (conserve memory)
 zig build -Dbackend=x11 -Dpty_buf_kb=256 -Doptimize=ReleaseSmall
 
+# Disable scrollback (smaller binary, no scroll history)
+zig build -Dbackend=x11 -Dscrollback_lines=0 -Doptimize=ReleaseFast
+
+# Smaller scrollback (lower memory)
+zig build -Dbackend=x11 -Dscrollback_lines=2000 -Doptimize=ReleaseFast
+
 # Cross-compile for aarch64
 zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
 
@@ -163,8 +169,8 @@ Some applications may have minor rendering issues due to missing features (see b
 
 ## Limitations
 
-- **No scrollback buffer** — only the current viewport
-- **Mouse support is limited** — app mouse tracking and selection work, but there is no scrollback wheel behavior yet
+- **Scrollback** — fixed capacity, set at compile time via `-Dscrollback_lines=N` (default 10000, 0 disables). No reflow on column resize, no selection of scrollback rows yet.
+- **Mouse wheel** — scrolls scrollback in main screen; translates to arrow keys for `less`/`vim` in alt screen; passes through to apps with mouse capture (`mouse_mode != .none`).
 - **No clipboard paste on fbdev** — X11/Wayland support Ctrl+Shift+V
 - **No inline pre-edit display** — IME uses its own popup window
 - **No font fallback** — single embedded font, no system font lookup
