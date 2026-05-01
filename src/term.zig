@@ -798,6 +798,11 @@ pub const Term = struct {
     pub fn switchScreen(self: *Self, alt: bool) !void {
         if (alt == self.is_alt_screen) return;
 
+        // Snap back to live tail on every screen switch — alt screens never
+        // browse our scrollback, and returning to main from a deeply scrolled
+        // alt would leave the user staring at history of an unrelated session.
+        if (config.scrollback_lines > 0) self.view_offset = 0;
+
         const total = @as(usize, self.cols) * @as(usize, self.rows);
 
         // Lazy-allocate alt buffer on first switch to alt screen
@@ -1477,6 +1482,48 @@ test "Term: scrollUp(n) full-screen pushes n rows oldest first" {
     try testing.expectEqual(@as(u21, 'C'), term.scrollback.rowAt(0).cells[0].char);
     try testing.expectEqual(@as(u21, 'B'), term.scrollback.rowAt(1).cells[0].char);
     try testing.expectEqual(@as(u21, 'A'), term.scrollback.rowAt(2).cells[0].char);
+}
+
+test "Term: scrollUp on alt screen does NOT push" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 3);
+    defer term.deinit();
+    try term.switchScreen(true);
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+}
+
+test "Term: scrollUp partial region (DECSTBM) does NOT push" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 5);
+    defer term.deinit();
+    term.setCell(0, 1, .{ .char = 'A' });
+    term.scroll_top = 1;
+    term.scroll_bottom = 3;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+}
+
+test "Term: switchScreen resets view_offset on enter and leave alt" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    term.view_offset = 1;
+
+    try term.switchScreen(true);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+
+    // Re-stage view_offset on main and verify leave-alt path.
+    try term.switchScreen(false);
+    term.view_offset = 1;
+    try term.switchScreen(true);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+    try term.switchScreen(false);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
 }
 
 test "Term: scrollDown moves rows via row_map" {
