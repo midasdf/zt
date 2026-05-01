@@ -1006,6 +1006,14 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = 0, .end = end_y * cols + end_x + 1 });
             },
             2, 3 => {
+                // ED 3 ("erase saved lines") additionally drops the scrollback
+                // ring on the main screen. Skipped while in alt so that
+                // `clear` issued from inside `less`/`vim` cannot wipe the
+                // user's history.
+                if (mode == 3 and config.scrollback_lines > 0 and !self.is_alt_screen) {
+                    self.scrollback.clear();
+                    self.view_offset = 0;
+                }
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
                 self.fastCellFill(0, total, blank);
                 for (0..self.rows) |i| self.row_map[i] = @intCast(i);
@@ -1524,6 +1532,47 @@ test "Term: switchScreen resets view_offset on enter and leave alt" {
     try testing.expectEqual(@as(u32, 0), term.view_offset);
     try term.switchScreen(false);
     try testing.expectEqual(@as(u32, 0), term.view_offset);
+}
+
+test "Term: eraseDisplay 3 clears scrollback when not alt" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+
+    term.eraseDisplay(3);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+}
+
+test "Term: eraseDisplay 2 does NOT clear scrollback" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+
+    term.eraseDisplay(2);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+}
+
+test "Term: eraseDisplay 3 in alt screen leaves main scrollback intact" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+
+    try term.switchScreen(true);
+    term.eraseDisplay(3);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
 }
 
 test "Term: scrollDown moves rows via row_map" {
