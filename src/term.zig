@@ -504,6 +504,26 @@ pub const Term = struct {
         self.all_dirty = true;
     }
 
+    inline fn shouldPushScrollback(self: *const Self) bool {
+        if (config.scrollback_lines == 0) return false;
+        if (self.is_alt_screen) return false;
+        const top: usize = self.scroll_top;
+        const bot: usize = self.scroll_bottom;
+        return top == 0 and bot + 1 == self.rows;
+    }
+
+    inline fn pushPhysRowToScrollback(self: *Self, phys_row: u32) void {
+        if (config.scrollback_lines == 0) return;
+        const start: usize = @as(usize, phys_row) * @as(usize, self.cols);
+        self.scrollback.pushRow(
+            self.cells[start..][0..self.cols],
+            self.fg_rgb[start..][0..self.cols],
+            self.bg_rgb[start..][0..self.cols],
+            self.ul_color_rgb[start..][0..self.cols],
+            self.hyperlink_ids[start..][0..self.cols],
+        );
+    }
+
     pub fn scrollUp(self: *Self, n: u32) void {
         if (n == 0) return;
         const cols: usize = self.cols;
@@ -517,6 +537,8 @@ pub const Term = struct {
         // Use memmove instead of std.mem.rotate (which does 3x reverse)
         if (shift == 1) {
             const recycled_phys = self.row_map[top];
+            // Push the row that's about to be evicted from the top
+            if (self.shouldPushScrollback()) self.pushPhysRowToScrollback(recycled_phys);
             // Shift row_map entries left by 1
             const region = self.row_map[top .. bot + 1];
             std.mem.copyForwards(u32, region[0 .. region.len - 1], region[1..]);
@@ -1417,6 +1439,24 @@ test "Term: scrollUp moves rows via row_map" {
     try testing.expectEqual(@as(u21, 'D'), term.getCell(0, 2).char);
     // New bottom row should be cleared
     try testing.expectEqual(@as(u21, ' '), term.getCell(0, 3).char);
+}
+
+test "Term: scrollUp(1) full-screen pushes evicted row to scrollback" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 4);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(1, 0, .{ .char = 'B' });
+    term.setCell(2, 0, .{ .char = 'C' });
+    term.scroll_bottom = 3;
+
+    term.scrollUp(1);
+
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+    const v = term.scrollback.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, 'B'), v.cells[1].char);
+    try testing.expectEqual(@as(u21, 'C'), v.cells[2].char);
 }
 
 test "Term: scrollDown moves rows via row_map" {
