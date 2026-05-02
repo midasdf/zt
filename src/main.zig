@@ -522,17 +522,55 @@ fn handleBackendEvent(
     switch (event.*) {
         .key => |key_ev| {
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
-            if (key_ev.pressed) {
-                const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm, term.decbkm);
-                if (bytes.len > 0) {
-                    if (!ptyBufferedWrite(pty_ptr, bytes, write_queue, evloop_fd)) {
-                        return false;
-                    }
+            if (!key_ev.pressed) return true;
+
+            // Scrollback shortcuts — main screen only, scrollback enabled,
+            // shift modifier carves out a user override that does not collide
+            // with PageUp/Home/End sequences apps may want.
+            if (config.scrollback_lines > 0 and !term.is_alt_screen and key_ev.modifiers.shift) {
+                const handled = switch (key_ev.keycode) {
+                    input.KEY.PAGEUP => blk: {
+                        const page: u32 = if (term.rows > 1) term.rows - 1 else 1;
+                        term.scrollViewportUp(page);
+                        break :blk true;
+                    },
+                    input.KEY.PAGEDOWN => blk: {
+                        const page: u32 = if (term.rows > 1) term.rows - 1 else 1;
+                        term.scrollViewportDown(page);
+                        break :blk true;
+                    },
+                    input.KEY.HOME => blk: {
+                        term.scrollViewportToTop();
+                        break :blk true;
+                    },
+                    input.KEY.END => blk: {
+                        term.scrollViewportToBottom();
+                        break :blk true;
+                    },
+                    else => false,
+                };
+                if (handled) return true;
+            }
+
+            // Any normal key auto-jumps to live tail before forwarding the
+            // keystroke — matches user expectation that typing snaps you back
+            // to the prompt.
+            if (config.scrollback_lines > 0 and term.view_offset > 0) {
+                term.scrollViewportToBottom();
+            }
+
+            const bytes = input.translateKey(key_ev.keycode, key_ev.modifiers, term.decckm, term.decbkm);
+            if (bytes.len > 0) {
+                if (!ptyBufferedWrite(pty_ptr, bytes, write_queue, evloop_fd)) {
+                    return false;
                 }
             }
         },
         .text => |text_ev| {
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
+            if (config.scrollback_lines > 0 and term.view_offset > 0) {
+                term.scrollViewportToBottom();
+            }
             const text = text_ev.slice();
             if (text.len > 0) {
                 if (!ptyBufferedWrite(pty_ptr, text, write_queue, evloop_fd)) {
@@ -542,6 +580,9 @@ fn handleBackendEvent(
         },
         .paste => |paste_ev| {
             refreshCursorBlinkOnUserInput(cursor_visible_blink, cursor_blink_active, last_input_ns);
+            if (config.scrollback_lines > 0 and term.view_offset > 0) {
+                term.scrollViewportToBottom();
+            }
             const text = paste_ev.slice();
             if (text.len > 0) {
                 if (term.bracketed_paste) {
@@ -632,6 +673,52 @@ fn handleBackendEvent(
             const row: u32 = mouse_ev.y / config.cell_height;
             const cx = @min(col, term.cols -| 1);
             const cy = @min(row, term.rows -| 1);
+
+            // Wheel routing — handled before shift/selection so Shift+wheel
+            // also scrolls scrollback (main) or sends arrow keys (alt).
+            const is_wheel = mouse_ev.button == .wheel_up or mouse_ev.button == .wheel_down;
+            if (is_wheel and mouse_ev.action == .press) {
+                const up = mouse_ev.button == .wheel_up;
+                // 1) App captures mouse → forward as VT mouse event.
+                if (term.mouse_mode != .none) {
+                    const seq = encodeMouseEvent(term, mouse_ev, cx, cy, last_pressed_button);
+                    if (seq.len > 0) {
+                        if (!ptyBufferedWrite(pty_ptr, seq.slice(), write_queue, evloop_fd)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                // 2) Main screen with scrollback enabled → scroll history.
+                if (config.scrollback_lines > 0 and !term.is_alt_screen) {
+                    if (up) {
+                        term.scrollViewportUp(config.scrollback_wheel_lines);
+                    } else {
+                        term.scrollViewportDown(config.scrollback_wheel_lines);
+                    }
+                    return true;
+                }
+                // 3) Alt screen (or scrollback disabled) → translate to arrow
+                //    keys so less/man/vim continue to behave naturally.
+                if (term.is_alt_screen) {
+                    const seq: []const u8 = if (up)
+                        (if (term.decckm) "\x1bOA" else "\x1b[A")
+                    else
+                        (if (term.decckm) "\x1bOB" else "\x1b[B");
+                    const lines: u32 = if (config.scrollback_lines > 0)
+                        config.scrollback_wheel_lines
+                    else
+                        3;
+                    var i: u32 = 0;
+                    while (i < lines) : (i += 1) {
+                        if (!ptyBufferedWrite(pty_ptr, seq, write_queue, evloop_fd)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                return true; // main screen, scrollback compiled out → drop
+            }
 
             // Shift held → terminal selection (bypass app mouse capture)
             if (mouse_ev.modifiers.shift) {
@@ -824,9 +911,9 @@ fn handleTerminalSelection(term: *Term, ev: BackendMouseEvent, cx: u32, cy: u32)
                 term.markDirtyRange(.{ .start = 0, .end = total });
             },
             .wheel_up, .wheel_down => {
-                // When no app captures mouse and in alt screen,
-                // translate wheel to arrow keys for less/man etc.
-                // TODO: scrollback when implemented
+                // Unreachable — wheel events are routed at the dispatcher
+                // (handleBackendEvent .mouse arm) before getting here. Kept
+                // as an explicit no-op so the switch stays exhaustive.
             },
             else => {},
         },
@@ -1486,25 +1573,56 @@ pub fn main(init: std.process.Init.Minimal) !void {
             backend.markDirtyRows(0, back_h - 1);
         }
 
+        // While view_offset > 0 the dirty bitmap maps to live-grid coordinates
+        // but we render a mix of scrollback + offset live grid; force a full
+        // redraw to keep dirty bookkeeping simple. Acceptable: scrolled
+        // browsing is interactive, not throughput-bound.
+        const force_redraw: bool = if (config.scrollback_lines > 0) term.view_offset > 0 else false;
+
         var y: u32 = 0;
         while (y < term.rows) : (y += 1) {
-            if (!all_dirty and !term.isRowDirty(y)) continue;
+            const sb_age: ?u32 = if (config.scrollback_lines > 0) blk: {
+                if (y < term.view_offset) break :blk term.view_offset - 1 - y;
+                break :blk null;
+            } else null;
 
-            // Resolve physical row once per row — eliminates per-cell
-            // bounds checks, row_map lookups, and multiplications
-            const phys_row = term.row_map[y];
-            const row_base = @as(usize, phys_row) * @as(usize, term.cols);
-            const row_cells = term.cells[row_base..][0..term.cols];
-            const row_fg = term.fg_rgb[row_base..][0..term.cols];
-            const row_bg = term.bg_rgb[row_base..][0..term.cols];
-            const row_ul = term.ul_color_rgb[row_base..][0..term.cols];
-            const row_hl = term.hyperlink_ids[row_base..][0..term.cols];
-            const dirty_row_base = @as(usize, y) * @as(usize, term.cols);
+            if (!all_dirty and !force_redraw and !term.isRowDirty(y)) continue;
+
+            // For scrollback rows live_y is unused; for live rows we shift by view_offset.
+            const live_y: u32 = if (sb_age == null)
+                (if (config.scrollback_lines > 0) y - term.view_offset else y)
+            else
+                0;
+
+            // Resolve row source: scrollback view when scrolled into history,
+            // live grid (via row_map) otherwise.
+            var row_cells: []const Cell = undefined;
+            var row_fg: []const ?[3]u8 = undefined;
+            var row_bg: []const ?[3]u8 = undefined;
+            var row_ul: []const ?[3]u8 = undefined;
+            var row_hl: []const u16 = undefined;
+            if (sb_age) |age| {
+                const v = term.scrollback.rowAt(age);
+                row_cells = v.cells;
+                row_fg = v.fg_rgb;
+                row_bg = v.bg_rgb;
+                row_ul = v.ul_color_rgb;
+                row_hl = v.hyperlink_ids;
+            } else {
+                const phys_row = term.row_map[live_y];
+                const row_base = @as(usize, phys_row) * @as(usize, term.cols);
+                row_cells = term.cells[row_base..][0..term.cols];
+                row_fg = term.fg_rgb[row_base..][0..term.cols];
+                row_bg = term.bg_rgb[row_base..][0..term.cols];
+                row_ul = term.ul_color_rgb[row_base..][0..term.cols];
+                row_hl = term.hyperlink_ids[row_base..][0..term.cols];
+            }
+            const dirty_row_base = @as(usize, live_y) * @as(usize, term.cols);
             const sel_opt = term.selection;
 
             var x: u32 = 0;
             while (x < term.cols) : (x += 1) {
-                if (!all_dirty and !term.dirty.isSet(dirty_row_base + x)) continue;
+                if (!all_dirty and !force_redraw and !term.dirty.isSet(dirty_row_base + x)) continue;
 
                 const cell = &row_cells[x];
                 if (cell.attrs.wide_dummy) continue;
@@ -1514,7 +1632,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 const ul_rgb = row_ul[x];
                 const glyph = if (cell.char == ' ' or cell.char == 0) null else FontType.getGlyph(cell.char);
                 const vis = term.cursor_visible and cursor_visible_blink;
-                const is_cursor = vis and term.cursor_y == y and (term.cursor_x == x or
+                // Cursor lives on the live grid; hide it while rendering scrollback rows.
+                const is_cursor = vis and sb_age == null and term.cursor_y == live_y and (term.cursor_x == x or
                     (cell.attrs.wide and x + 1 < term.cols and term.cursor_x == x + 1));
 
                 var render_cell = cell.*;
@@ -1522,10 +1641,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 if (row_hl[x] != 0 and render_cell.attrs.underline_style == 0) {
                     render_cell.attrs.underline_style = 1;
                 }
-                const in_selection = if (sel_opt) |sel|
-                    sel.coversWideLeftCell(x, y, cell.attrs.wide, term.cols)
-                else
-                    false;
+                // Selection coordinates are live-grid; suppress on scrollback rows.
+                // (scrollMarkDirty also clears selection on every view_offset change,
+                // so when sb_age != null we shouldn't have a live selection to test —
+                // belt-and-braces.)
+                const in_selection = if (sb_age == null) blk: {
+                    if (sel_opt) |sel| break :blk sel.coversWideLeftCell(x, live_y, cell.attrs.wide, term.cols);
+                    break :blk false;
+                } else false;
 
                 // Invert fg/bg for cursor or selection, but not both
                 // (double inversion cancels out, making cursor invisible)
@@ -1584,4 +1707,5 @@ test {
     _ = @import("pty.zig");
     _ = @import("input.zig");
     _ = @import("render.zig");
+    _ = @import("scrollback.zig");
 }

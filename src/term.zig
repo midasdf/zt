@@ -1,6 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const config = @import("config");
+const scrollback_mod = @import("scrollback.zig");
+const Scrollback = scrollback_mod.Scrollback;
+const ScrollbackView = scrollback_mod.ScrollbackView;
 
 pub const Cell = struct {
     char: u21 = ' ',
@@ -156,6 +160,13 @@ pub const Term = struct {
     alt_hyperlink_ids: ?[]u16 = null,
     is_alt_screen: bool = false,
 
+    // Scrollback (main screen only). Comptime-gated: when scrollback_lines == 0
+    // these fields collapse to zero-sized `void` and pay no memory cost.
+    scrollback: if (config.scrollback_lines > 0) Scrollback else void =
+        if (config.scrollback_lines > 0) undefined else {},
+    view_offset: if (config.scrollback_lines > 0) u32 else void =
+        if (config.scrollback_lines > 0) 0 else {},
+
     // Cursor
     cursor_x: u32 = 0,
     cursor_y: u32 = 0,
@@ -286,6 +297,10 @@ pub const Term = struct {
             tabs[c] = (c % 8 == 0) and c > 0;
         }
 
+        const sb = if (config.scrollback_lines > 0)
+            try Scrollback.init(allocator, config.scrollback_lines, cols)
+        else {};
+
         return Self{
             .allocator = allocator,
             .cols = cols,
@@ -299,6 +314,8 @@ pub const Term = struct {
             .ul_color_rgb = ul_color_rgb,
             .hyperlink_ids = hyperlink_ids,
             .tabs = tabs,
+            .scrollback = sb,
+            .view_offset = if (config.scrollback_lines > 0) @as(u32, 0) else {},
         };
     }
 
@@ -307,6 +324,7 @@ pub const Term = struct {
         self.allocator.free(self.row_map);
         self.dirty.deinit();
         if (self.tabs.len > 0) self.allocator.free(self.tabs);
+        if (config.scrollback_lines > 0) self.scrollback.deinit();
         if (self.alt_cells) |alt| self.allocator.free(alt);
         if (self.alt_row_map) |arm| self.allocator.free(arm);
         if (self.alt_dirty != null) {
@@ -486,6 +504,26 @@ pub const Term = struct {
         self.all_dirty = true;
     }
 
+    inline fn shouldPushScrollback(self: *const Self) bool {
+        if (config.scrollback_lines == 0) return false;
+        if (self.is_alt_screen) return false;
+        const top: usize = self.scroll_top;
+        const bot: usize = self.scroll_bottom;
+        return top == 0 and bot + 1 == self.rows;
+    }
+
+    inline fn pushPhysRowToScrollback(self: *Self, phys_row: u32) void {
+        if (config.scrollback_lines == 0) return;
+        const start: usize = @as(usize, phys_row) * @as(usize, self.cols);
+        self.scrollback.pushRow(
+            self.cells[start..][0..self.cols],
+            self.fg_rgb[start..][0..self.cols],
+            self.bg_rgb[start..][0..self.cols],
+            self.ul_color_rgb[start..][0..self.cols],
+            self.hyperlink_ids[start..][0..self.cols],
+        );
+    }
+
     pub fn scrollUp(self: *Self, n: u32) void {
         if (n == 0) return;
         const cols: usize = self.cols;
@@ -499,6 +537,8 @@ pub const Term = struct {
         // Use memmove instead of std.mem.rotate (which does 3x reverse)
         if (shift == 1) {
             const recycled_phys = self.row_map[top];
+            // Push the row that's about to be evicted from the top
+            if (self.shouldPushScrollback()) self.pushPhysRowToScrollback(recycled_phys);
             // Shift row_map entries left by 1
             const region = self.row_map[top .. bot + 1];
             std.mem.copyForwards(u32, region[0 .. region.len - 1], region[1..]);
@@ -506,9 +546,11 @@ pub const Term = struct {
             // Clear recycled row
             self.bceMemset(recycled_phys * cols, (recycled_phys + 1) * cols);
         } else {
-            // Clear recycled rows with BCE
+            // Push then clear each evicted row, oldest first.
+            const push = self.shouldPushScrollback();
             for (0..shift) |s| {
                 const phys = self.row_map[top + s];
+                if (push) self.pushPhysRowToScrollback(phys);
                 self.bceMemset(phys * cols, (phys + 1) * cols);
             }
             // General case: rotate row_map
@@ -545,6 +587,48 @@ pub const Term = struct {
 
         // Mark entire scroll region dirty
         self.markDirtyRange(.{ .start = top * cols, .end = (bot + 1) * cols });
+    }
+
+    inline fn scrollMarkDirty(self: *Self) void {
+        // Selection coordinates are viewport-relative and assume the live grid.
+        // After view_offset changes those coordinates would point at scrollback
+        // rows we are not prepared to copy correctly — clear so a stale
+        // selection cannot render as garbage or cover the wrong cells.
+        self.selection = null;
+        self.markDirtyRange(.{ .start = 0, .end = @as(usize, self.cols) * @as(usize, self.rows) });
+        self.all_dirty = true;
+        self.dirty_flag = true;
+    }
+
+    pub fn scrollViewportUp(self: *Self, n: u32) void {
+        if (config.scrollback_lines == 0) return;
+        const max: u32 = self.scrollback.count;
+        const new_off = self.view_offset +| n;
+        const clamped: u32 = if (new_off > max) max else new_off;
+        if (clamped == self.view_offset) return;
+        self.view_offset = clamped;
+        self.scrollMarkDirty();
+    }
+
+    pub fn scrollViewportDown(self: *Self, n: u32) void {
+        if (config.scrollback_lines == 0) return;
+        if (self.view_offset == 0) return;
+        self.view_offset = if (n >= self.view_offset) 0 else self.view_offset - n;
+        self.scrollMarkDirty();
+    }
+
+    pub fn scrollViewportToTop(self: *Self) void {
+        if (config.scrollback_lines == 0) return;
+        if (self.view_offset == self.scrollback.count) return;
+        self.view_offset = self.scrollback.count;
+        self.scrollMarkDirty();
+    }
+
+    pub fn scrollViewportToBottom(self: *Self) void {
+        if (config.scrollback_lines == 0) return;
+        if (self.view_offset == 0) return;
+        self.view_offset = 0;
+        self.scrollMarkDirty();
     }
 
     pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
@@ -751,10 +835,28 @@ pub const Term = struct {
             self.alt_ul_color_rgb = new_alt_ul;
             self.alt_hyperlink_ids = new_alt_hl;
         }
+
+        // Resize the scrollback ring to match the new column count and clamp
+        // view_offset to whatever the (unchanged) scrollback.count allows.
+        // OOM here leaves stale-cols scrollback but a functional terminal —
+        // acceptable for v1 since scrollback is a read-only history view.
+        if (config.scrollback_lines > 0) {
+            self.scrollback.resize(new_cols) catch |err| {
+                std.log.err("scrollback resize: {}", .{err});
+            };
+            if (self.view_offset > self.scrollback.count) {
+                self.view_offset = self.scrollback.count;
+            }
+        }
     }
 
     pub fn switchScreen(self: *Self, alt: bool) !void {
         if (alt == self.is_alt_screen) return;
+
+        // Snap back to live tail on every screen switch — alt screens never
+        // browse our scrollback, and returning to main from a deeply scrolled
+        // alt would leave the user staring at history of an unrelated session.
+        if (config.scrollback_lines > 0) self.view_offset = 0;
 
         const total = @as(usize, self.cols) * @as(usize, self.rows);
 
@@ -959,6 +1061,14 @@ pub const Term = struct {
                 self.markDirtyRange(.{ .start = 0, .end = end_y * cols + end_x + 1 });
             },
             2, 3 => {
+                // ED 3 ("erase saved lines") additionally drops the scrollback
+                // ring on the main screen. Skipped while in alt so that
+                // `clear` issued from inside `less`/`vim` cannot wipe the
+                // user's history.
+                if (mode == 3 and config.scrollback_lines > 0 and !self.is_alt_screen) {
+                    self.scrollback.clear();
+                    self.view_offset = 0;
+                }
                 const total = @as(usize, self.cols) * @as(usize, self.rows);
                 self.fastCellFill(0, total, blank);
                 for (0..self.rows) |i| self.row_map[i] = @intCast(i);
@@ -1363,6 +1473,16 @@ test "Term: init creates grid with default cells" {
     try testing.expectEqual(@as(u8, 7), cell.fg);
 }
 
+test "Term: scrollback allocated when scrollback_lines > 0" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 10, 5);
+    defer term.deinit();
+    try testing.expectEqual(@as(u32, config.scrollback_lines), term.scrollback.capacity);
+    try testing.expectEqual(@as(u32, 10), term.scrollback.cols);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+}
+
 test "Term: setCell / getCell roundtrip" {
     var term = try Term.init(testing.allocator, 80, 24);
     defer term.deinit();
@@ -1389,6 +1509,212 @@ test "Term: scrollUp moves rows via row_map" {
     try testing.expectEqual(@as(u21, 'D'), term.getCell(0, 2).char);
     // New bottom row should be cleared
     try testing.expectEqual(@as(u21, ' '), term.getCell(0, 3).char);
+}
+
+test "Term: scrollUp(1) full-screen pushes evicted row to scrollback" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 4);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(1, 0, .{ .char = 'B' });
+    term.setCell(2, 0, .{ .char = 'C' });
+    term.scroll_bottom = 3;
+
+    term.scrollUp(1);
+
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+    const v = term.scrollback.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, 'B'), v.cells[1].char);
+    try testing.expectEqual(@as(u21, 'C'), v.cells[2].char);
+}
+
+test "Term: scrollUp(n) full-screen pushes n rows oldest first" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 4);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(0, 1, .{ .char = 'B' });
+    term.setCell(0, 2, .{ .char = 'C' });
+    term.scroll_bottom = 3;
+
+    term.scrollUp(3);
+
+    try testing.expectEqual(@as(u32, 3), term.scrollback.count);
+    // Newest scrollback row (age 0) is the LAST evicted = 'C'.
+    try testing.expectEqual(@as(u21, 'C'), term.scrollback.rowAt(0).cells[0].char);
+    try testing.expectEqual(@as(u21, 'B'), term.scrollback.rowAt(1).cells[0].char);
+    try testing.expectEqual(@as(u21, 'A'), term.scrollback.rowAt(2).cells[0].char);
+}
+
+test "Term: scrollUp on alt screen does NOT push" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 3);
+    defer term.deinit();
+    try term.switchScreen(true);
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+}
+
+test "Term: scrollUp partial region (DECSTBM) does NOT push" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 5);
+    defer term.deinit();
+    term.setCell(0, 1, .{ .char = 'A' });
+    term.scroll_top = 1;
+    term.scroll_bottom = 3;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+}
+
+test "Term: switchScreen resets view_offset on enter and leave alt" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    term.view_offset = 1;
+
+    try term.switchScreen(true);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+
+    // Re-stage view_offset on main and verify leave-alt path.
+    try term.switchScreen(false);
+    term.view_offset = 1;
+    try term.switchScreen(true);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+    try term.switchScreen(false);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+}
+
+test "Term: eraseDisplay 3 clears scrollback when not alt" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+
+    term.eraseDisplay(3);
+    try testing.expectEqual(@as(u32, 0), term.scrollback.count);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+}
+
+test "Term: eraseDisplay 2 does NOT clear scrollback" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+
+    term.eraseDisplay(2);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+}
+
+test "Term: eraseDisplay 3 in alt screen leaves main scrollback intact" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+
+    try term.switchScreen(true);
+    term.eraseDisplay(3);
+    try testing.expectEqual(@as(u32, 1), term.scrollback.count);
+}
+
+test "Term: scrollViewport helpers manipulate view_offset with clamps" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    term.scrollUp(1);
+    // count = 2
+
+    term.scrollViewportUp(5); // clamp to count
+    try testing.expectEqual(@as(u32, 2), term.view_offset);
+
+    term.scrollViewportDown(1);
+    try testing.expectEqual(@as(u32, 1), term.view_offset);
+
+    term.scrollViewportToBottom();
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+
+    term.scrollViewportToTop();
+    try testing.expectEqual(@as(u32, 2), term.view_offset);
+
+    // No-op when already at boundaries
+    term.scrollViewportDown(99);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+    term.scrollViewportUp(0);
+    try testing.expectEqual(@as(u32, 0), term.view_offset);
+}
+
+test "Term: scrollViewport clears stale selection" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+
+    term.selection = .{ .start_x = 0, .start_y = 0, .end_x = 2, .end_y = 0, .active = false };
+    term.scrollViewportUp(1);
+    try testing.expect(term.selection == null);
+}
+
+test "Term: resize forwards to scrollback and preserves content" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 5, 4);
+    defer term.deinit();
+
+    term.setCell(0, 0, .{ .char = 'A' });
+    term.setCell(1, 0, .{ .char = 'B' });
+    term.setCell(2, 0, .{ .char = 'C' });
+    term.setCell(3, 0, .{ .char = 'D' });
+    term.setCell(4, 0, .{ .char = 'E' });
+    term.scroll_bottom = 3;
+    term.scrollUp(1);
+    term.view_offset = 1;
+
+    try term.resize(3, 4);
+    try testing.expectEqual(@as(u32, 3), term.scrollback.cols);
+    const v = term.scrollback.rowAt(0);
+    try testing.expectEqual(@as(u21, 'A'), v.cells[0].char);
+    try testing.expectEqual(@as(u21, 'B'), v.cells[1].char);
+    try testing.expectEqual(@as(u21, 'C'), v.cells[2].char);
+    // view_offset was 1, scrollback.count is 1, no clamp needed.
+    try testing.expectEqual(@as(u32, 1), term.view_offset);
+}
+
+test "Term: resize clamps view_offset down when scrollback shrinks below it" {
+    if (config.scrollback_lines == 0) return error.SkipZigTest;
+    var term = try Term.init(testing.allocator, 3, 3);
+    defer term.deinit();
+    term.scroll_bottom = 2;
+    term.scrollUp(1);
+    // count = 1
+    term.view_offset = 5; // intentionally exceeds count
+
+    try term.resize(3, 3);
+    try testing.expect(term.view_offset <= term.scrollback.count);
+}
+
+test "Term: @sizeOf is unchanged when scrollback_lines == 0" {
+    // Snapshot guards against accidental field bloat creeping into the
+    // disabled path. If this trips, the scrollback comptime gate has a
+    // hole — investigate before bumping. Updating the value is allowed
+    // but should be a deliberate, isolated commit.
+    if (config.scrollback_lines != 0) return error.SkipZigTest;
+    const EXPECTED: usize = 56296;
+    try testing.expectEqual(EXPECTED, @sizeOf(Term));
 }
 
 test "Term: scrollDown moves rows via row_map" {
