@@ -1,6 +1,6 @@
 .{
     .name = .zt,
-    .version = "0.7.1",
+    .version = "0.9.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0xc36136a6af00f24b,
     .paths = .{
@@ -9,5 +9,6 @@
         "src",
         "config.zig",
         "fonts",
+        "tools",
     },
 }

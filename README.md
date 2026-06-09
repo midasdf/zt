@@ -94,6 +94,9 @@ zig build -Dbackend=x11 -Dscrollback_lines=0 -Doptimize=ReleaseFast
 # Smaller scrollback (lower memory)
 zig build -Dbackend=x11 -Dscrollback_lines=2000 -Doptimize=ReleaseFast
 
+# Custom BDF or TTF font (experimental — see Font section)
+zig build -Dbackend=x11 -Dfont=path/to/myfont.ttf -Doptimize=ReleaseFast
+
 # Cross-compile for aarch64
 zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
 
@@ -148,6 +151,43 @@ curl -Lo src/fonts/ufo-nf.bin https://github.com/midasdf/zt-fonts/raw/main/ufo-n
 
 See [zt-fonts](https://github.com/midasdf/zt-fonts) for sources, build scripts, and custom fonts.
 
+### Custom fonts (experimental)
+
+You can embed your own font instead of the default blob with `-Dfont`. Both
+bitmap (BDF) and TrueType outline (TTF) fonts are accepted:
+
+```sh
+# Bitmap font
+zig build -Dbackend=x11 -Dfont=path/to/myfont.bdf -Doptimize=ReleaseFast
+
+# TrueType outline font (rasterized to the 8x16 cell at build time)
+zig build -Dbackend=x11 -Dfont=path/to/myfont.ttf -Doptimize=ReleaseFast
+```
+
+Everything happens at build time via pure-Zig host tools, with **no external
+dependencies** (no FreeType, no FontForge):
+
+- `tools/ttf2bdf.zig` rasterizes TrueType (`glyf`) outlines into a fixed-cell,
+  1-bit BDF — scaling is derived from the font's own metrics (advance width →
+  cell width, ascent/descent → cell height).
+- `tools/bdf2blob.zig` packs the BDF into zt's binary blob format.
+
+The runtime stays zero-dependency: only the resulting blob is embedded, exactly
+as with the default font.
+
+Example — [Topaz NG](https://codeberg.org/ideasman42/font-topaz-ng), a vector
+revival of the Amiga Topaz font (its 8×16 cell matches zt natively):
+
+```sh
+zig build -Dbackend=x11 -Dfont=TopazNG_Code-Regular.ttf -Doptimize=ReleaseFast
+```
+
+> **Experimental.** Glyphs are embedded as 1-bit monochrome bitmaps at the fixed
+> 8×16 cell (no antialiasing, no color emoji). TrueType `glyf` outlines only —
+> CFF-based **OTF is not supported** (use the `.ttf` variant). Fine-tuning flags
+> are available when running `tools/ttf2bdf.zig` directly (`--baseline`,
+> `--xscale`, `--yscale`, `--xoff`, `--preview`).
+
 ## Architecture
 
 ```
@@ -173,7 +213,7 @@ Some applications may have minor rendering issues due to missing features (see b
 - **Mouse wheel** — scrolls scrollback in main screen; translates to arrow keys for `less`/`vim` in alt screen; passes through to apps with mouse capture (`mouse_mode != .none`).
 - **No clipboard paste on fbdev** — X11/Wayland support Ctrl+Shift+V
 - **No inline pre-edit display** — IME uses its own popup window
-- **No font fallback** — single embedded font, no system font lookup
+- **Bitmap rendering only** — single embedded blob (1-bit, fixed 8×16 cell), no antialiasing, no runtime system font lookup or fallback. A custom BDF or TTF can be embedded at build time via `-Dfont` (experimental, see [Font](#custom-fonts-experimental))
 - **No ligatures**
 - **No sixel/image protocol**
 - **Blink attribute** — parsed but not visually rendered

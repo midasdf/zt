@@ -46,9 +46,12 @@ const EncodedMouse = struct {
     }
 };
 
-// Embed font at comptime
-// Large fonts use pre-compiled blob (bdf2blob.py) to avoid slow comptime parsing
-const FontType = font_mod.FontBlob(@embedFile("fonts/ufo-nf.bin"));
+// Embed font at comptime.
+// Large fonts use a pre-compiled blob (tools/bdf2blob.zig) to avoid slow
+// comptime BDF parsing. The "font_blob" import is wired up in build.zig: it is
+// the committed src/fonts/ufo-nf.bin by default, or a blob generated at build
+// time from a custom BDF passed via -Dfont (EXPERIMENTAL).
+const FontType = font_mod.FontBlob(@embedFile("font_blob"));
 
 // =============================================================================
 // Signal handling via signalfd

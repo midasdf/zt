@@ -31,6 +31,36 @@ pub fn build(b: *std.Build) void {
         std.debug.panic("invalid -Dkeymap='{s}'; expected us or jp", .{keymap_opt});
     }
 
+    // EXPERIMENTAL: embed a custom font instead of the default blob.
+    // The font is converted to zt's binary blob format at build time by the
+    // pure-Zig host tools (no external dependencies):
+    //   - .bdf       -> tools/bdf2blob.zig
+    //   - .ttf/.ttc  -> tools/ttf2bdf.zig (rasterize outlines) -> bdf2blob
+    // Without -Dfont, the committed src/fonts/ufo-nf.bin is used.
+    const font_opt = b.option([]const u8, "font", "Path to a custom BDF or TTF font to embed instead of the default (EXPERIMENTAL)");
+    const font_blob: std.Build.LazyPath = if (font_opt) |font_path| blk: {
+        const is_ttf = std.mem.endsWith(u8, font_path, ".ttf") or std.mem.endsWith(u8, font_path, ".ttc");
+        if (!is_ttf and !std.mem.endsWith(u8, font_path, ".bdf")) {
+            std.debug.panic("-Dfont: unsupported font '{s}'; expected .bdf or .ttf (OTF/CFF is not supported)", .{font_path});
+        }
+
+        // .ttf -> intermediate .bdf via the rasterizer.
+        const bdf_path: std.Build.LazyPath = if (is_ttf) tt: {
+            const ttf2bdf = hostTool(b, "ttf2bdf");
+            const run = b.addRunArtifact(ttf2bdf);
+            run.stdio = .inherit;
+            run.addFileArg(.{ .cwd_relative = font_path });
+            break :tt run.addOutputFileArg("font.bdf");
+        } else .{ .cwd_relative = font_path };
+
+        // .bdf -> binary blob.
+        const bdf2blob = hostTool(b, "bdf2blob");
+        const run = b.addRunArtifact(bdf2blob);
+        run.stdio = .inherit;
+        run.addFileArg(bdf_path);
+        break :blk run.addOutputFileArg("ufo-nf.bin");
+    } else b.path("src/fonts/ufo-nf.bin");
+
     const scale_opt = b.option(u32, "scale", "Pixel scale factor: 1, 2, or 4 (default: 1)") orelse 1;
     const max_fps_opt = b.option(u32, "max_fps", "Maximum frame rate: 0 = unlimited (default: 120)") orelse 120;
     const pty_buf_kb_opt = b.option(u32, "pty_buf_kb", "PTY read buffer size in KB (default: 1024)") orelse 1024;
@@ -51,7 +81,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(u32, "pty_buf_kb", pty_buf_kb_opt);
     options.addOption(u32, "scrollback_lines", scrollback_lines_opt);
     options.addOption([:0]const u8, "shell", shell_opt);
-    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.8.0") catch @panic("OOM"));
+    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.9.0") catch @panic("OOM"));
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
@@ -71,6 +101,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "config", .module = config_mod },
         },
     });
+    exe_mod.addAnonymousImport("font_blob", .{ .root_source_file = font_blob });
 
     const exe = b.addExecutable(.{
         .name = "zt",
@@ -151,6 +182,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "config", .module = config_mod },
         },
     });
+    test_mod.addAnonymousImport("font_blob", .{ .root_source_file = font_blob });
 
     const unit_tests = b.addTest(.{
         .root_module = test_mod,
@@ -209,4 +241,16 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+}
+
+/// Build a pure-Zig font-conversion tool for the host (used at build time).
+fn hostTool(b: *std.Build, name: []const u8) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("tools/{s}.zig", .{name})),
+            .target = b.graph.host,
+            .optimize = .ReleaseFast,
+        }),
+    });
 }
