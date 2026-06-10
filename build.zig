@@ -35,11 +35,11 @@ pub fn build(b: *std.Build) void {
     // The font is converted to zt's binary blob format at build time by the
     // pure-Zig host tools (no external dependencies):
     //   - .bdf       -> tools/bdf2blob.zig
-    //   - .ttf/.ttc  -> tools/ttf2bdf.zig (rasterize outlines) -> bdf2blob
+    //   - .ttf       -> tools/ttf2bdf.zig (rasterize outlines) -> bdf2blob
     // Without -Dfont, the committed src/fonts/ufo-nf.bin is used.
     const font_opt = b.option([]const u8, "font", "Path to a custom BDF or TTF font to embed instead of the default (EXPERIMENTAL)");
     const font_blob: std.Build.LazyPath = if (font_opt) |font_path| blk: {
-        const is_ttf = std.mem.endsWith(u8, font_path, ".ttf") or std.mem.endsWith(u8, font_path, ".ttc");
+        const is_ttf = std.mem.endsWith(u8, font_path, ".ttf");
         if (!is_ttf and !std.mem.endsWith(u8, font_path, ".bdf")) {
             std.debug.panic("-Dfont: unsupported font '{s}'; expected .bdf or .ttf (OTF/CFF is not supported)", .{font_path});
         }

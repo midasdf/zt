@@ -1,8 +1,8 @@
 //! Rasterize a TrueType (`glyf`-outline) font into a fixed-cell, 1-bit BDF
 //! bitmap font for zt. Pure Zig, no external dependencies.
 //!
-//! Usage: ttf2bdf <input.ttf> <output.bdf> [--ppem N] [--baseline B]
-//!                [--xoff X] [--preview]
+//! Usage: ttf2bdf <input.ttf> <output.bdf> [--baseline B]
+//!                [--xscale S] [--yscale S] [--xoff X] [--preview]
 //!
 //! Each glyph is rendered into a CELL_W x CELL_H monochrome cell, baseline-
 //! aligned, MSB-first packed rows (matching zt's renderer and bdf2blob). Only
@@ -39,13 +39,23 @@ const Xform = struct {
     }
 };
 
+fn requireBytes(d: []const u8, o: usize, n: usize) void {
+    if (o > d.len or n > d.len - o) {
+        std.debug.print("error: invalid font data: need {d} bytes at offset {d}, file has {d} bytes\n", .{ n, o, d.len });
+        std.process.exit(1);
+    }
+}
+
 fn rdU16(d: []const u8, o: usize) u16 {
+    requireBytes(d, o, 2);
     return std.mem.readInt(u16, d[o..][0..2], .big);
 }
 fn rdI16(d: []const u8, o: usize) i16 {
+    requireBytes(d, o, 2);
     return std.mem.readInt(i16, d[o..][0..2], .big);
 }
 fn rdU32(d: []const u8, o: usize) u32 {
+    requireBytes(d, o, 4);
     return std.mem.readInt(u32, d[o..][0..4], .big);
 }
 
@@ -69,11 +79,22 @@ const Font = struct {
     }
 };
 
+fn contourPoint(contours: []const []Pt, point_index: i32) ?*Pt {
+    if (point_index < 0) return null;
+    var remaining: usize = @intCast(point_index);
+    for (contours) |pts| {
+        if (remaining < pts.len) return &pts[remaining];
+        remaining -= pts.len;
+    }
+    return null;
+}
+
 fn findTable(d: []const u8, tag: *const [4]u8) ?usize {
     const num = rdU16(d, 4);
     var i: usize = 0;
     while (i < num) : (i += 1) {
         const rec = 12 + i * 16;
+        requireBytes(d, rec, 16);
         if (std.mem.eql(u8, d[rec..][0..4], tag)) return rdU32(d, rec + 8);
     }
     return null;
@@ -89,6 +110,7 @@ fn collectGlyph(
     contours: *std.ArrayList([]Pt),
 ) !void {
     if (depth > 8) return;
+    if (gid >= font.num_glyphs) fatal("cmap references glyph id beyond maxp numGlyphs");
     const start = font.locaAt(gid);
     const end = font.locaAt(gid + 1);
     if (end <= start) return; // empty glyph (e.g. space)
@@ -211,8 +233,23 @@ fn collectGlyph(
             if (comp_flags & 0x0002 != 0) { // ARGS_ARE_XY_VALUES
                 cxf.e = @floatFromInt(arg1);
                 cxf.f = @floatFromInt(arg2);
+                try collectGlyph(font, comp_gid, xf.compose(cxf), depth + 1, a, contours);
+            } else {
+                var component_contours: std.ArrayList([]Pt) = .empty;
+                try collectGlyph(font, comp_gid, xf.compose(cxf), depth + 1, a, &component_contours);
+
+                const parent_anchor = contourPoint(contours.items, arg1) orelse fatal("invalid composite parent point index");
+                const child_anchor = contourPoint(component_contours.items, arg2) orelse fatal("invalid composite component point index");
+                const dx = parent_anchor.x - child_anchor.x;
+                const dy = parent_anchor.y - child_anchor.y;
+                for (component_contours.items) |pts| {
+                    for (pts) |*p| {
+                        p.x += dx;
+                        p.y += dy;
+                    }
+                }
+                try contours.appendSlice(a, component_contours.items);
             }
-            try collectGlyph(font, comp_gid, xf.compose(cxf), depth + 1, a, contours);
             if (comp_flags & 0x0020 == 0) break; // no MORE_COMPONENTS
         }
     }
@@ -349,7 +386,7 @@ pub fn main(init: std.process.Init) !void {
     const input_path = ait.next();
     const output_path = ait.next();
     if (input_path == null or output_path == null) {
-        std.debug.print("Usage: {s} <input.ttf> <output.bdf> [--ppem N] [--baseline B] [--xoff X] [--preview]\n", .{prog});
+        std.debug.print("Usage: {s} <input.ttf> <output.bdf> [--baseline B] [--xscale S] [--yscale S] [--xoff X] [--preview]\n", .{prog});
         std.process.exit(1);
     }
     var opts = Opts{};
@@ -357,19 +394,27 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--preview")) {
             opts.preview = true;
         } else if (std.mem.eql(u8, arg, "--xscale")) {
-            opts.xscale = std.fmt.parseFloat(f64, ait.next() orelse "0") catch null;
+            const val = ait.next() orelse fatal("missing value for --xscale");
+            opts.xscale = std.fmt.parseFloat(f64, val) catch fatal("invalid value for --xscale");
         } else if (std.mem.eql(u8, arg, "--yscale")) {
-            opts.yscale = std.fmt.parseFloat(f64, ait.next() orelse "0") catch null;
+            const val = ait.next() orelse fatal("missing value for --yscale");
+            opts.yscale = std.fmt.parseFloat(f64, val) catch fatal("invalid value for --yscale");
         } else if (std.mem.eql(u8, arg, "--baseline")) {
-            opts.baseline = std.fmt.parseFloat(f64, ait.next() orelse "0") catch null;
+            const val = ait.next() orelse fatal("missing value for --baseline");
+            opts.baseline = std.fmt.parseFloat(f64, val) catch fatal("invalid value for --baseline");
         } else if (std.mem.eql(u8, arg, "--xoff")) {
-            opts.xoff = std.fmt.parseFloat(f64, ait.next() orelse "0") catch 0;
+            const val = ait.next() orelse fatal("missing value for --xoff");
+            opts.xoff = std.fmt.parseFloat(f64, val) catch fatal("invalid value for --xoff");
+        } else {
+            std.debug.print("error: unknown option '{s}'\n", .{arg});
+            std.process.exit(1);
         }
     }
 
     const cwd = std.Io.Dir.cwd();
     const data = try cwd.readFileAlloc(io, input_path.?, a, .unlimited);
 
+    requireBytes(data, 0, 4);
     if (rdU32(data, 0) != 0x00010000 and !std.mem.eql(u8, data[0..4], "true")) {
         std.debug.print("error: not a TrueType (glyf) font; CFF/OTF is unsupported\n", .{});
         std.process.exit(1);
@@ -418,16 +463,20 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{ CELL_W, CELL_H, -ydescent_rows, map.count() });
 
-    var edges: std.ArrayList(Edge) = .empty;
-    var contours: std.ArrayList([]Pt) = .empty;
-
     var rendered: u32 = 0;
     var it = map.iterator();
     while (it.next()) |entry| {
         const cp = entry.key_ptr.*;
         const gid = entry.value_ptr.*;
+        if (gid >= font.num_glyphs) fatal("cmap references glyph id beyond maxp numGlyphs");
 
-        contours.clearRetainingCapacity();
+        var glyph_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer glyph_arena.deinit();
+        const ga = glyph_arena.allocator();
+
+        var contours: std.ArrayList([]Pt) = .empty;
+        var edges: std.ArrayList(Edge) = .empty;
+
         // Unit -> pixel transform baked into the collected contour points.
         const xf = Xform{
             .a = scale_x,
@@ -435,11 +484,10 @@ pub fn main(init: std.process.Init) !void {
             .e = opts.xoff,
             .f = baseline,
         };
-        try collectGlyph(font, gid, xf, 0, a, &contours);
+        try collectGlyph(font, gid, xf, 0, ga, &contours);
 
-        edges.clearRetainingCapacity();
-        for (contours.items) |c| try flattenContour(c, a, &edges);
-        const cell = try rasterize(edges.items, a);
+        for (contours.items) |c| try flattenContour(c, ga, &edges);
+        const cell = try rasterize(edges.items, ga);
 
         try out.print(a,
             \\STARTCHAR U+{X:0>4}

@@ -52,6 +52,7 @@ fn appendHexBytes(out: *std.ArrayList(u8), gpa: std.mem.Allocator, row: []const 
             hi = v;
         }
     }
+    if (hi != null) return error.InvalidHexRow;
 }
 
 fn putU16(out: *std.ArrayList(u8), gpa: std.mem.Allocator, v: u16) !void {
