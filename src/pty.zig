@@ -121,6 +121,23 @@ pub const Pty = struct {
             ) catch return error.PathTooLong;
         };
 
+        // Darwin 14 requires an open slave for F_SETFL's tty ioctl. Open it in
+        // the parent and inherit it in the child so it stays alive both during
+        // nonblocking setup and across fork, even for immediately exiting commands.
+        const inherited_slave: ?posix.fd_t = if (is_macos)
+            try posix.open(slave_path, .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true }, 0)
+        else
+            null;
+        defer if (inherited_slave) |fd| posix.close(fd);
+
+        // Configure the master while the slave is alive, before forking.
+        {
+            const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
+            const O_NONBLOCK: u32 = @bitCast(posix.O{ .NONBLOCK = true });
+            const new_flags: usize = @as(u32, @bitCast(cur_flags)) | O_NONBLOCK;
+            _ = try posix.fcntl(master_fd, posix.F.SETFL, new_flags);
+        }
+
         // 4. Fork
         const pid = try posix.fork();
 
@@ -148,7 +165,7 @@ pub const Pty = struct {
             }
 
             // b. Open slave fd
-            const slave_fd = posix.open(
+            const slave_fd = inherited_slave orelse posix.open(
                 slave_path,
                 .{ .ACCMODE = .RDWR },
                 0,
@@ -175,6 +192,10 @@ pub const Pty = struct {
             posix.dup2(slave_fd, 0) catch posix.exit(1);
             posix.dup2(slave_fd, 1) catch posix.exit(1);
             posix.dup2(slave_fd, 2) catch posix.exit(1);
+            // dup2(fd, fd) preserves CLOEXEC if launch began with closed stdio.
+            if (is_macos) {
+                for (0..3) |fd| _ = posix.fcntl(@intCast(fd), posix.F.SETFD, 0) catch posix.exit(1);
+            }
 
             // e. Close original slave fd (now duped to 0/1/2)
             if (slave_fd > 2) posix.close(slave_fd);
@@ -291,14 +312,6 @@ pub const Pty = struct {
         }
 
         // === Parent process ===
-        // Set master_fd nonblocking
-        {
-            const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
-            const O_NONBLOCK: u32 = @bitCast(posix.O{ .NONBLOCK = true });
-            const new_flags: usize = @as(u32, @bitCast(cur_flags)) | O_NONBLOCK;
-            _ = try posix.fcntl(master_fd, posix.F.SETFL, new_flags);
-        }
-
         return Pty{
             .master_fd = master_fd,
             .child_pid = pid,
@@ -342,7 +355,7 @@ pub const Pty = struct {
                     reaped = true;
                     break;
                 }
-                if (std.c.getErrno(rc) == .CHILD) {
+                if (std.c.errno(rc) == .CHILD) {
                     reaped = true;
                     break;
                 }
@@ -410,17 +423,24 @@ test "Pty: exec argv builder keeps all arguments" {
 
 test "Pty: spawn and read echo output" {
     // Skip when /dev/ptmx (Linux) is missing or invisible (e.g. restricted CI/sandbox).
-    var pty = Pty.spawn(80, 24, "/bin/echo", null) catch |err| switch (err) {
+    var pty = if (is_macos) try Pty.spawn(80, 24, "/bin/echo", null) else Pty.spawn(80, 24, "/bin/echo", null) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => |e| return e,
     };
     defer pty.deinit();
 
-    // Wait for output
-    posix.sleep(100 * std.time.ns_per_ms);
-
     var buf: [256]u8 = undefined;
-    const n = pty.read(&buf) catch 0;
+    const deadline = posix.nanoTimestamp() + 2 * std.time.ns_per_s;
+    const n = while (posix.nanoTimestamp() < deadline) {
+        const n = pty.read(&buf) catch |err| switch (err) {
+            error.WouldBlock => {
+                posix.sleep(10 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        break n;
+    } else @as(usize, 0);
     // echo with no args outputs "\r\n" or "\n"
     try testing.expect(n > 0);
 }

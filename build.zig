@@ -1,28 +1,44 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{
+        .default_target = if (@import("builtin").os.tag == .macos)
+            .{ .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } } }
+        else
+            .{},
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     // Optional sysroot for cross-compilation (-Dsysroot=/path/to/sysroot).
-    // Expected layout: <sysroot>/include and <sysroot>/lib.
+    // Linux: <sysroot>/include and <sysroot>/lib; macOS: an Apple SDK.
     // Needed because b.addTranslateC does not inherit --search-prefix.
-    const sysroot_opt = b.option([]const u8, "sysroot", "Sysroot for cross-compile translate-c include/library paths");
+    const sysroot_opt = b.option([]const u8, "sysroot", "Sysroot for cross-compile translate-c include/library paths") orelse
+        if (target.result.os.tag == .macos and @import("builtin").os.tag == .macos)
+            std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }), " \r\n\t")
+        else
+            null;
     const sysroot_inc: ?std.Build.LazyPath = if (sysroot_opt) |s|
-        .{ .cwd_relative = b.pathJoin(&.{ s, "include" }) }
+        .{ .cwd_relative = b.pathJoin(&.{ s, if (target.result.os.tag == .macos) "usr/include" else "include" }) }
     else
         null;
     const sysroot_lib: ?std.Build.LazyPath = if (sysroot_opt) |s|
-        .{ .cwd_relative = b.pathJoin(&.{ s, "lib" }) }
+        .{ .cwd_relative = b.pathJoin(&.{ s, if (target.result.os.tag == .macos) "usr/lib" else "lib" }) }
     else
         null;
 
-    const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev, x11, wayland, or macos") orelse "fbdev";
+    const backend_opt = b.option([]const u8, "backend", "Rendering backend: fbdev, x11, wayland, or macos") orelse if (target.result.os.tag == .macos) "macos" else "fbdev";
     const is_x11 = std.mem.eql(u8, backend_opt, "x11");
     const is_wayland = std.mem.eql(u8, backend_opt, "wayland");
     const is_macos = std.mem.eql(u8, backend_opt, "macos");
     if (!is_x11 and !is_wayland and !is_macos and !std.mem.eql(u8, backend_opt, "fbdev")) {
         std.debug.panic("invalid -Dbackend='{s}'; expected fbdev, x11, wayland, or macos", .{backend_opt});
+    }
+
+    if (is_macos != (target.result.os.tag == .macos)) {
+        @panic("macOS targets require -Dbackend=macos; Linux backends require a Linux target");
+    }
+    if (!is_macos and target.result.os.tag != .linux) {
+        @panic("zt supports Linux and macOS targets");
     }
 
     const keymap_opt = b.option([]const u8, "keymap", "Keyboard layout: us or jp (default: us)") orelse "us";
@@ -69,13 +85,14 @@ pub fn build(b: *std.Build) void {
     }
     const scrollback_lines_opt = b.option(u32, "scrollback_lines", "Scrollback rows for main screen (0 disables, default 10000)") orelse 10000;
     const alt_screen_wheel_scrollback_opt = b.option(bool, "alt_screen_wheel_scrollback", "Make the mouse wheel scroll the alt-screen scrollback ring instead of arrow keys (default: false)") orelse false;
-    const shell_opt_raw = b.option([]const u8, "shell", "Shell path (default: /bin/sh)") orelse "/bin/sh";
+    const shell_opt_raw = b.option([]const u8, "shell", "Shell path (default: /bin/zsh on macOS, /bin/sh on Linux)") orelse if (is_macos) "/bin/zsh" else "/bin/sh";
     const shell_opt: [:0]const u8 = b.allocator.dupeZ(u8, shell_opt_raw) catch @panic("OOM");
 
     const options = b.addOptions();
     options.addOption(bool, "use_x11", is_x11);
     options.addOption(bool, "use_wayland", is_wayland);
     options.addOption(bool, "use_macos", is_macos);
+    options.addOption(bool, "macos_gui_tests", b.option(bool, "macos_gui_tests", "Run Cocoa integration tests (requires a macOS desktop session)") orelse false);
     options.addOption(bool, "use_jp_keymap", use_jp_keymap);
     options.addOption(u32, "scale", scale_opt);
     options.addOption(u32, "max_fps", max_fps_opt);
@@ -83,7 +100,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(u32, "scrollback_lines", scrollback_lines_opt);
     options.addOption(bool, "alt_screen_wheel_scrollback", alt_screen_wheel_scrollback_opt);
     options.addOption([:0]const u8, "shell", shell_opt);
-    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.9.3") catch @panic("OOM"));
+    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.10.0") catch @panic("OOM"));
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
@@ -162,8 +179,13 @@ pub fn build(b: *std.Build) void {
         exe_mod.addImport("c_xkb", c_xkb_wl.createModule());
     } else if (is_macos) {
         exe_mod.linkFramework("Cocoa", .{});
-        exe_mod.linkFramework("QuartzCore", .{});
+        exe_mod.linkFramework("CoreGraphics", .{});
         exe_mod.link_libc = true;
+        if (sysroot_opt) |s| {
+            exe_mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ s, "System/Library/Frameworks" }) });
+            exe_mod.addSystemIncludePath(sysroot_inc.?);
+            exe_mod.addLibraryPath(sysroot_lib.?);
+        }
 
         const c_pty_macos = b.addTranslateC(.{
             .root_source_file = b.path("src/c_pty_macos.h"),
@@ -171,6 +193,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
         });
+        if (sysroot_inc) |p| c_pty_macos.addIncludePath(p);
         exe_mod.addImport("c_pty_macos", c_pty_macos.createModule());
     }
 
@@ -228,8 +251,14 @@ pub fn build(b: *std.Build) void {
         test_mod.addImport("c_xkb", c_xkb_wl_test.createModule());
     } else if (is_macos) {
         test_mod.linkFramework("Cocoa", .{});
-        test_mod.linkFramework("QuartzCore", .{});
+        test_mod.linkFramework("CoreGraphics", .{});
         test_mod.link_libc = true;
+
+        if (sysroot_opt) |s| {
+            test_mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ s, "System/Library/Frameworks" }) });
+            test_mod.addSystemIncludePath(sysroot_inc.?);
+            test_mod.addLibraryPath(sysroot_lib.?);
+        }
 
         const c_pty_macos_test = b.addTranslateC(.{
             .root_source_file = b.path("src/c_pty_macos.h"),
@@ -237,6 +266,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
         });
+        if (sysroot_inc) |p| c_pty_macos_test.addIncludePath(p);
         test_mod.addImport("c_pty_macos", c_pty_macos_test.createModule());
     }
 

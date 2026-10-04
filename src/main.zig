@@ -97,7 +97,12 @@ fn setupSignals() !posix.fd_t {
         _ = std.c.sigprocmask(std.c.SIG.BLOCK, &mask, null);
         // SIGPIPE: ignore globally so bad writes return EPIPE
         // instead of terminating the process.
-        _ = std.c.signal(std.c.SIG.PIPE, std.c.SIG.IGN);
+        var action: std.c.Sigaction = .{
+            .handler = .{ .handler = std.c.SIG.IGN },
+            .mask = std.mem.zeroes(std.c.sigset_t),
+            .flags = 0,
+        };
+        _ = std.c.sigaction(std.c.SIG.PIPE, &action, null);
         return -1;
     }
 }
@@ -183,9 +188,9 @@ fn kqueueAddFd(kq: i32, fd: posix.fd_t, tag: usize) !void {
     _ = try posix.kevent(kq, &changelist, &.{}, null);
 }
 
-fn kqueueAddSignal(kq: i32, sig: u6) !void {
+fn kqueueAddSignal(kq: i32, sig: std.c.SIG) !void {
     const changelist = [1]posix.Kevent{.{
-        .ident = sig,
+        .ident = @intFromEnum(sig),
         .filter = std.c.EVFILT.SIGNAL,
         .flags = std.c.EV.ADD,
         .fflags = 0,
@@ -588,6 +593,7 @@ fn dispatchClipboardCopy(data: []const u8) void {
     const argv: [*:null]const ?[*:0]const u8 = switch (config.backend) {
         .x11 => &[_:null]?[*:0]const u8{ "xclip", "-selection", "clipboard" },
         .wayland => &[_:null]?[*:0]const u8{"wl-copy"},
+        .macos => &[_:null]?[*:0]const u8{"/usr/bin/pbcopy"},
         else => return,
     };
 
@@ -1543,8 +1549,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             for (kevents[0..n]) |kev| {
                 if (kev.filter == std.c.EVFILT.READ) {
                     if (kev.udata == @intFromEnum(KqueueTag.pty)) {
-                        // PTY readable — drain all available data
-                        while (true) {
+                        // Bound each drain so sustained output cannot starve Cocoa.
+                        var drained: usize = 0;
+                        while (drained < config.pty_buf_size) {
                             const bytes_read = pty.read(&pty_buf) catch |err| switch (err) {
                                 error.WouldBlock => break,
                                 else => {
@@ -1557,6 +1564,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                                 break;
                             }
                             bytes_since_render += bytes_read;
+                            drained += bytes_read;
                             // Clear selection when terminal content changes
                             if (term.selection != null) {
                                 term.clearSelection();
@@ -1936,4 +1944,5 @@ test {
     _ = @import("render.zig");
     _ = @import("scrollback.zig");
     if (config.backend == .x11) _ = @import("backend/x11.zig");
+    if (config.backend == .macos) _ = @import("backend/macos.zig");
 }

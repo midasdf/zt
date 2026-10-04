@@ -1,5 +1,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
+pub const macos_gui_tests = build_options.macos_gui_tests;
 
 pub const Backend = enum {
     fbdev,
