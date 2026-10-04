@@ -121,9 +121,16 @@ pub const Pty = struct {
             ) catch return error.PathTooLong;
         };
 
-        // Set nonblocking before forking. On Darwin, F_SETFL invokes a tty
-        // ioctl which can fail with ENOTTY once a short-lived child closes the
-        // slave. Configuring the master first avoids that exit race entirely.
+        // Darwin 14 requires an open slave for F_SETFL's tty ioctl. Open it in
+        // the parent and inherit it in the child so it stays alive both during
+        // nonblocking setup and across fork, even for immediately exiting commands.
+        const inherited_slave: ?posix.fd_t = if (is_macos)
+            try posix.open(slave_path, .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true }, 0)
+        else
+            null;
+        defer if (inherited_slave) |fd| posix.close(fd);
+
+        // Configure the master while the slave is alive, before forking.
         {
             const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
             const O_NONBLOCK: u32 = @bitCast(posix.O{ .NONBLOCK = true });
@@ -158,7 +165,7 @@ pub const Pty = struct {
             }
 
             // b. Open slave fd
-            const slave_fd = posix.open(
+            const slave_fd = inherited_slave orelse posix.open(
                 slave_path,
                 .{ .ACCMODE = .RDWR },
                 0,
@@ -185,6 +192,10 @@ pub const Pty = struct {
             posix.dup2(slave_fd, 0) catch posix.exit(1);
             posix.dup2(slave_fd, 1) catch posix.exit(1);
             posix.dup2(slave_fd, 2) catch posix.exit(1);
+            // dup2(fd, fd) preserves CLOEXEC if launch began with closed stdio.
+            if (is_macos) {
+                for (0..3) |fd| _ = posix.fcntl(@intCast(fd), posix.F.SETFD, 0) catch posix.exit(1);
+            }
 
             // e. Close original slave fd (now duped to 0/1/2)
             if (slave_fd > 2) posix.close(slave_fd);

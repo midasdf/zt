@@ -327,6 +327,7 @@ pub const MacosBackend = struct {
 
     has_marked_text: bool = false,
     marked_length: u64 = 0,
+    marked_selection: NSRange = .{ .location = 0, .length = 0 },
     ime_x: u32 = 0,
     ime_y: u32 = config.cell_height,
     autorelease_pool: id,
@@ -575,6 +576,8 @@ pub const MacosBackend = struct {
     }
 
     pub fn updateTitle(self: *Self, title: []const u8) void {
+        const pool = msgSend_id(msgSend_id(cls("NSAutoreleasePool"), sel("alloc")), sel("init"));
+        defer msgSend_void(pool, sel("drain"));
         var buf: [512]u8 = undefined;
         const text = std.fmt.bufPrintZ(&buf, "{s}", .{title}) catch return;
         msgSend_void_id(self.window, sel("setTitle:"), createNSString(text));
@@ -694,9 +697,9 @@ fn registerZTViewClass() ?id {
     _ = class_addMethod(new_class, sel("rightMouseUp:"), @ptrCast(&ztMouseUp), "v@:@");
     _ = class_addMethod(new_class, sel("otherMouseDown:"), @ptrCast(&ztMouseDown), "v@:@");
     _ = class_addMethod(new_class, sel("otherMouseUp:"), @ptrCast(&ztMouseUp), "v@:@");
-    _ = class_addMethod(new_class, sel("mouseDragged:"), @ptrCast(&ztMouseMoved), "v@:@");
-    _ = class_addMethod(new_class, sel("rightMouseDragged:"), @ptrCast(&ztMouseMoved), "v@:@");
-    _ = class_addMethod(new_class, sel("otherMouseDragged:"), @ptrCast(&ztMouseMoved), "v@:@");
+    _ = class_addMethod(new_class, sel("mouseDragged:"), @ptrCast(&ztMouseDragged), "v@:@");
+    _ = class_addMethod(new_class, sel("rightMouseDragged:"), @ptrCast(&ztMouseDragged), "v@:@");
+    _ = class_addMethod(new_class, sel("otherMouseDragged:"), @ptrCast(&ztMouseDragged), "v@:@");
     _ = class_addMethod(new_class, sel("mouseMoved:"), @ptrCast(&ztMouseMoved), "v@:@");
     _ = class_addMethod(new_class, sel("scrollWheel:"), @ptrCast(&ztScrollWheel), "v@:@");
 
@@ -970,12 +973,15 @@ fn ztSetMarkedText(self_view: id, _: SEL, text: id, selected: NSRange, _: NSRang
         text;
     const bytes = std.mem.span(msgSend_cstr(str, sel("UTF8String")) orelse return);
     backend.marked_length = msgSend_u64(str, sel("length")); // Cocoa uses UTF-16 units
+    backend.marked_selection = selected;
     backend.has_marked_text = bytes.len > 0;
     var event: PreeditEvent = .{ .active = backend.has_marked_text };
     const n = utf8PrefixLen(bytes, event.data.len);
     @memcpy(event.data[0..n], bytes[0..n]);
     @memset(event.feedback[0..n], 2); // underline composition
     event.len = @intCast(n);
+    // The inline preview is bounded like the other backends. Clamp only its
+    // rendered caret; AppKit still sees the full UTF-16 selection below.
     event.caret = utf16Caret(bytes[0..n], selected.location);
     backend.pushEvent(.{ .preedit = event });
 }
@@ -1029,7 +1035,10 @@ fn ztMarkedRange(self_view: id, _: SEL) callconv(.c) NSRange {
     return .{ .location = 0x7FFFFFFFFFFFFFFF, .length = 0 };
 }
 
-fn ztSelectedRange(_: id, _: SEL) callconv(.c) NSRange {
+fn ztSelectedRange(view: id, _: SEL) callconv(.c) NSRange {
+    if (MacosBackend.getBackendFromView(view)) |backend| {
+        if (backend.has_marked_text) return backend.marked_selection;
+    }
     return .{ .location = 0, .length = 0 };
 }
 
@@ -1211,11 +1220,18 @@ fn mouseButton(event: id) MouseEvent.Button {
 }
 
 fn ztMouseDown(view: id, _: SEL, event: id) callconv(.c) void {
-    mouseEvent(view, event, .press, mouseButton(event));
+    const button = mouseButton(event);
+    if (button != .none) mouseEvent(view, event, .press, button);
 }
 
 fn ztMouseUp(view: id, _: SEL, event: id) callconv(.c) void {
-    mouseEvent(view, event, .release, mouseButton(event));
+    const button = mouseButton(event);
+    if (button != .none) mouseEvent(view, event, .release, button);
+}
+
+fn ztMouseDragged(view: id, _: SEL, event: id) callconv(.c) void {
+    const button = mouseButton(event);
+    if (button != .none) mouseEvent(view, event, .motion, button);
 }
 
 fn ztMouseMoved(view: id, _: SEL, event: id) callconv(.c) void {
@@ -1226,6 +1242,8 @@ fn ztScrollWheel(view: id, _: SEL, event: id) callconv(.c) void {
     const delta: *const fn (id, SEL) callconv(.c) f64 = @ptrCast(&objc_msgSend);
     const dy = delta(event, sel("scrollingDeltaY"));
     if (dy != 0) mouseEvent(view, event, .press, if (dy > 0) .wheel_up else .wheel_down);
+    const dx = delta(event, sel("scrollingDeltaX"));
+    if (dx != 0) mouseEvent(view, event, .press, if (dx > 0) .wheel_left else .wheel_right);
 }
 
 test "macOS text chunks preserve UTF-8 boundaries" {
@@ -1265,6 +1283,7 @@ test "macOS Cocoa window, text composition, geometry and close integration" {
     try std.testing.expect(preedit.active);
     try std.testing.expectEqual(@as(u32, 5), preedit.caret);
     try std.testing.expectEqual(@as(u64, 4), ztMarkedRange(backend.view, sel("markedRange")).length);
+    try std.testing.expectEqual(@as(u64, 3), ztSelectedRange(backend.view, sel("selectedRange")).location);
     backend.updateImeCursorPos(config.cell_width, config.cell_height);
     const candidate = ztFirstRect(backend.view, sel("firstRectForCharacterRange:actualRange:"), range, null);
     try std.testing.expect(candidate.size.width > 0 and std.math.isFinite(candidate.origin.x));
@@ -1291,11 +1310,26 @@ test "macOS Cocoa window, text composition, geometry and close integration" {
     try std.testing.expect(msgSend_bool(menu, sel("performKeyEquivalent:"), copy_event));
     try std.testing.expect(backend.popEvent().? == .copy_selection);
 
+    const mouse_event: *const fn (id, SEL, u64, CGPoint, u64, f64, i64, ?id, i64, i64, f32) callconv(.c) id = @ptrCast(&objc_msgSend);
+    const drag = mouse_event(cls("NSEvent"), sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"), 6, .{ .x = 10, .y = 10 }, 0, 0, @intCast(msgSend_u64(backend.window, sel("windowNumber"))), null, 1, 1, 1);
+    ztMouseDragged(backend.view, sel("mouseDragged:"), drag);
+    const motion = backend.popEvent().?.mouse;
+    try std.testing.expectEqual(MouseEvent.Action.motion, motion.action);
+    try std.testing.expectEqual(MouseEvent.Button.left, motion.button);
+    ztMouseMoved(backend.view, sel("mouseMoved:"), drag);
+    try std.testing.expectEqual(MouseEvent.Button.none, backend.popEvent().?.mouse.button);
+
     // Large pastes must survive in full, including a multibyte final character.
     const large = try std.testing.allocator.allocSentinel(u8, 20003, 0);
     defer std.testing.allocator.free(large);
     @memset(large[0..20000], 'x');
     @memcpy(large[20000..20003], "日");
+    ztSetMarkedText(backend.view, sel("setMarkedText:selectedRange:replacementRange:"), createNSString(large), .{ .location = 20001, .length = 0 }, range);
+    const preview = backend.popEvent().?.preedit;
+    try std.testing.expectEqual(@as(u32, 128), preview.caret);
+    try std.testing.expectEqual(@as(u64, 20001), ztSelectedRange(backend.view, sel("selectedRange")).location);
+    ztUnmarkText(backend.view, sel("unmarkText"));
+    _ = backend.popEvent();
     queuePaste(&backend, createNSString(large));
     const paste = backend.popEvent().?.paste;
     try std.testing.expectEqualStrings(large, paste.slice());
