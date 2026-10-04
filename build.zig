@@ -100,7 +100,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(u32, "scrollback_lines", scrollback_lines_opt);
     options.addOption(bool, "alt_screen_wheel_scrollback", alt_screen_wheel_scrollback_opt);
     options.addOption([:0]const u8, "shell", shell_opt);
-    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.9.3") catch @panic("OOM"));
+    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.10.0") catch @panic("OOM"));
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),

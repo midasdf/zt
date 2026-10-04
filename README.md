@@ -1,14 +1,17 @@
 # zt — minimal terminal emulator in Zig
 
-[![Zig](https://img.shields.io/badge/Zig-0.16+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
+[![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/Platform-macOS_14+-black?logo=apple&logoColor=white)](https://github.com/midasdf/zt/releases/tag/v0.10.0)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
-A small terminal emulator written in Zig. Renders to the Linux framebuffer, X11 (XCB + SHM), Wayland (pure Zig wire protocol, no libwayland), or macOS (Cocoa/AppKit). No GPU required.
+A small terminal emulator for **macOS and Linux**, written in Zig. Native Cocoa/AppKit on Mac; framebuffer, X11 (XCB + SHM), and Wayland (pure Zig wire protocol, no libwayland) on Linux. No GPU required.
+
+**New in 0.10.0: native Mac support** for Apple Silicon and Intel on macOS 14+. Download a Finder-launchable `zt.app` from the [0.10.0 release](https://github.com/midasdf/zt/releases/tag/v0.10.0), or [build with Homebrew](#macos-backend).
 
 ![Image](https://github.com/user-attachments/assets/01ab9a42-2efe-41f7-b123-e7312dc5b8d7)
 
-Originally built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero) (RPi Zero 2W + 720x720 HyperPixel4). Runs on any Linux system.
+Originally built for the [HackberryPi Zero](https://github.com/ZitaoTech/Hackberry-Pi_Zero) (RPi Zero 2W + 720x720 HyperPixel4). Now supports macOS as well as Linux.
 
 > **Note:** This is an experimental project. It works well enough for daily use with common CLI tools, but it is not a full-featured terminal. See [Limitations](#limitations) for what's missing.
 
@@ -34,10 +37,10 @@ Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=Rel
 - **CJK wide characters** — double-width rendering with boundary repair
 - **59,635 glyphs** — UFO bitmap font + Nerd Fonts icons, embedded at compile time
 - **XKB keyboard layout** — any X11/Wayland layout (US, JP, DE, FR, etc.)
-- **Input method** — XIM under X11, text-input-v3 under Wayland (fcitx5, ibus, etc.)
-- **Inline pre-edit (IME composition)** — Wayland `text-input-v3` preedit; composition text is rendered at the cursor position with reverse-video / underline / highlight feedback from the IME
+- **Input method** — native AppKit input methods on macOS, XIM under X11, and text-input-v3 under Wayland (fcitx5, ibus, etc.)
+- **Inline pre-edit (IME composition)** — macOS AppKit and Wayland `text-input-v3` preedit; composition text is rendered at the cursor position with reverse-video / underline / highlight feedback from the IME
 - **OSC 8 hyperlinks** — parsed and stored; click-to-open is not yet implemented
-- **OSC 52 clipboard** — copy to system clipboard via xclip/wl-copy (disabled by default for security)
+- **OSC 52 clipboard** — copy to system clipboard via pbcopy on macOS or xclip/wl-copy on Linux (disabled by default for security)
 
 ### Performance
 
@@ -58,6 +61,20 @@ Requires Zig 0.16.0. Zig 0.17 changes the language and standard library and is n
 | Runtime dependencies | none | libxcb, libxcb-shm, libxcb-xkb, libxkbcommon, libxcb-imdkit | libxkbcommon |
 
 ### Quick Start
+
+On macOS, download `zt-aarch64-macos.zip` for Apple Silicon or
+`zt-x86_64-macos.zip` for Intel from the [latest release](https://github.com/midasdf/zt/releases/latest),
+extract it, and open `zt.app`. To build from source:
+
+```sh
+brew install zig@0.16
+export PATH="$(brew --prefix zig@0.16)/bin:$PATH"
+zig build -Doptimize=ReleaseFast
+sh tools/package-macos.sh
+open zig-out/zt.app
+```
+
+On Linux:
 
 ```sh
 # X11

@@ -210,8 +210,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          # Create release if it doesn't exist; skip if already created manually
-          gh release create "${TAG}" --title "${TAG}" --generate-notes 2>/dev/null || true
+          # Keep a new release in draft until all assets have been uploaded.
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release create "${TAG}" --verify-tag --draft --title "${TAG}" --generate-notes
+          fi
+          NOTES="docs/releases/${TAG}.md"
+          if [ -f "$NOTES" ]; then
+            TITLE=$(head -n 1 "$NOTES" | sed 's/^# //')
+            gh release edit "${TAG}" --title "$TITLE" --notes-file "$NOTES"
+          fi
           # Upload binaries (--clobber overwrites if re-run)
           gh release upload "${TAG}" \
             zt-x86_64-linux-x11.bin \
@@ -223,3 +230,4 @@ jobs:
             zt-aarch64-macos.zip \
             zt-x86_64-macos.zip \
             --clobber
+          gh release edit "${TAG}" --draft=false --latest
