@@ -121,6 +121,16 @@ pub const Pty = struct {
             ) catch return error.PathTooLong;
         };
 
+        // Set nonblocking before forking. On Darwin, F_SETFL invokes a tty
+        // ioctl which can fail with ENOTTY once a short-lived child closes the
+        // slave. Configuring the master first avoids that exit race entirely.
+        {
+            const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
+            const O_NONBLOCK: u32 = @bitCast(posix.O{ .NONBLOCK = true });
+            const new_flags: usize = @as(u32, @bitCast(cur_flags)) | O_NONBLOCK;
+            _ = try posix.fcntl(master_fd, posix.F.SETFL, new_flags);
+        }
+
         // 4. Fork
         const pid = try posix.fork();
 
@@ -291,14 +301,6 @@ pub const Pty = struct {
         }
 
         // === Parent process ===
-        // Set master_fd nonblocking
-        {
-            const cur_flags = try posix.fcntl(master_fd, posix.F.GETFL, 0);
-            const O_NONBLOCK: u32 = @bitCast(posix.O{ .NONBLOCK = true });
-            const new_flags: usize = @as(u32, @bitCast(cur_flags)) | O_NONBLOCK;
-            _ = try posix.fcntl(master_fd, posix.F.SETFL, new_flags);
-        }
-
         return Pty{
             .master_fd = master_fd,
             .child_pid = pid,
@@ -416,11 +418,18 @@ test "Pty: spawn and read echo output" {
     };
     defer pty.deinit();
 
-    // Wait for output
-    posix.sleep(100 * std.time.ns_per_ms);
-
     var buf: [256]u8 = undefined;
-    const n = pty.read(&buf) catch 0;
+    const deadline = posix.nanoTimestamp() + 2 * std.time.ns_per_s;
+    const n = while (posix.nanoTimestamp() < deadline) {
+        const n = pty.read(&buf) catch |err| switch (err) {
+            error.WouldBlock => {
+                posix.sleep(10 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        break n;
+    } else @as(usize, 0);
     // echo with no args outputs "\r\n" or "\n"
     try testing.expect(n > 0);
 }
