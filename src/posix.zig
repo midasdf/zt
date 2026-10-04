@@ -35,9 +35,8 @@ pub const unexpectedErrno = std.posix.unexpectedErrno;
 
 // Missing-in-0.16 shims -----------------------------------------------------
 //
-// All functions below are Linux-only — the Zig 0.16 stdlib still uses these
-// platform-specific syscall wrappers. macOS targets must be ported separately
-// (kqueue/kevent above are the only macOS-aware shims here).
+// Shared process/file wrappers use libc on macOS and raw syscalls on Linux.
+// Linux backend socket helpers remain Linux-only.
 //
 // Audit against /lib/std/posix.zig @ Zig 0.16.0 (1686 lines):
 //   write        — verified absent in 0.16 stdlib; hand-rolled required
@@ -58,9 +57,9 @@ const linux_only_msg = "posix shim: this wrapper is Linux-only; macOS port pendi
 // Errno helper: comptime (errno → error) lookup table used by all switch-heavy
 // wrappers. Each entry is .{ linux.E tag, anyerror value }. The caller's declared
 // return type constrains the visible set; @errorCast bridges anyerror at runtime.
-const ErrnoEntry = struct { linux.E, anyerror };
+const ErrnoEntry = struct { E, anyerror };
 
-inline fn mapErrno(e: linux.E, comptime mapping: []const ErrnoEntry) anyerror {
+inline fn mapErrno(e: E, comptime mapping: []const ErrnoEntry) anyerror {
     inline for (mapping) |entry| {
         if (e == entry[0]) return entry[1];
     }
@@ -94,10 +93,9 @@ const write_map = [_]ErrnoEntry{
 };
 
 pub inline fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     while (true) {
-        const rc = linux.write(fd, bytes.ptr, bytes.len);
-        const e = linux.errno(rc);
+        const rc = if (builtin.os.tag == .macos) std.c.write(fd, bytes.ptr, bytes.len) else linux.write(fd, bytes.ptr, bytes.len);
+        const e = if (builtin.os.tag == .macos) std.c.errno(rc) else linux.errno(rc);
         if (e == .SUCCESS) return @intCast(rc);
         if (e == .INTR) continue; // retry transparently, std.posix.write semantics
         return @errorCast(mapErrno(e, &write_map));
@@ -105,8 +103,11 @@ pub inline fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
 }
 
 pub inline fn close(fd: fd_t) void {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
-    _ = linux.close(fd);
+    if (builtin.os.tag == .macos) {
+        _ = std.c.close(fd);
+    } else {
+        _ = linux.close(fd);
+    }
 }
 
 pub const PipeError = error{ SystemFdQuotaExceeded, ProcessFdQuotaExceeded, Unexpected };
@@ -117,23 +118,31 @@ const pipe_map = [_]ErrnoEntry{
 };
 
 pub inline fn pipe() PipeError![2]fd_t {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
-    var fds: [2]i32 = undefined;
-    // Use pipe2(O_CLOEXEC) so the pipe fds are never leaked to a
-    // future exec'd child (clipboard helper, etc.).  Previously this
-    // called linux.pipe(), which created fds WITHOUT O_CLOEXEC; the
-    // callers had to remember to set FD_CLOEXEC by hand, and any
-    // early-return path in a forked child would leak the read/write
-    // ends into the exec'd program.
-    const rc = linux.pipe2(&fds, .{ .CLOEXEC = true });
-    const e = linux.errno(rc);
-    if (e == .SUCCESS) return fds;
-    return @errorCast(mapErrno(e, &pipe_map));
+    return pipe2(.{ .CLOEXEC = true });
 }
 
-pub inline fn pipe2(flags: linux.O) PipeError![2]fd_t {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
-    var fds: [2]i32 = undefined;
+/// Darwin has no pipe2; set flags before exposing either descriptor.
+pub inline fn pipe2(flags: O) PipeError![2]fd_t {
+    var fds: [2]fd_t = undefined;
+    if (builtin.os.tag == .macos) {
+        const rc = std.c.pipe(&fds);
+        if (std.c.errno(rc) != .SUCCESS) return @errorCast(mapErrno(std.c.errno(rc), &pipe_map));
+        errdefer {
+            close(fds[0]);
+            close(fds[1]);
+        }
+        for (fds) |fd| {
+            if (flags.CLOEXEC) {
+                _ = fcntl(fd, F.SETFD, 1) catch return error.Unexpected;
+            }
+            if (flags.NONBLOCK) {
+                const old = fcntl(fd, F.GETFL, 0) catch return error.Unexpected;
+                const nonblock: u32 = @bitCast(O{ .NONBLOCK = true });
+                _ = fcntl(fd, F.SETFL, @as(u32, @bitCast(old)) | nonblock) catch return error.Unexpected;
+            }
+        }
+        return fds;
+    }
     const rc = linux.pipe2(&fds, flags);
     const e = linux.errno(rc);
     if (e == .SUCCESS) return fds;
@@ -147,8 +156,12 @@ const fork_map = [_]ErrnoEntry{
     .{ .NOMEM, error.SystemResources },
 };
 
-pub inline fn fork() ForkError!linux.pid_t {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+pub inline fn fork() ForkError!pid_t {
+    if (builtin.os.tag == .macos) {
+        const rc = std.c.fork();
+        if (rc >= 0) return rc;
+        return @errorCast(mapErrno(std.c.errno(rc), &fork_map));
+    }
     const rc = linux.fork();
     const e = linux.errno(rc);
     if (e == .SUCCESS) return @intCast(@as(isize, @bitCast(rc)));
@@ -158,7 +171,14 @@ pub inline fn fork() ForkError!linux.pid_t {
 pub const Dup2Error = error{Unexpected};
 
 pub inline fn dup2(old_fd: fd_t, new_fd: fd_t) Dup2Error!void {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+    if (builtin.os.tag == .macos) {
+        while (std.c.dup2(old_fd, new_fd) < 0) {
+            const e = std.c.errno(@as(c_int, -1));
+            if (e == .INTR) continue;
+            return error.Unexpected;
+        }
+        return;
+    }
     const rc = linux.dup2(old_fd, new_fd);
     return switch (linux.errno(rc)) {
         .SUCCESS => {},
@@ -167,7 +187,7 @@ pub inline fn dup2(old_fd: fd_t, new_fd: fd_t) Dup2Error!void {
 }
 
 pub inline fn exit(status: u8) noreturn {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+    if (builtin.os.tag == .macos) std.c._exit(status);
     linux.exit_group(status);
 }
 
@@ -179,11 +199,16 @@ pub var environ: std.process.Environ = .empty;
 /// Block the current thread for `nanoseconds`. Replacement for
 /// `std.Thread.sleep` (removed in Zig 0.16).
 pub inline fn sleep(nanoseconds: u64) void {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var req: timespec = .{
         .sec = @intCast(nanoseconds / std.time.ns_per_s),
         .nsec = @intCast(nanoseconds % std.time.ns_per_s),
     };
+    if (builtin.os.tag == .macos) {
+        while (std.c.nanosleep(&req, &req) < 0) {
+            if (std.c.errno(@as(c_int, -1)) != .INTR) break;
+        }
+        return;
+    }
     while (true) {
         const rc = linux.clock_nanosleep(.MONOTONIC, .{ .ABSTIME = false }, &req, &req);
         if (linux.errno(rc) != .INTR) break;
@@ -195,9 +220,12 @@ pub inline fn sleep(nanoseconds: u64) void {
 /// MONOTONIC is preferable for the delta-only callers in zt and avoids
 /// NTP/DST-jump artefacts.
 pub inline fn nanoTimestamp() i128 {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     var ts: timespec = undefined;
-    _ = linux.clock_gettime(.MONOTONIC, &ts);
+    if (builtin.os.tag == .macos) {
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    } else {
+        _ = linux.clock_gettime(.MONOTONIC, &ts);
+    }
     return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
 }
 
@@ -218,8 +246,8 @@ pub const ExecveError = error{
     Unexpected,
 };
 
-inline fn execveErrno(rc: usize) ExecveError {
-    return switch (linux.errno(rc)) {
+inline fn execveErrno(e: E) ExecveError {
+    return switch (e) {
         .ACCES => error.AccessDenied,
         .NOENT => error.FileNotFound,
         .NOTDIR => error.NotDir,
@@ -242,10 +270,9 @@ pub inline fn execvpeZ(
     argv: [*:null]const ?[*:0]const u8,
     envp: [*:null]const ?[*:0]const u8,
 ) ExecveError {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
     const file_slice = std.mem.span(file);
     if (std.mem.indexOfScalar(u8, file_slice, '/') != null) {
-        return execveErrno(linux.execve(file, argv, envp));
+        return execveZ(file, argv, envp);
     }
     const path = getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -257,7 +284,7 @@ pub inline fn execvpeZ(
             last_err = error.NameTooLong;
             continue;
         };
-        const err = execveErrno(linux.execve(full.ptr, argv, envp));
+        const err = execveZ(full.ptr, argv, envp);
         switch (err) {
             error.FileNotFound, error.NotDir => continue,
             error.AccessDenied => {
@@ -270,8 +297,19 @@ pub inline fn execvpeZ(
     return last_err;
 }
 
+fn execveZ(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) ExecveError {
+    if (builtin.os.tag == .macos) return execveErrno(std.c.errno(std.c.execve(file, argv, envp)));
+    return execveErrno(linux.errno(linux.execve(file, argv, envp)));
+}
+
 pub inline fn kqueue() !i32 {
-    if (builtin.os.tag == .macos) return @intCast(std.c.kqueue());
+    if (builtin.os.tag == .macos) {
+        const fd = std.c.kqueue();
+        if (fd < 0) return error.Unexpected;
+        errdefer close(fd);
+        _ = try fcntl(fd, F.SETFD, 1);
+        return fd;
+    }
     @compileError("kqueue is macOS-only");
 }
 
@@ -290,7 +328,7 @@ pub inline fn kevent(
             @intCast(eventlist.len),
             timeout,
         );
-        if (rc < 0) return error.Unexpected;
+        if (rc < 0) return if (std.c.errno(rc) == .INTR) error.Interrupted else error.Unexpected;
         return @intCast(rc);
     }
     @compileError("kevent is macOS-only");
@@ -333,8 +371,7 @@ const open_map = [_]ErrnoEntry{
     .{ .AGAIN, error.WouldBlock },
 };
 
-pub inline fn open(path: []const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+pub inline fn open(path: []const u8, flags: O, mode: mode_t) OpenError!fd_t {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len >= buf.len) return error.NameTooLong;
     @memcpy(buf[0..path.len], path);
@@ -342,10 +379,9 @@ pub inline fn open(path: []const u8, flags: linux.O, mode: linux.mode_t) OpenErr
     return openZ(@ptrCast(buf[0..path.len :0]), flags, mode);
 }
 
-pub inline fn openZ(path: [*:0]const u8, flags: linux.O, mode: linux.mode_t) OpenError!fd_t {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
-    const rc = linux.open(path, flags, mode);
-    const e = linux.errno(rc);
+pub inline fn openZ(path: [*:0]const u8, flags: O, mode: mode_t) OpenError!fd_t {
+    const rc = if (builtin.os.tag == .macos) std.c.open(path, flags, @as(c_uint, mode)) else linux.open(path, flags, mode);
+    const e = if (builtin.os.tag == .macos) std.c.errno(rc) else linux.errno(rc);
     if (e == .SUCCESS) return @intCast(rc);
     return @errorCast(mapErrno(e, &open_map));
 }
@@ -362,7 +398,11 @@ const fcntl_map = [_]ErrnoEntry{
 /// Truncates the raw `usize` return to `i32` to match the kernel fcntl ABI
 /// and avoid leaking sign-extended errno-encoded values into flag-masking callers.
 pub inline fn fcntl(fd: fd_t, cmd: i32, arg: usize) FcntlError!i32 {
-    if (builtin.os.tag != .linux) @compileError(linux_only_msg);
+    if (builtin.os.tag == .macos) {
+        const rc = std.c.fcntl(fd, cmd, @as(c_int, @bitCast(@as(u32, @truncate(arg)))));
+        if (rc >= 0) return rc;
+        return @errorCast(mapErrno(std.c.errno(rc), &fcntl_map));
+    }
     const rc = linux.fcntl(fd, cmd, arg);
     const e = linux.errno(rc);
     if (e == .SUCCESS) return @bitCast(@as(u32, @truncate(rc)));
@@ -454,4 +494,42 @@ pub inline fn connect(sockfd: fd_t, sock_addr: *const anyopaque, len: u32) Conne
     const e = linux.errno(rc);
     if (e == .SUCCESS) return;
     return @errorCast(mapErrno(e, &connect_map));
+}
+
+test "POSIX pipe flags and read/write round trip" {
+    const fds = try pipe2(.{ .CLOEXEC = true, .NONBLOCK = true });
+    defer close(fds[0]);
+    defer close(fds[1]);
+    const nonblock: u32 = @bitCast(O{ .NONBLOCK = true });
+    for (fds) |fd| {
+        try std.testing.expect((try fcntl(fd, F.GETFD, 0) & 1) != 0);
+        try std.testing.expect((@as(u32, @bitCast(try fcntl(fd, F.GETFL, 0))) & nonblock) != 0);
+    }
+    var buffer: [4]u8 = undefined;
+    try std.testing.expectError(error.WouldBlock, read(fds[0], &buffer));
+    try std.testing.expectEqual(@as(usize, 4), try write(fds[1], "test"));
+    try std.testing.expectEqual(@as(usize, 4), try read(fds[0], &buffer));
+    try std.testing.expectEqualStrings("test", &buffer);
+}
+
+test "POSIX monotonic time advances during sleep" {
+    const before = nanoTimestamp();
+    sleep(std.time.ns_per_ms);
+    try std.testing.expect(nanoTimestamp() > before);
+}
+
+test "POSIX exec reports missing absolute paths" {
+    const args = [_:null]?[*:0]const u8{"/zt-does-not-exist"};
+    const env = [_:null]?[*:0]const u8{};
+    try std.testing.expectEqual(error.FileNotFound, execvpeZ(args[0].?, &args, &env));
+}
+
+test "macOS kqueue is close-on-exec and accepts an empty poll" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const fd = try kqueue();
+    defer close(fd);
+    try std.testing.expect((try fcntl(fd, F.GETFD, 0) & 1) != 0);
+    var events: [1]Kevent = undefined;
+    const timeout: timespec = .{ .sec = 0, .nsec = 0 };
+    try std.testing.expectEqual(@as(usize, 0), try kevent(fd, &.{}, &events, &timeout));
 }

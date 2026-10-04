@@ -41,6 +41,36 @@ jobs:
       - name: Test
         run: zig build test -Dbackend=x11
 
+  check-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16
+        run: |
+          curl -fL "https://ziglang.org/download/0.16.0/zig-${{ matrix.arch }}-macos-0.16.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-${{ matrix.arch }}-macos-0.16.0" >> "$GITHUB_PATH"
+
+      - name: Build (native macOS defaults)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Test (including PTY and macOS input)
+        run: zig build test -Dmacos_gui_tests=true
+
+      - name: Package app
+        run: |
+          sh tools/package-macos.sh
+          plutil -lint zig-out/zt.app/Contents/Info.plist
+          codesign --verify --deep --strict zig-out/zt.app
+
   security-audit:
     runs-on: ubuntu-24.04
     steps:

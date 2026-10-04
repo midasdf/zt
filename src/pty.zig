@@ -342,7 +342,7 @@ pub const Pty = struct {
                     reaped = true;
                     break;
                 }
-                if (std.c.getErrno(rc) == .CHILD) {
+                if (std.c.errno(rc) == .CHILD) {
                     reaped = true;
                     break;
                 }
@@ -410,7 +410,7 @@ test "Pty: exec argv builder keeps all arguments" {
 
 test "Pty: spawn and read echo output" {
     // Skip when /dev/ptmx (Linux) is missing or invisible (e.g. restricted CI/sandbox).
-    var pty = Pty.spawn(80, 24, "/bin/echo", null) catch |err| switch (err) {
+    var pty = if (is_macos) try Pty.spawn(80, 24, "/bin/echo", null) else Pty.spawn(80, 24, "/bin/echo", null) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => |e| return e,
     };

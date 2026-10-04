@@ -153,8 +153,41 @@ jobs:
           name: zt-aarch64-linux-wayland
           path: zig-out/bin/zt
 
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16
+        run: |
+          curl -fL "https://ziglang.org/download/0.16.0/zig-${{ matrix.arch }}-macos-0.16.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-${{ matrix.arch }}-macos-0.16.0" >> "$GITHUB_PATH"
+
+      - name: Build and package
+        run: |
+          zig build -Doptimize=ReleaseFast -Dstrip=true
+          sh tools/package-macos.sh
+          ditto -c -k --keepParent zig-out/zt.app "zt-${{ matrix.arch }}-macos.zip"
+          cp zig-out/bin/zt "zt-${{ matrix.arch }}-macos.bin"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zt-${{ matrix.arch }}-macos
+          path: |
+            zt-${{ matrix.arch }}-macos.bin
+            zt-${{ matrix.arch }}-macos.zip
+
   release:
-    needs: [build-x86_64-x11, build-x86_64-wayland, build-aarch64-x11, build-aarch64-wayland]
+    needs: [build-x86_64-x11, build-x86_64-wayland, build-aarch64-x11, build-aarch64-wayland, build-macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -168,6 +201,8 @@ jobs:
           mv zt-x86_64-linux-wayland/zt zt-x86_64-linux-wayland.bin
           mv zt-aarch64-linux-x11/zt zt-aarch64-linux-x11.bin
           mv zt-aarch64-linux-wayland/zt zt-aarch64-linux-wayland.bin
+          mv zt-aarch64-macos/* .
+          mv zt-x86_64-macos/* .
           chmod +x zt-*.bin
 
       - name: Create or update release
@@ -183,4 +218,8 @@ jobs:
             zt-x86_64-linux-wayland.bin \
             zt-aarch64-linux-x11.bin \
             zt-aarch64-linux-wayland.bin \
+            zt-aarch64-macos.bin \
+            zt-x86_64-macos.bin \
+            zt-aarch64-macos.zip \
+            zt-x86_64-macos.zip \
             --clobber

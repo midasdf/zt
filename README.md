@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
-A small terminal emulator written in Zig. Renders to the Linux framebuffer, X11 (XCB + SHM), Wayland (pure Zig wire protocol, no libwayland), or macOS (Cocoa/AppKit, untested). No GPU required.
+A small terminal emulator written in Zig. Renders to the Linux framebuffer, X11 (XCB + SHM), Wayland (pure Zig wire protocol, no libwayland), or macOS (Cocoa/AppKit). No GPU required.
 
 ![Image](https://github.com/user-attachments/assets/01ab9a42-2efe-41f7-b123-e7312dc5b8d7)
 
@@ -22,7 +22,7 @@ Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=Rel
 
 ### Rendering
 
-- **Four backends** — framebuffer (no X11/Wayland), XCB + SHM under X11, pure Zig Wayland client (no libwayland), Cocoa/AppKit on macOS (experimental, untested)
+- **Four backends** — framebuffer (no X11/Wayland), XCB + SHM under X11, pure Zig Wayland client (no libwayland), Cocoa/AppKit on macOS
 - **Pixel scaling** — `-Dscale=2` or `-Dscale=4` for HiDPI. Integer scaling, same font blob
 - **Double-buffered SHM** — tear-free rendering on X11 and Wayland
 - **Adaptive frame limiter** — reduces FPS under heavy output to avoid wasting CPU
@@ -50,7 +50,7 @@ Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=Rel
 
 ## Build
 
-Requires Zig 0.16+.
+Requires Zig 0.16.0. Zig 0.17 changes the language and standard library and is not supported yet.
 
 |  | fbdev | X11 | Wayland |
 |---|---|---|---|
@@ -106,8 +106,8 @@ zig build -Dbackend=x11 -Dfont=path/to/myfont.ttf -Doptimize=ReleaseFast
 # Cross-compile for aarch64
 zig build -Dtarget=aarch64-linux -Doptimize=ReleaseSmall
 
-# macOS (experimental, untested — see note below)
-zig build -Dbackend=macos -Dshell=/bin/zsh -Doptimize=ReleaseFast
+# macOS (automatically selects Cocoa and /bin/zsh)
+zig build -Doptimize=ReleaseFast
 
 # Run tests
 zig build test
@@ -119,9 +119,51 @@ Implements the Wayland wire protocol directly in Zig — no libwayland-client de
 
 Supported protocols: xdg-shell, wl_shm, text-input-v3 (IME), wl_data_device + primary selection (clipboard), xdg-decoration, wp_cursor_shape_manager_v1.
 
-### macOS Backend (Experimental)
+### macOS Backend
 
-> **Note:** Developed without access to macOS hardware and never tested on a real Mac. Uses Cocoa/AppKit via `objc_msgSend` from Zig. Bug reports welcome.
+Uses Cocoa/AppKit and CoreGraphics without X11 or third-party runtime libraries.
+Requires macOS 14 or later. The native macOS build selects the Cocoa backend and `/bin/zsh` automatically.
+Install Xcode Command Line Tools (`xcode-select --install`) and **Zig 0.16.0**.
+Install the pinned compiler with Homebrew:
+
+```sh
+brew install zig@0.16
+export PATH="$(brew --prefix zig@0.16)/bin:$PATH"
+```
+
+```sh
+# Build and launch from Terminal
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/zt
+
+# Optional: larger text with 2x bitmap scaling
+zig build -Dscale=2 -Doptimize=ReleaseFast
+
+# Create a Finder-launchable app
+sh tools/package-macos.sh
+open zig-out/zt.app
+
+# Unit tests, including real PTY I/O
+zig build test
+
+# Cocoa integration tests (requires a desktop session)
+zig build test -Dmacos_gui_tests=true
+```
+
+`Cmd+C` copies the selection, `Cmd+V` pastes, and `Cmd+Q` / `Cmd+W` close
+zt. Mouse selection, wheel scrolling, terminal mouse reporting, and native
+input-method composition use the same dispatcher as the Linux backends.
+App bundles start the shell in your home directory; CLI launches preserve the
+current directory. Option acts as the terminal Alt modifier. IME composition is shown inline,
+and the candidate window is positioned at the cursor.
+
+The CI configuration builds and runs tests on Apple Silicon and Intel macOS.
+The release workflow produces architecture-specific `.bin` executables and
+`.zip` app bundles. App bundles use ad hoc signatures; they are not notarized.
+Automated Cocoa tests cover window creation, drawing, text/IME callbacks,
+keyboard modifiers, large pastes, resizing, and closing. Physical keyboard,
+IME candidate selection, and display changes require manual checks; see
+[the macOS QA checklist](docs/macos-qa.md).
 
 ## Status
 
@@ -130,7 +172,7 @@ Supported protocols: xdg-shell, wl_shm, text-input-v3 (IME), wl_data_device + pr
 | fbdev | Stable — used daily on HackberryPi |
 | X11 | Stable — primary development target |
 | Wayland | Works — IME and basic usage tested |
-| macOS | Untested — compiles but never run on real hardware |
+| macOS | Supported — Cocoa, Apple Silicon and Intel; macOS 14+ |
 
 ## Configuration
 

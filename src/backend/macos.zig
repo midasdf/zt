@@ -59,6 +59,7 @@ extern "CoreGraphics" fn CGBitmapContextCreateImage(ctx: id) ?id;
 extern "CoreGraphics" fn CGContextDrawImage(ctx: id, rect: CGRect, image: id) void;
 extern "CoreGraphics" fn CGContextRelease(ctx: id) void;
 extern "CoreGraphics" fn CGImageRelease(image: id) void;
+extern "Foundation" fn NSHomeDirectory() id;
 
 // CoreGraphics bitmap info constants
 const kCGBitmapByteOrder32Little: u32 = 2 << 12; // 8192
@@ -210,9 +211,51 @@ fn msgSend_insertText(target: id, _sel: SEL, text: id, repRange: NSRange) void {
 // Event types (shared with main.zig — keep in sync with x11.zig)
 // =============================================================================
 
+pub const MouseEvent = struct {
+    x: u32, // pixel x
+    y: u32, // pixel y
+    button: Button,
+    action: Action,
+    modifiers: input_mod.Modifiers,
+
+    pub const Button = enum(u3) {
+        left = 0,
+        middle = 1,
+        right = 2,
+        none = 3,
+        wheel_up = 4,
+        wheel_down = 5,
+        wheel_left = 6,
+        wheel_right = 7,
+    };
+
+    pub const Action = enum(u2) {
+        press,
+        release,
+        motion,
+    };
+};
+
+pub const PreeditEvent = struct {
+    data: [128]u8 = undefined,
+    len: u32 = 0,
+    caret: u32 = 0,
+    active: bool = false,
+    // Per-byte feedback flags, indexed in lockstep with `data`.
+    // Bit 0 = reverse, Bit 1 = underline, Bit 2 = highlight.
+    feedback: [128]u8 = [_]u8{0} ** 128,
+
+    pub fn slice(self: *const PreeditEvent) []const u8 {
+        return self.data[0..self.len];
+    }
+};
+
 pub const Event = union(enum) {
     key: KeyEvent,
     text: TextEvent,
+    preedit: PreeditEvent,
+    mouse: MouseEvent,
+    copy_selection: void,
     paste: PasteEvent,
     resize: ResizeEvent,
     expose: void,
@@ -280,9 +323,13 @@ pub const MacosBackend = struct {
     event_head: u32 = 0,
     event_tail: u32 = 0,
 
-    paste_buf_data: [16384]u8 = undefined,
+    paste_buf_data: std.ArrayList(u8) = .empty,
 
     has_marked_text: bool = false,
+    marked_length: u64 = 0,
+    ime_x: u32 = 0,
+    ime_y: u32 = config.cell_height,
+    autorelease_pool: id,
 
     // =========================================================================
     // Ring buffer helpers
@@ -329,8 +376,22 @@ pub const MacosBackend = struct {
             posix.close(pipe_fds[1]);
         }
 
+        const pool = msgSend_id(msgSend_id(cls("NSAutoreleasePool"), sel("alloc")), sel("init"));
+        errdefer msgSend_void(pool, sel("drain"));
+
         // 2. NSApplication setup
         const app = msgSend_id(cls("NSApplication"), sel("sharedApplication"));
+        // Finder launches bundles with an unspecified working directory.
+        // Start their shell at home; CLI launches retain the caller's directory.
+        const bundle = msgSend_id(cls("NSBundle"), sel("mainBundle"));
+        const bundle_path = msgSend_id(bundle, sel("bundlePath"));
+        if (msgSend_cstr(bundle_path, sel("UTF8String"))) |path| {
+            if (std.mem.endsWith(u8, std.mem.span(path), ".app")) {
+                if (msgSend_cstr(NSHomeDirectory(), sel("UTF8String"))) |home| {
+                    if (std.c.chdir(home) != 0) return error.HomeDirectoryUnavailable;
+                }
+            }
+        }
         // setActivationPolicy: NSApplicationActivationPolicyRegular = 0
         msgSend_void_i64(app, sel("setActivationPolicy:"), 0);
 
@@ -353,6 +414,7 @@ pub const MacosBackend = struct {
             kCGBitmapInfo,
         ) orelse return error.CGBitmapContextFailed;
 
+        errdefer CGContextRelease(cg_context);
         const data_ptr = CGBitmapContextGetData(cg_context) orelse return error.CGBitmapDataNull;
         const buffer_size = @as(usize, stride) * @as(usize, height);
         const buffer = data_ptr[0..buffer_size];
@@ -380,8 +442,12 @@ pub const MacosBackend = struct {
 
         // 8. Set view as contentView and configure window
         msgSend_void_id(window, sel("setContentView:"), view);
-        msgSend_void_id(window, sel("makeFirstResponder:"), view);
+        const make_first_responder: *const fn (id, SEL, id) callconv(.c) BOOL = @ptrCast(&objc_msgSend);
+        _ = make_first_responder(window, sel("makeFirstResponder:"), view);
+        msgSend_void_bool(window, sel("setReleasedWhenClosed:"), NO);
+        msgSend_void_bool(window, sel("setAcceptsMouseMovedEvents:"), YES);
         msgSend_void_id(window, sel("setDelegate:"), view);
+        installMenu(app, view);
 
         // 9. Set window title
         const title_str = createNSString("zt");
@@ -408,6 +474,7 @@ pub const MacosBackend = struct {
             .window = window,
             .view = view,
             .cg_context = cg_context,
+            .autorelease_pool = pool,
         };
     }
 
@@ -425,10 +492,17 @@ pub const MacosBackend = struct {
     // =========================================================================
 
     pub fn deinit(self: *Self) void {
+        self.paste_buf_data.deinit(std.heap.c_allocator);
+        msgSend_void_optid(self.app, sel("setMainMenu:"), null);
         posix.close(self.wakeup_read_fd);
         posix.close(self.wakeup_write_fd);
+        _ = object_setInstanceVariable(self.view, "_zt_backend", null);
+        msgSend_void_optid(self.window, sel("setDelegate:"), null);
+        msgSend_void(self.window, sel("close"));
+        msgSend_void(self.view, sel("release"));
+        msgSend_void(self.window, sel("release"));
         CGContextRelease(self.cg_context);
-        // NSWindow and NSView are autoreleased by Cocoa
+        msgSend_void(self.autorelease_pool, sel("drain"));
     }
 
     // =========================================================================
@@ -469,7 +543,7 @@ pub const MacosBackend = struct {
     }
 
     pub fn flush(_: *Self) void {
-        // No-op on macOS (Cocoa display system handles this)
+        // Display is serviced by pollEvents.
     }
 
     // =========================================================================
@@ -481,31 +555,34 @@ pub const MacosBackend = struct {
     }
 
     pub fn pollEvents(self: *Self) ?Event {
-        // 1. Pump Cocoa events: dispatch all pending NSApp events.
-        //    This triggers our keyDown:/drawRect:/windowDidResize: callbacks
-        //    which push into the event_queue ring buffer.
-        const default_mode = getDefaultRunLoopMode();
-        while (true) {
-            const ns_event = msgSend_nextEvent(
-                self.app,
-                sel("nextEventMatchingMask:untilDate:inMode:dequeue:"),
-                NSEventMaskAny,
-                null, // untilDate:nil — don't block
-                default_mode,
-                YES, // dequeue
-            );
-            if (ns_event) |ev| {
-                // Dispatch to the appropriate target (NSWindow → NSView callbacks)
-                msgSend_void_id(self.app, sel("sendEvent:"), ev);
-            } else break;
-        }
-
-        // 2. Drain wakeup pipe
+        // Consume queued callbacks before pumping another NSEvent. This keeps
+        // paste storage alive until the dispatcher has consumed it.
+        if (self.popEvent()) |ev| return ev;
+        const pool = msgSend_id(msgSend_id(cls("NSAutoreleasePool"), sel("alloc")), sel("init"));
+        defer msgSend_void(pool, sel("drain"));
         var drain_buf: [64]u8 = undefined;
-        _ = posix.read(self.wakeup_read_fd, &drain_buf) catch {};
-
-        // 3. Return next queued event
+        while (true) {
+            const n = posix.read(self.wakeup_read_fd, &drain_buf) catch break;
+            if (n == 0) break;
+        }
+        const date = msgSend_id(cls("NSDate"), sel("distantPast"));
+        while (msgSend_nextEvent(self.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), NSEventMaskAny, date, getDefaultRunLoopMode(), YES)) |ev| {
+            msgSend_void_id(self.app, sel("sendEvent:"), ev);
+            if (self.event_head != self.event_tail) break;
+        }
+        msgSend_void(self.app, sel("updateWindows"));
         return self.popEvent();
+    }
+
+    pub fn updateTitle(self: *Self, title: []const u8) void {
+        var buf: [512]u8 = undefined;
+        const text = std.fmt.bufPrintZ(&buf, "{s}", .{title}) catch return;
+        msgSend_void_id(self.window, sel("setTitle:"), createNSString(text));
+    }
+
+    pub fn updateImeCursorPos(self: *Self, x: u32, y: u32) void {
+        self.ime_x = x;
+        self.ime_y = y;
     }
 
     // =========================================================================
@@ -597,6 +674,9 @@ fn registerZTViewClass() ?id {
     _ = class_addMethod(new_class, sel("drawRect:"), @ptrCast(@constCast(&ztDrawRect)), "v@:{CGRect=dddd}");
     _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @ptrCast(@constCast(&ztAcceptsFirstResponder)), "c@:");
     _ = class_addMethod(new_class, sel("canBecomeKeyView"), @ptrCast(@constCast(&ztCanBecomeKeyView)), "c@:");
+    _ = class_addMethod(new_class, sel("ztRequestClose:"), @ptrCast(&ztRequestClose), "v@:@");
+    _ = class_addMethod(new_class, sel("copy:"), @ptrCast(&ztCopy), "v@:@");
+    _ = class_addMethod(new_class, sel("paste:"), @ptrCast(&ztPaste), "v@:@");
 
     // --- Keyboard ---
     _ = class_addMethod(new_class, sel("keyDown:"), @ptrCast(@constCast(&ztKeyDown)), "v@:@");
@@ -606,6 +686,19 @@ fn registerZTViewClass() ?id {
     // NSView implementation calls NSBeep() for every unhandled command.
     // We handle all keys through the evdev key event path, so this is a no-op.
     _ = class_addMethod(new_class, sel("doCommandBySelector:"), @ptrCast(@constCast(&ztDoCommandBySelector)), "v@::");
+
+    // --- Mouse input ---
+    _ = class_addMethod(new_class, sel("mouseDown:"), @ptrCast(&ztMouseDown), "v@:@");
+    _ = class_addMethod(new_class, sel("mouseUp:"), @ptrCast(&ztMouseUp), "v@:@");
+    _ = class_addMethod(new_class, sel("rightMouseDown:"), @ptrCast(&ztMouseDown), "v@:@");
+    _ = class_addMethod(new_class, sel("rightMouseUp:"), @ptrCast(&ztMouseUp), "v@:@");
+    _ = class_addMethod(new_class, sel("otherMouseDown:"), @ptrCast(&ztMouseDown), "v@:@");
+    _ = class_addMethod(new_class, sel("otherMouseUp:"), @ptrCast(&ztMouseUp), "v@:@");
+    _ = class_addMethod(new_class, sel("mouseDragged:"), @ptrCast(&ztMouseMoved), "v@:@");
+    _ = class_addMethod(new_class, sel("rightMouseDragged:"), @ptrCast(&ztMouseMoved), "v@:@");
+    _ = class_addMethod(new_class, sel("otherMouseDragged:"), @ptrCast(&ztMouseMoved), "v@:@");
+    _ = class_addMethod(new_class, sel("mouseMoved:"), @ptrCast(&ztMouseMoved), "v@:@");
+    _ = class_addMethod(new_class, sel("scrollWheel:"), @ptrCast(&ztScrollWheel), "v@:@");
 
     // --- NSTextInputClient ---
     _ = class_addMethod(new_class, sel("insertText:replacementRange:"), @ptrCast(@constCast(&ztInsertText)), "v@:@{_NSRange=QQ}");
@@ -664,10 +757,47 @@ fn ztCanBecomeKeyView(_: id, _: SEL) callconv(.c) BOOL {
     return YES;
 }
 
+fn ztRequestClose(view: id, _: SEL, _: ?id) callconv(.c) void {
+    if (MacosBackend.getBackendFromView(view)) |backend| backend.pushEvent(.close);
+}
+
+fn ztCopy(view: id, _: SEL, _: ?id) callconv(.c) void {
+    if (MacosBackend.getBackendFromView(view)) |backend| backend.pushEvent(.copy_selection);
+}
+
+fn ztPaste(view: id, _: SEL, _: ?id) callconv(.c) void {
+    if (MacosBackend.getBackendFromView(view)) |backend| handlePaste(backend);
+}
+
+fn menuItem(title: [*:0]const u8, action: SEL, key: [*:0]const u8, target: id) id {
+    const init: *const fn (id, SEL, id, SEL, id) callconv(.c) id = @ptrCast(&objc_msgSend);
+    const item = init(msgSend_id(cls("NSMenuItem"), sel("alloc")), sel("initWithTitle:action:keyEquivalent:"), createNSString(title), action, createNSString(key));
+    msgSend_void_id(item, sel("setTarget:"), target);
+    return msgSend_id(item, sel("autorelease"));
+}
+
+fn installMenu(app: id, view: id) void {
+    const menu = msgSend_id(msgSend_id(cls("NSMenu"), sel("alloc")), sel("init"));
+    defer msgSend_void(menu, sel("release"));
+    const app_menu = msgSend_id(msgSend_id(cls("NSMenu"), sel("alloc")), sel("init"));
+    defer msgSend_void(app_menu, sel("release"));
+    const app_item = menuItem("zt", sel("ztRequestClose:"), "", view);
+    msgSend_void_id(app_item, sel("setSubmenu:"), app_menu);
+    msgSend_void_id(app_menu, sel("addItem:"), menuItem("Close Window", sel("ztRequestClose:"), "w", view));
+    msgSend_void_id(app_menu, sel("addItem:"), menuItem("Quit zt", sel("ztRequestClose:"), "q", view));
+    msgSend_void_id(menu, sel("addItem:"), app_item);
+    const edit_menu = msgSend_id(msgSend_id(cls("NSMenu"), sel("alloc")), sel("init"));
+    defer msgSend_void(edit_menu, sel("release"));
+    const edit_item = menuItem("Edit", sel("copy:"), "", view);
+    msgSend_void_id(edit_item, sel("setSubmenu:"), edit_menu);
+    msgSend_void_id(edit_menu, sel("addItem:"), menuItem("Copy", sel("copy:"), "c", view));
+    msgSend_void_id(edit_menu, sel("addItem:"), menuItem("Paste", sel("paste:"), "v", view));
+    msgSend_void_id(menu, sel("addItem:"), edit_item);
+    msgSend_void_id(app, sel("setMainMenu:"), menu);
+}
+
 fn ztDoCommandBySelector(_: id, _: SEL, _: SEL) callconv(.c) void {
-    // No-op: all keys are handled through the evdev key event path.
-    // Without this, NSView's default calls NSBeep() for every
-    // unhandled command selector (insertNewline:, insertTab:, etc.).
+    // Special keys are dispatched by keyDown when no IME composition is active.
 }
 
 fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
@@ -687,6 +817,10 @@ fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
             },
             0x0D => { // Cmd+W
                 backend.pushEvent(.close);
+                return;
+            },
+            0x08 => { // Cmd+C — copy selected text
+                backend.pushEvent(.copy_selection);
                 return;
             },
             0x09 => { // Cmd+V — paste
@@ -734,7 +868,7 @@ fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
         else => false,
     };
 
-    if (is_special) {
+    if (is_special and !backend.has_marked_text) {
         backend.pushEvent(.{ .key = .{
             .keycode = evdev_code,
             .pressed = true,
@@ -746,7 +880,7 @@ fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
     // Text-producing keys: let IME path handle via interpretKeyEvents → insertText.
     // Ctrl+key combos still need KeyEvent since insertText filters single-byte ASCII.
     const mods = flagsToModifiers(flags);
-    if (mods.ctrl or mods.alt) {
+    if ((mods.ctrl or mods.alt) and !backend.has_marked_text) {
         if (evdev_code != 0) {
             backend.pushEvent(.{ .key = .{
                 .keycode = evdev_code,
@@ -807,20 +941,20 @@ fn ztInsertText(self_view: id, _: SEL, text_obj: id, _: NSRange) callconv(.c) vo
     const len = std.mem.len(cstr);
     if (len == 0) return;
 
-    // Skip all single-byte ASCII — these are already handled by the key
-    // event path (macosToEvdev → translateKey). Without this guard, keys
-    // like Enter (0x0D) and Tab (0x09) produce duplicates: one from the
-    // key event and one from insertText. Only let through multi-byte
-    // sequences (IME-composed text, dead key output, etc.).
-    if (len == 1 and cstr[0] < 0x80) return;
-
-    var text_event: TextEvent = .{};
-    const copy_len = @min(len, text_event.data.len);
-    @memcpy(text_event.data[0..copy_len], cstr[0..copy_len]);
-    text_event.len = @intCast(copy_len);
-    backend.pushEvent(.{ .text = text_event });
-
     backend.has_marked_text = false;
+    backend.marked_length = 0;
+    backend.pushEvent(.{ .preedit = .{} });
+    // Printable ASCII comes through insertText too. Preserve layout and avoid
+    // splitting a UTF-8 character across the fixed-size event payload.
+    var rest = cstr[0..len];
+    while (rest.len > 0) {
+        const n = utf8PrefixLen(rest, 128);
+        var event: TextEvent = .{};
+        @memcpy(event.data[0..n], rest[0..n]);
+        event.len = @intCast(n);
+        backend.pushEvent(.{ .text = event });
+        rest = rest[n..];
+    }
 }
 
 fn ztHasMarkedText(self_view: id, _: SEL) callconv(.c) BOOL {
@@ -828,14 +962,29 @@ fn ztHasMarkedText(self_view: id, _: SEL) callconv(.c) BOOL {
     return if (backend.has_marked_text) YES else NO;
 }
 
-fn ztSetMarkedText(self_view: id, _: SEL, _: id, _: NSRange, _: NSRange) callconv(.c) void {
+fn ztSetMarkedText(self_view: id, _: SEL, text: id, selected: NSRange, _: NSRange) callconv(.c) void {
     const backend = MacosBackend.getBackendFromView(self_view) orelse return;
-    backend.has_marked_text = true;
+    const str = if (msgSend_bool(text, sel("isKindOfClass:"), cls("NSAttributedString")))
+        msgSend_id(text, sel("string"))
+    else
+        text;
+    const bytes = std.mem.span(msgSend_cstr(str, sel("UTF8String")) orelse return);
+    backend.marked_length = msgSend_u64(str, sel("length")); // Cocoa uses UTF-16 units
+    backend.has_marked_text = bytes.len > 0;
+    var event: PreeditEvent = .{ .active = backend.has_marked_text };
+    const n = utf8PrefixLen(bytes, event.data.len);
+    @memcpy(event.data[0..n], bytes[0..n]);
+    @memset(event.feedback[0..n], 2); // underline composition
+    event.len = @intCast(n);
+    event.caret = utf16Caret(bytes[0..n], selected.location);
+    backend.pushEvent(.{ .preedit = event });
 }
 
 fn ztUnmarkText(self_view: id, _: SEL) callconv(.c) void {
     const backend = MacosBackend.getBackendFromView(self_view) orelse return;
     backend.has_marked_text = false;
+    backend.marked_length = 0;
+    backend.pushEvent(.{ .preedit = .{} });
 }
 
 fn ztValidAttributes(_: id, _: SEL) callconv(.c) id {
@@ -843,12 +992,28 @@ fn ztValidAttributes(_: id, _: SEL) callconv(.c) id {
     return msgSend_id(cls("NSArray"), sel("array"));
 }
 
-fn ztFirstRect(_: id, _: SEL, _: NSRange, _: ?*NSRange) callconv(.c) CGRect {
-    return CGRect.make(0, 0, 0, 0);
+fn ztFirstRect(view: id, _: SEL, range: NSRange, actual: ?*NSRange) callconv(.c) CGRect {
+    const backend = MacosBackend.getBackendFromView(view) orelse return CGRect.make(0, 0, 0, 0);
+    if (actual) |out| out.* = range;
+    const bounds = msgSend_CGRect(view, sel("bounds"));
+    const rect = CGRect.make(@floatFromInt(backend.ime_x), @max(0, bounds.size.height - @as(f64, @floatFromInt(backend.ime_y))), @floatFromInt(config.cell_width), @floatFromInt(config.cell_height));
+    if (builtin.cpu.arch == .x86_64) {
+        const convert_view: *const fn (*CGRect, id, SEL, CGRect, ?id) callconv(.c) void = @ptrCast(&objc_msgSend_stret);
+        var in_window: CGRect = undefined;
+        convert_view(&in_window, view, sel("convertRect:toView:"), rect, null);
+        const convert_screen: *const fn (*CGRect, id, SEL, CGRect) callconv(.c) void = @ptrCast(&objc_msgSend_stret);
+        var result: CGRect = undefined;
+        convert_screen(&result, backend.window, sel("convertRectToScreen:"), in_window);
+        return result;
+    }
+    const convert_view: *const fn (id, SEL, CGRect, ?id) callconv(.c) CGRect = @ptrCast(&objc_msgSend);
+    const in_window = convert_view(view, sel("convertRect:toView:"), rect, null);
+    const convert_screen: *const fn (id, SEL, CGRect) callconv(.c) CGRect = @ptrCast(&objc_msgSend);
+    return convert_screen(backend.window, sel("convertRectToScreen:"), in_window);
 }
 
 fn ztCharacterIndex(_: id, _: SEL, _: CGPoint) callconv(.c) NSUInteger {
-    return std.math.maxInt(NSUInteger); // NSNotFound
+    return 0x7FFFFFFFFFFFFFFF; // NSNotFound
 }
 
 fn ztAttributedSubstring(_: id, _: SEL, _: NSRange, _: ?*NSRange) callconv(.c) ?id {
@@ -858,7 +1023,7 @@ fn ztAttributedSubstring(_: id, _: SEL, _: NSRange, _: ?*NSRange) callconv(.c) ?
 fn ztMarkedRange(self_view: id, _: SEL) callconv(.c) NSRange {
     const backend = MacosBackend.getBackendFromView(self_view) orelse return .{ .location = 0x7FFFFFFFFFFFFFFF, .length = 0 };
     if (backend.has_marked_text) {
-        return .{ .location = 0, .length = 0 };
+        return .{ .location = 0, .length = backend.marked_length };
     }
     // NSNotFound
     return .{ .location = 0x7FFFFFFFFFFFFFFF, .length = 0 };
@@ -947,13 +1112,18 @@ fn handlePaste(backend: *MacosBackend) void {
     const type_string = createNSString("public.utf8-plain-text");
     // [pasteboard stringForType:NSPasteboardTypeString]
     const str_obj = msgSend_id_type(pasteboard, sel("stringForType:"), type_string) orelse return;
+    queuePaste(backend, str_obj);
+}
+
+fn queuePaste(backend: *MacosBackend, str_obj: id) void {
     const cstr = msgSend_cstr(str_obj, sel("UTF8String")) orelse return;
     const len = std.mem.len(cstr);
     if (len == 0) return;
 
-    const copy_len = @min(len, backend.paste_buf_data.len);
-    @memcpy(backend.paste_buf_data[0..copy_len], cstr[0..copy_len]);
-    backend.pushEvent(.{ .paste = .{ .ptr = &backend.paste_buf_data, .len = @intCast(copy_len) } });
+    if (len > std.math.maxInt(u32)) return;
+    backend.paste_buf_data.resize(std.heap.c_allocator, len) catch return;
+    @memcpy(backend.paste_buf_data.items, cstr[0..len]);
+    backend.pushEvent(.{ .paste = .{ .ptr = backend.paste_buf_data.items.ptr, .len = @intCast(len) } });
 }
 
 fn createNSString(str: [*:0]const u8) id {
@@ -980,16 +1150,153 @@ fn setViewBackendPtr(view: id, backend: *MacosBackend) void {
     // object_setInstanceVariable is simpler but we use the
     // runtime-safe pattern: get the ivar offset and write directly.
     // However, object_setInstanceVariable is fine for our use case.
-    const f: *const fn (id, [*:0]const u8, *anyopaque) callconv(.c) void =
-        @ptrCast(&object_setInstanceVariable);
-    f(view, "_zt_backend", @ptrCast(backend));
+    _ = object_setInstanceVariable(view, "_zt_backend", @ptrCast(backend));
 }
 
-extern "objc" fn object_setInstanceVariable(obj: id, name: [*:0]const u8, value: *anyopaque) void;
+extern "objc" fn object_setInstanceVariable(obj: id, name: [*:0]const u8, value: ?*anyopaque) ?*anyopaque;
 
 fn getDefaultRunLoopMode() id {
     // NSDefaultRunLoopMode is an NSString constant.
     // Access it as a global symbol exported by Foundation.
     const ptr = @extern(*const id, .{ .name = "NSDefaultRunLoopMode" });
     return ptr.*;
+}
+
+fn utf8PrefixLen(bytes: []const u8, capacity: usize) usize {
+    var n = @min(bytes.len, capacity);
+    if (n < bytes.len) {
+        while (n > 0 and (bytes[n] & 0xC0) == 0x80) n -= 1;
+    }
+    return n;
+}
+
+/// Renderer carets use UTF-8 byte offsets; AppKit ranges count UTF-16 units.
+fn utf16Caret(bytes: []const u8, units: u64) u32 {
+    var offset: usize = 0;
+    var used: u64 = 0;
+    while (offset < bytes.len and used < units) {
+        const n = std.unicode.utf8ByteSequenceLength(bytes[offset]) catch break;
+        if (offset + n > bytes.len) break;
+        const cp = std.unicode.utf8Decode(bytes[offset..][0..n]) catch break;
+        const width: u64 = if (cp > 0xFFFF) 2 else 1;
+        if (used + width > units) break;
+        used += width;
+        offset += n;
+    }
+    return @intCast(offset);
+}
+
+fn mouseEvent(view: id, event: id, action: MouseEvent.Action, button: MouseEvent.Button) void {
+    const backend = MacosBackend.getBackendFromView(view) orelse return;
+    const location: *const fn (id, SEL) callconv(.c) CGPoint = @ptrCast(&objc_msgSend);
+    const convert: *const fn (id, SEL, CGPoint, ?id) callconv(.c) CGPoint = @ptrCast(&objc_msgSend);
+    const point = convert(view, sel("convertPoint:fromView:"), location(event, sel("locationInWindow")), null);
+    const bounds = msgSend_CGRect(view, sel("bounds"));
+    backend.pushEvent(.{ .mouse = .{
+        .x = @intFromFloat(@max(0, point.x)),
+        .y = @intFromFloat(@max(0, bounds.size.height - point.y)),
+        .button = button,
+        .action = action,
+        .modifiers = flagsToModifiers(msgSend_u64(event, sel("modifierFlags"))),
+    } });
+}
+
+fn mouseButton(event: id) MouseEvent.Button {
+    return switch (msgSend_u64(event, sel("buttonNumber"))) {
+        0 => .left,
+        1 => .right,
+        2 => .middle,
+        else => .none,
+    };
+}
+
+fn ztMouseDown(view: id, _: SEL, event: id) callconv(.c) void {
+    mouseEvent(view, event, .press, mouseButton(event));
+}
+
+fn ztMouseUp(view: id, _: SEL, event: id) callconv(.c) void {
+    mouseEvent(view, event, .release, mouseButton(event));
+}
+
+fn ztMouseMoved(view: id, _: SEL, event: id) callconv(.c) void {
+    mouseEvent(view, event, .motion, .none);
+}
+
+fn ztScrollWheel(view: id, _: SEL, event: id) callconv(.c) void {
+    const delta: *const fn (id, SEL) callconv(.c) f64 = @ptrCast(&objc_msgSend);
+    const dy = delta(event, sel("scrollingDeltaY"));
+    if (dy != 0) mouseEvent(view, event, .press, if (dy > 0) .wheel_up else .wheel_down);
+}
+
+test "macOS text chunks preserve UTF-8 boundaries" {
+    try std.testing.expectEqual(@as(usize, 1), utf8PrefixLen("a日本", 3));
+    try std.testing.expectEqual(@as(usize, 4), utf8PrefixLen("a日本", 4));
+    try std.testing.expectEqual(@as(usize, 7), utf8PrefixLen("a日本", 128));
+}
+
+test "macOS composition caret converts UTF-16 to UTF-8 offsets" {
+    try std.testing.expectEqual(@as(u32, 5), utf16Caret("a😀日", 3));
+    try std.testing.expectEqual(@as(u32, 1), utf16Caret("a😀日", 2));
+    try std.testing.expectEqual(@as(u32, 8), utf16Caret("a😀日", 4));
+}
+
+test "macOS Cocoa window, text composition, geometry and close integration" {
+    if (!config.macos_gui_tests) return error.SkipZigTest;
+    var backend = try MacosBackend.init();
+    backend.postInit();
+    defer backend.deinit();
+    // Service the real AppKit run loop and drawing before examining callbacks.
+    for (0..10) |_| {
+        while (backend.pollEvents()) |_| {}
+        posix.sleep(10 * std.time.ns_per_ms);
+    }
+    try std.testing.expectEqual(@as(u32, 80 * config.cell_width), backend.queryGeometry().w);
+    backend.updateTitle("zt Cocoa integration test");
+    const title = msgSend_id(backend.window, sel("title"));
+    try std.testing.expectEqualStrings("zt Cocoa integration test", std.mem.span(msgSend_cstr(title, sel("UTF8String")).?));
+
+    const range: NSRange = .{ .location = 0, .length = 0 };
+    ztInsertText(backend.view, sel("insertText:replacementRange:"), createNSString("ASCII 日本😀"), range);
+    _ = backend.popEvent(); // Cleared preedit
+    const text = backend.popEvent().?.text;
+    try std.testing.expectEqualStrings("ASCII 日本😀", text.slice());
+    ztSetMarkedText(backend.view, sel("setMarkedText:selectedRange:replacementRange:"), createNSString("a😀日"), .{ .location = 3, .length = 0 }, range);
+    const preedit = backend.popEvent().?.preedit;
+    try std.testing.expect(preedit.active);
+    try std.testing.expectEqual(@as(u32, 5), preedit.caret);
+    try std.testing.expectEqual(@as(u64, 4), ztMarkedRange(backend.view, sel("markedRange")).length);
+    backend.updateImeCursorPos(config.cell_width, config.cell_height);
+    const candidate = ztFirstRect(backend.view, sel("firstRectForCharacterRange:actualRange:"), range, null);
+    try std.testing.expect(candidate.size.width > 0 and std.math.isFinite(candidate.origin.x));
+    ztUnmarkText(backend.view, sel("unmarkText"));
+    try std.testing.expect(!backend.popEvent().?.preedit.active);
+    try backend.resize(100 * config.cell_width, 30 * config.cell_height);
+    try std.testing.expectEqual(@as(usize, backend.stride) * backend.height, backend.buffer.len);
+    backend.markDirtyRows(0, backend.height);
+    backend.present();
+    msgSend_void(backend.view, sel("displayIfNeeded"));
+    try std.testing.expectEqual(NO, ztWindowShouldClose(backend.view, sel("windowShouldClose:"), backend.window));
+    try std.testing.expect(backend.popEvent().? == .close);
+
+    // Construct actual NSEvents without requiring Accessibility permissions.
+    const key_event: *const fn (id, SEL, u64, CGPoint, u64, f64, i64, ?id, id, id, BOOL, u16) callconv(.c) id = @ptrCast(&objc_msgSend);
+    const characters = createNSString("c");
+    const event = key_event(cls("NSEvent"), sel("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:"), 10, .{ .x = 0, .y = 0 }, NSEventModifierFlagControl, 0, 0, null, characters, characters, NO, 0x08);
+    ztKeyDown(backend.view, sel("keyDown:"), event);
+    const key = backend.popEvent().?.key;
+    try std.testing.expectEqual(input_mod.KEY.C, key.keycode);
+    try std.testing.expect(key.modifiers.ctrl);
+    const copy_event = key_event(cls("NSEvent"), sel("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:"), 10, .{ .x = 0, .y = 0 }, NSEventModifierFlagCommand, 0, 0, null, characters, characters, NO, 0x08);
+    const menu = msgSend_id(backend.app, sel("mainMenu"));
+    try std.testing.expect(msgSend_bool(menu, sel("performKeyEquivalent:"), copy_event));
+    try std.testing.expect(backend.popEvent().? == .copy_selection);
+
+    // Large pastes must survive in full, including a multibyte final character.
+    const large = try std.testing.allocator.allocSentinel(u8, 20003, 0);
+    defer std.testing.allocator.free(large);
+    @memset(large[0..20000], 'x');
+    @memcpy(large[20000..20003], "日");
+    queuePaste(&backend, createNSString(large));
+    const paste = backend.popEvent().?.paste;
+    try std.testing.expectEqualStrings(large, paste.slice());
 }
