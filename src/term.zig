@@ -297,7 +297,7 @@ pub const Term = struct {
     alt_has_wide_chars: bool = false,
     alt_has_ul_hl_cells: bool = false,
 
-    pub fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
+    pub noinline fn init(allocator: Allocator, cols: u32, rows: u32) !Self {
         const total = @as(usize, cols) * @as(usize, rows);
         const cells = try allocator.alloc(Cell, total);
         @memset(cells, Cell{});

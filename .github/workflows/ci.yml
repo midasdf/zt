@@ -74,6 +74,16 @@ jobs:
       - name: Test macOS multi-instance launch
         run: python3 tests/qa/08-macos-multi-instance.py
 
+      - name: Upload macOS startup diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-startup-${{ matrix.arch }}
+          path: |
+            zig-out/bin/zt
+            ~/Library/Logs/DiagnosticReports/zt*.ips
+          retention-days: 7
+
   security-audit:
     runs-on: ubuntu-24.04
     steps:
