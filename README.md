@@ -168,6 +168,7 @@ zig build test -Dmacos_gui_tests=true
 ```
 
 `Cmd+N` (File → New Window) opens a new terminal with its own process and shell.
+You can also right-click the running app's Dock icon and choose **New Window**.
 Opening `zt.app` again from Finder, the Dock, or `open zig-out/zt.app` also opens a
 new terminal instead of only activating the existing one. `open -n zig-out/zt.app`
 explicitly launches another instance. Closing one terminal does not close the others;

@@ -17,6 +17,9 @@ Intel runtime checks run in CI. Full manual checks below remain to be completed.
   each action opens exactly one new terminal without replacing existing sessions.
 - Use File → New Window and Cmd+N in both a bundle and the standalone CLI binary;
   confirm independent shells. Close one window and check the others still work.
+- Right-click the running app's Dock icon and choose New Window; confirm exactly
+  one new terminal opens, including when another app is focused. Existing sessions
+  must remain intact, and closing the new terminal must not close the others.
 - Run `open -n zig-out/zt.app`; confirm exactly one additional instance appears.
 - Type ASCII, shifted punctuation, and Japanese keyboard-layout punctuation.
 - Check Enter, Tab, Backspace, arrows, Ctrl+C, Ctrl+D, and Option+letter.

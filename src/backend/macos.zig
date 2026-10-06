@@ -760,6 +760,7 @@ fn registerZTViewClass() ?id {
         _ = class_addProtocol(new_class, proto);
     }
     _ = class_addMethod(new_class, sel("applicationShouldHandleReopen:hasVisibleWindows:"), @ptrCast(&ztApplicationShouldHandleReopen), "c@:@c");
+    _ = class_addMethod(new_class, sel("applicationDockMenu:"), @ptrCast(&ztApplicationDockMenu), "@@:@");
 
     // --- NSWindowDelegate ---
     _ = class_addMethod(new_class, sel("windowShouldClose:"), @ptrCast(@constCast(&ztWindowShouldClose)), "c@:@");
@@ -819,6 +820,14 @@ fn ztApplicationShouldHandleReopen(view: id, _: SEL, _: id, _: BOOL) callconv(.c
     // Request a fresh terminal even if this instance already has a visible window.
     ztNewWindow(view, sel("ztNewWindow:"), null);
     return NO; // We handle reopening; suppress AppKit's default behavior.
+}
+
+fn ztApplicationDockMenu(view: id, _: SEL, _: id) callconv(.c) id {
+    // AppKit asks for this menu when the running app's Dock icon is right-clicked.
+    // Use an explicit target so the action also works while zt is unfocused.
+    const menu = msgSend_id(msgSend_id(cls("NSMenu"), sel("alloc")), sel("init"));
+    msgSend_void_id(menu, sel("addItem:"), menuItem("New Window", sel("ztNewWindow:"), "", view));
+    return msgSend_id(menu, sel("autorelease"));
 }
 
 fn ztCopy(view: id, _: SEL, _: ?id) callconv(.c) void {
@@ -1396,6 +1405,25 @@ test "macOS Cocoa window, text composition, geometry and close integration" {
         try std.testing.expect(backend.popEvent().? == .new_window);
         try std.testing.expect(backend.popEvent() == null);
     }
+
+    // Ask the registered delegate for its real Dock menu, then invoke the menu
+    // item through AppKit. This must queue one request without closing the window.
+    const delegate = msgSend_id(backend.app, sel("delegate"));
+    try std.testing.expect(msgSend_bool(delegate, sel("respondsToSelector:"), sel("applicationDockMenu:")));
+    const dock_menu = msgSend_id_id(delegate, sel("applicationDockMenu:"), backend.app);
+    try std.testing.expectEqual(@as(u64, 1), msgSend_u64(dock_menu, sel("numberOfItems")));
+    const item_at_index: *const fn (id, SEL, NSInteger) callconv(.c) id = @ptrCast(&objc_msgSend);
+    const dock_item = item_at_index(dock_menu, sel("itemAtIndex:"), 0);
+    try std.testing.expectEqualStrings("New Window", std.mem.span(msgSend_cstr(msgSend_id(dock_item, sel("title")), sel("UTF8String")).?));
+    try std.testing.expectEqual(backend.view, msgSend_id(dock_item, sel("target")));
+    try std.testing.expectEqual(sel("ztNewWindow:"), msgSend_id(dock_item, sel("action")));
+    try std.testing.expectEqualStrings("", std.mem.span(msgSend_cstr(msgSend_id(dock_item, sel("keyEquivalent")), sel("UTF8String")).?));
+    msgSend_void(dock_menu, sel("update"));
+    const is_enabled: *const fn (id, SEL) callconv(.c) BOOL = @ptrCast(&objc_msgSend);
+    try std.testing.expectEqual(YES, is_enabled(dock_item, sel("isEnabled")));
+    msgSend_void_i64(dock_menu, sel("performActionForItemAtIndex:"), 0);
+    try std.testing.expect(backend.popEvent().? == .new_window);
+    try std.testing.expect(backend.popEvent() == null);
 
     const mouse_event: *const fn (id, SEL, u64, CGPoint, u64, f64, i64, ?id, i64, i64, f32) callconv(.c) id = @ptrCast(&objc_msgSend);
     const drag = mouse_event(cls("NSEvent"), sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"), 6, .{ .x = 10, .y = 10 }, 0, 0, @intCast(msgSend_u64(backend.window, sel("windowNumber"))), null, 1, 1, 1);
