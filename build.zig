@@ -3,7 +3,12 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{
         .default_target = if (@import("builtin").os.tag == .macos)
-            .{ .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } } }
+            .{
+                // Release binaries must not depend on the build machine's CPU
+                // extensions, especially on virtualized Intel macOS runners.
+                .cpu_model = .baseline,
+                .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } },
+            }
         else
             .{},
     });

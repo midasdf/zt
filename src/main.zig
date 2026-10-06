@@ -1201,10 +1201,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
     const allocator = if (builtin.mode == .Debug)
         gpa.allocator()
-    else if (is_macos and builtin.cpu.arch == .x86_64)
-        // Intel macOS release builds crash in the libc-backed bitset startup
-        // allocation path. Use the page allocator for terminal-owned storage.
-        std.heap.page_allocator
     else if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos)
         std.heap.c_allocator
     else
