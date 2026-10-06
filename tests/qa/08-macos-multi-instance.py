@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise LaunchServices reopen without Accessibility or keyboard automation."""
 
+import ctypes
 import os
 from pathlib import Path
 import plistlib
@@ -12,16 +13,26 @@ import time
 import uuid
 
 
+libproc = ctypes.CDLL("/usr/lib/libproc.dylib") if sys.platform == "darwin" else None
+if libproc is not None:
+    libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    libproc.proc_pidpath.restype = ctypes.c_int
+
+
 def processes(executable):
-    output = subprocess.check_output(
-        ["ps", "-axo", "pid=,ppid=,command="], text=True
-    )
-    rows = [line.strip().split(None, 2) for line in output.splitlines()]
-    return {
-        int(pid): int(ppid)
-        for pid, ppid, command in rows
-        if command == str(executable) or command.startswith(str(executable) + " ")
-    }
+    # LaunchServices does not always use the full path as argv[0]. Query the
+    # kernel's executable path rather than matching a truncated ps command line.
+    if libproc is None:
+        raise RuntimeError("Process inspection requires macOS")
+    output = subprocess.check_output(["ps", "-axo", "pid=,ppid="], text=True)
+    result = {}
+    path = ctypes.create_string_buffer(4096)  # PROC_PIDPATHINFO_MAXSIZE
+    for line in output.splitlines():
+        pid, ppid = map(int, line.split())
+        if libproc.proc_pidpath(pid, path, len(path)) > 0:
+            if Path(os.fsdecode(path.value)).resolve() == executable:
+                result[pid] = ppid
+    return result
 
 
 def wait_for_count(executable, count):
@@ -36,7 +47,7 @@ def wait_for_count(executable, count):
 
 def shell_children(pids):
     output = subprocess.check_output(
-        ["ps", "-axo", "pid=,ppid=,comm="], text=True
+        ["ps", "-ww", "-axo", "pid=,ppid=,comm="], text=True
     )
     children = {}
     for line in output.splitlines():
@@ -98,11 +109,13 @@ def main():
             plistlib.dump(info, file)
         subprocess.run(["codesign", "--force", "--sign", "-", str(bundle)], check=True)
         executable = (bundle / "Contents/MacOS/zt").resolve()
+        launch_log = Path(tmp) / "launch stderr"
         try:
             marker = Path(tmp) / "command starts"
             command = 'printf "started\\n" >> "$1"; while :; do /bin/sleep 1; done'
             subprocess.run(
-                ["open", "-n", str(bundle), "--args", "-e", "/bin/sh", "-c",
+                ["open", "-n", "--stderr", str(launch_log), str(bundle),
+                 "--args", "-e", "/bin/sh", "-c",
                  command, "zt-reopen-qa", str(marker)],
                 check=True,
             )
@@ -133,6 +146,10 @@ def main():
             assert remaining < explicit, "open -n failed to create an independent instance"
             check_shells(explicit)
             print("PASS: initial launch, repeated reopen, fresh shells, independent close, open -n")
+        except Exception:
+            if launch_log.exists():
+                print("Application stderr:\n" + launch_log.read_text(errors="replace")[-8192:], file=sys.stderr)
+            raise
         finally:
             cleanup(executable)
 

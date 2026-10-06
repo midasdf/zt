@@ -2,12 +2,12 @@
 
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/Platform-macOS_14+-black?logo=apple&logoColor=white)](https://github.com/midasdf/zt/releases/tag/v0.10.0)
+[![macOS](https://img.shields.io/badge/Platform-macOS_14+-black?logo=apple&logoColor=white)](https://github.com/midasdf/zt/releases/tag/v0.10.1)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
 A small terminal emulator for **macOS and Linux**, written in Zig. Native Cocoa/AppKit on Mac; framebuffer, X11 (XCB + SHM), and Wayland (pure Zig wire protocol, no libwayland) on Linux. No GPU required.
 
-**New in 0.10.0: native Mac support** for Apple Silicon and Intel on macOS 14+. Download a Finder-launchable `zt.app` from the [0.10.0 release](https://github.com/midasdf/zt/releases/tag/v0.10.0), or [build with Homebrew](#macos-backend).
+**New in 0.10.1: multiple Mac terminals** — open a new window with Cmd+N, the Dock's right-click menu, or by opening `zt.app` again. Native Mac support covers Apple Silicon and Intel on macOS 14+. Download a Finder-launchable `zt.app` from the [0.10.1 release](https://github.com/midasdf/zt/releases/tag/v0.10.1), or [build with Homebrew](#macos-backend).
 
 ![Image](https://github.com/user-attachments/assets/01ab9a42-2efe-41f7-b123-e7312dc5b8d7)
 
