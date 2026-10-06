@@ -71,6 +71,9 @@ jobs:
           plutil -lint zig-out/zt.app/Contents/Info.plist
           codesign --verify --deep --strict zig-out/zt.app
 
+      - name: Test macOS multi-instance launch
+        run: python3 tests/qa/08-macos-multi-instance.py
+
   security-audit:
     runs-on: ubuntu-24.04
     steps:

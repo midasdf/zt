@@ -256,6 +256,7 @@ pub const Event = union(enum) {
     preedit: PreeditEvent,
     mouse: MouseEvent,
     copy_selection: void,
+    new_window: void,
     paste: PasteEvent,
     resize: ResizeEvent,
     expose: void,
@@ -448,6 +449,7 @@ pub const MacosBackend = struct {
         msgSend_void_bool(window, sel("setReleasedWhenClosed:"), NO);
         msgSend_void_bool(window, sel("setAcceptsMouseMovedEvents:"), YES);
         msgSend_void_id(window, sel("setDelegate:"), view);
+        msgSend_void_id(app, sel("setDelegate:"), view);
         installMenu(app, view);
 
         // 9. Set window title
@@ -494,6 +496,7 @@ pub const MacosBackend = struct {
 
     pub fn deinit(self: *Self) void {
         self.paste_buf_data.deinit(std.heap.c_allocator);
+        msgSend_void_optid(self.app, sel("setDelegate:"), null);
         msgSend_void_optid(self.app, sel("setMainMenu:"), null);
         posix.close(self.wakeup_read_fd);
         posix.close(self.wakeup_write_fd);
@@ -581,6 +584,42 @@ pub const MacosBackend = struct {
         var buf: [512]u8 = undefined;
         const text = std.fmt.bufPrintZ(&buf, "{s}", .{title}) catch return;
         msgSend_void_id(self.window, sel("setTitle:"), createNSString(text));
+    }
+
+    /// Each window owns a separate process/PTY. Do not fork a live Cocoa app or
+    /// reuse its command-line arguments: a new window should start a fresh shell.
+    pub fn openNewWindow(_: *Self) void {
+        const pool = msgSend_id(msgSend_id(cls("NSAutoreleasePool"), sel("alloc")), sel("init"));
+        defer msgSend_void(pool, sel("drain"));
+        const bundle = msgSend_id(cls("NSBundle"), sel("mainBundle"));
+        const bundle_path = msgSend_id(bundle, sel("bundlePath"));
+        const path = msgSend_cstr(bundle_path, sel("UTF8String")) orelse return;
+        if (std.mem.endsWith(u8, std.mem.span(path), ".app")) {
+            const configuration = msgSend_id(cls("NSWorkspaceOpenConfiguration"), sel("configuration"));
+            // Without this, LaunchServices sends another reopen to this process
+            // instead of creating a new one, recursively requesting new windows.
+            msgSend_void_bool(configuration, sel("setCreatesNewApplicationInstance:"), YES);
+            const workspace = msgSend_id(cls("NSWorkspace"), sel("sharedWorkspace"));
+            const open: *const fn (id, SEL, id, id, ?*const anyopaque) callconv(.c) void = @ptrCast(&objc_msgSend);
+            open(workspace, sel("openApplicationAtURL:configuration:completionHandler:"), msgSend_id(bundle, sel("bundleURL")), configuration, null);
+        } else {
+            // Standalone CLI binaries have no .app for LaunchServices. NSTask
+            // spawns the same executable safely and preserves the caller's CWD.
+            // Exited children are reaped by the main loop's SIGCHLD handler.
+            const task = msgSend_id(msgSend_id(cls("NSTask"), sel("alloc")), sel("init"));
+            defer msgSend_void(task, sel("release"));
+            msgSend_void_id(task, sel("setExecutableURL:"), msgSend_id(bundle, sel("executableURL")));
+            msgSend_void_id(task, sel("setArguments:"), msgSend_id(cls("NSArray"), sel("array")));
+            const launch: *const fn (id, SEL, *?id) callconv(.c) BOOL = @ptrCast(&objc_msgSend);
+            var launch_error: ?id = null;
+            if (launch(task, sel("launchAndReturnError:"), &launch_error) == NO) {
+                const description = if (launch_error) |err|
+                    msgSend_cstr(msgSend_id(err, sel("localizedDescription")), sel("UTF8String")) orelse "unknown error"
+                else
+                    "unknown error";
+                std.log.err("could not open a new zt window: {s}", .{std.mem.span(description)});
+            }
+        }
     }
 
     pub fn updateImeCursorPos(self: *Self, x: u32, y: u32) void {
@@ -678,6 +717,7 @@ fn registerZTViewClass() ?id {
     _ = class_addMethod(new_class, sel("acceptsFirstResponder"), @ptrCast(@constCast(&ztAcceptsFirstResponder)), "c@:");
     _ = class_addMethod(new_class, sel("canBecomeKeyView"), @ptrCast(@constCast(&ztCanBecomeKeyView)), "c@:");
     _ = class_addMethod(new_class, sel("ztRequestClose:"), @ptrCast(&ztRequestClose), "v@:@");
+    _ = class_addMethod(new_class, sel("ztNewWindow:"), @ptrCast(&ztNewWindow), "v@:@");
     _ = class_addMethod(new_class, sel("copy:"), @ptrCast(&ztCopy), "v@:@");
     _ = class_addMethod(new_class, sel("paste:"), @ptrCast(&ztPaste), "v@:@");
 
@@ -714,6 +754,12 @@ fn registerZTViewClass() ?id {
     _ = class_addMethod(new_class, sel("attributedSubstringForProposedRange:actualRange:"), @ptrCast(@constCast(&ztAttributedSubstring)), "@@:{_NSRange=QQ}^{_NSRange=QQ}");
     _ = class_addMethod(new_class, sel("markedRange"), @ptrCast(@constCast(&ztMarkedRange)), "{_NSRange=QQ}@:");
     _ = class_addMethod(new_class, sel("selectedRange"), @ptrCast(@constCast(&ztSelectedRange)), "{_NSRange=QQ}@:");
+
+    // --- NSApplicationDelegate ---
+    if (objc_getProtocol("NSApplicationDelegate")) |proto| {
+        _ = class_addProtocol(new_class, proto);
+    }
+    _ = class_addMethod(new_class, sel("applicationShouldHandleReopen:hasVisibleWindows:"), @ptrCast(&ztApplicationShouldHandleReopen), "c@:@c");
 
     // --- NSWindowDelegate ---
     _ = class_addMethod(new_class, sel("windowShouldClose:"), @ptrCast(@constCast(&ztWindowShouldClose)), "c@:@");
@@ -764,6 +810,17 @@ fn ztRequestClose(view: id, _: SEL, _: ?id) callconv(.c) void {
     if (MacosBackend.getBackendFromView(view)) |backend| backend.pushEvent(.close);
 }
 
+fn ztNewWindow(view: id, _: SEL, _: ?id) callconv(.c) void {
+    if (MacosBackend.getBackendFromView(view)) |backend| backend.pushEvent(.new_window);
+}
+
+fn ztApplicationShouldHandleReopen(view: id, _: SEL, _: id, _: BOOL) callconv(.c) BOOL {
+    // Finder, Dock and `open zt.app` reuse a running application by default.
+    // Request a fresh terminal even if this instance already has a visible window.
+    ztNewWindow(view, sel("ztNewWindow:"), null);
+    return NO; // We handle reopening; suppress AppKit's default behavior.
+}
+
 fn ztCopy(view: id, _: SEL, _: ?id) callconv(.c) void {
     if (MacosBackend.getBackendFromView(view)) |backend| backend.pushEvent(.copy_selection);
 }
@@ -786,9 +843,15 @@ fn installMenu(app: id, view: id) void {
     defer msgSend_void(app_menu, sel("release"));
     const app_item = menuItem("zt", sel("ztRequestClose:"), "", view);
     msgSend_void_id(app_item, sel("setSubmenu:"), app_menu);
-    msgSend_void_id(app_menu, sel("addItem:"), menuItem("Close Window", sel("ztRequestClose:"), "w", view));
     msgSend_void_id(app_menu, sel("addItem:"), menuItem("Quit zt", sel("ztRequestClose:"), "q", view));
     msgSend_void_id(menu, sel("addItem:"), app_item);
+    const file_menu = msgSend_id(msgSend_id(cls("NSMenu"), sel("alloc")), sel("init"));
+    defer msgSend_void(file_menu, sel("release"));
+    const file_item = menuItem("File", sel("ztNewWindow:"), "", view);
+    msgSend_void_id(file_item, sel("setSubmenu:"), file_menu);
+    msgSend_void_id(file_menu, sel("addItem:"), menuItem("New Window", sel("ztNewWindow:"), "n", view));
+    msgSend_void_id(file_menu, sel("addItem:"), menuItem("Close Window", sel("ztRequestClose:"), "w", view));
+    msgSend_void_id(menu, sel("addItem:"), file_item);
     const edit_menu = msgSend_id(msgSend_id(cls("NSMenu"), sel("alloc")), sel("init"));
     defer msgSend_void(edit_menu, sel("release"));
     const edit_item = menuItem("Edit", sel("copy:"), "", view);
@@ -814,6 +877,10 @@ fn ztKeyDown(self_view: id, _: SEL, ns_event: id) callconv(.c) void {
     // Handle Cmd+key shortcuts
     if (has_cmd) {
         switch (keycode) {
+            0x2D => { // Cmd+N
+                backend.pushEvent(.new_window);
+                return;
+            },
             0x0C => { // Cmd+Q
                 backend.pushEvent(.close);
                 return;
@@ -1309,6 +1376,26 @@ test "macOS Cocoa window, text composition, geometry and close integration" {
     const menu = msgSend_id(backend.app, sel("mainMenu"));
     try std.testing.expect(msgSend_bool(menu, sel("performKeyEquivalent:"), copy_event));
     try std.testing.expect(backend.popEvent().? == .copy_selection);
+
+    // Menu shortcuts and the fallback key path request a window without
+    // spawning the test binary or forwarding Cmd+N into the current PTY.
+    const new_characters = createNSString("n");
+    const new_event = key_event(cls("NSEvent"), sel("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:"), 10, .{ .x = 0, .y = 0 }, NSEventModifierFlagCommand, 0, 0, null, new_characters, new_characters, NO, 0x2D);
+    try std.testing.expect(msgSend_bool(menu, sel("performKeyEquivalent:"), new_event));
+    try std.testing.expect(backend.popEvent().? == .new_window);
+    ztKeyDown(backend.view, sel("keyDown:"), new_event);
+    try std.testing.expect(backend.popEvent().? == .new_window);
+    try std.testing.expect(backend.popEvent() == null);
+
+    // Reopen is registered on the real application delegate, regardless of
+    // whether its window is visible (e.g. minimized).
+    try std.testing.expectEqual(backend.view, msgSend_id(backend.app, sel("delegate")));
+    const reopen: *const fn (id, SEL, id, BOOL) callconv(.c) BOOL = @ptrCast(&objc_msgSend);
+    for ([_]BOOL{ YES, NO }) |visible| {
+        try std.testing.expectEqual(NO, reopen(backend.view, sel("applicationShouldHandleReopen:hasVisibleWindows:"), backend.app, visible));
+        try std.testing.expect(backend.popEvent().? == .new_window);
+        try std.testing.expect(backend.popEvent() == null);
+    }
 
     const mouse_event: *const fn (id, SEL, u64, CGPoint, u64, f64, i64, ?id, i64, i64, f32) callconv(.c) id = @ptrCast(&objc_msgSend);
     const drag = mouse_event(cls("NSEvent"), sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"), 6, .{ .x = 10, .y = 10 }, 0, 0, @intCast(msgSend_u64(backend.window, sel("windowNumber"))), null, 1, 1, 1);

@@ -53,6 +53,7 @@ pub const Event = union(enum) {
     focus_out: void,
     mouse: MouseEvent,
     copy_selection: void,
+    new_window: void, // Requested by the macOS backend; shared dispatcher event.
 };
 
 pub const PasteEvent = struct {

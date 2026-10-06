@@ -4,12 +4,20 @@ Run this checklist on a Mac with a desktop session after `zig build test`.
 Run `zig build test -Dmacos_gui_tests=true` to also exercise real Cocoa window
 creation, drawing, input callbacks, candidate geometry, large pastes, and closing.
 These checks do not simulate physical keyboard input or IME candidate selection.
+After a release build, run `python3 tests/qa/08-macos-multi-instance.py` to verify
+repeated LaunchServices reopen, independent shells/closing, and `open -n`. This
+uses a temporary app with an isolated bundle ID, leaving existing zt sessions alone.
 
 Validated locally on Apple Silicon: release build, PTY/unit tests, Cocoa
 integration tests, app signature and Finder launch. Intel cross-build also passes;
 Intel runtime checks run in CI. Full manual checks below remain to be completed.
 
 - Launch `./zig-out/bin/zt` and `open zig-out/zt.app`; confirm a shell prompt appears.
+- Open the bundle again from Finder/Dock and repeat `open zig-out/zt.app`; confirm
+  each action opens exactly one new terminal without replacing existing sessions.
+- Use File → New Window and Cmd+N in both a bundle and the standalone CLI binary;
+  confirm independent shells. Close one window and check the others still work.
+- Run `open -n zig-out/zt.app`; confirm exactly one additional instance appears.
 - Type ASCII, shifted punctuation, and Japanese keyboard-layout punctuation.
 - Check Enter, Tab, Backspace, arrows, Ctrl+C, Ctrl+D, and Option+letter.
 - Switch to Japanese IME, compose text, move the candidate selection with arrows,

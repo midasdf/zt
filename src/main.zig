@@ -937,6 +937,9 @@ fn handleBackendEvent(
                 }
             }
         },
+        .new_window => {
+            if (config.backend == .macos) backend.openNewWindow();
+        },
         .close => {
             return false;
         },
