@@ -36,7 +36,8 @@ def processes(executable):
 
 
 def wait_for_count(executable, count):
-    deadline = time.monotonic() + 15
+    # LaunchServices can take longer on shared Intel CI runners.
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         pids = processes(executable)
         if len(pids) == count:
@@ -59,7 +60,7 @@ def shell_children(pids):
 
 
 def check_shells(pids):
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         children = shell_children(pids)
         if set(children) == pids:
@@ -149,6 +150,20 @@ def main():
         except Exception:
             if launch_log.exists():
                 print("Application stderr:\n" + launch_log.read_text(errors="replace")[-8192:], file=sys.stderr)
+            # Include executable paths, not potentially sensitive arguments.
+            output = subprocess.check_output(["ps", "-axo", "pid="], text=True)
+            path = ctypes.create_string_buffer(4096)
+            for pid in map(int, output.split()):
+                if libproc.proc_pidpath(pid, path, len(path)) > 0:
+                    candidate = Path(os.fsdecode(path.value))
+                    if candidate.name == "zt":
+                        print(f"Running zt: pid={pid}, executable={candidate}", file=sys.stderr)
+            reports = sorted(
+                (Path.home() / "Library/Logs/DiagnosticReports").glob("zt*.ips"),
+                key=lambda report: report.stat().st_mtime,
+            )
+            if reports:
+                print(reports[-1].read_text(errors="replace")[:20000], file=sys.stderr)
             raise
         finally:
             cleanup(executable)
