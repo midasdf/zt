@@ -183,6 +183,9 @@ pub fn build(b: *std.Build) void {
         if (sysroot_inc) |p| c_xkb_wl.addIncludePath(p);
         exe_mod.addImport("c_xkb", c_xkb_wl.createModule());
     } else if (is_macos) {
+        // Unsigned Intel Mach-O files need space for codesign to append its
+        // LC_CODE_SIGNATURE load command without overwriting the first code bytes.
+        exe.headerpad_size = 0x1000;
         exe_mod.linkFramework("Cocoa", .{});
         exe_mod.linkFramework("CoreGraphics", .{});
         exe_mod.link_libc = true;

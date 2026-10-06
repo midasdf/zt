@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,29 @@ libproc = ctypes.CDLL("/usr/lib/libproc.dylib") if sys.platform == "darwin" else
 if libproc is not None:
     libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     libproc.proc_pidpath.restype = ctypes.c_int
+
+
+def macho_text(executable):
+    """Read a thin 64-bit Mach-O's code section, excluding mutable signing data."""
+    data = executable.read_bytes()
+    magic, _, _, _, command_count = struct.unpack_from("<5I", data)
+    if magic != 0xFEEDFACF:
+        raise AssertionError("expected a thin 64-bit Mach-O executable")
+    offset = 32
+    for _ in range(command_count):
+        command, size = struct.unpack_from("<II", data, offset)
+        if command == 0x19:  # LC_SEGMENT_64
+            section_count = struct.unpack_from("<I", data, offset + 64)[0]
+            for index in range(section_count):
+                section = offset + 72 + index * 80
+                name = data[section:section + 16].rstrip(b"\0")
+                segment = data[section + 16:section + 32].rstrip(b"\0")
+                if name == b"__text" and segment == b"__TEXT":
+                    text_size = struct.unpack_from("<Q", data, section + 40)[0]
+                    text_offset = struct.unpack_from("<I", data, section + 48)[0]
+                    return data[text_offset:text_offset + text_size]
+        offset += size
+    raise AssertionError("Mach-O executable has no code section")
 
 
 def processes(executable):
@@ -93,6 +117,7 @@ def main():
     binary = Path(
         sys.argv[1] if len(sys.argv) > 1 else root / "zig-out/bin/zt"
     ).resolve()
+    original_text = macho_text(binary)
     # An isolated bundle ID avoids reopening or terminating the user's own zt.
     # Spaces in the path also exercise launches without shell interpolation.
     with tempfile.TemporaryDirectory(prefix="zt multi instance ") as tmp:
@@ -102,6 +127,8 @@ def main():
             cwd=root,
             check=True,
         )
+        executable = (bundle / "Contents/MacOS/zt").resolve()
+        assert macho_text(executable) == original_text, "app signing overwrote executable code"
         info_path = bundle / "Contents/Info.plist"
         with info_path.open("rb") as file:
             info = plistlib.load(file)
@@ -109,7 +136,7 @@ def main():
         with info_path.open("wb") as file:
             plistlib.dump(info, file)
         subprocess.run(["codesign", "--force", "--sign", "-", str(bundle)], check=True)
-        executable = (bundle / "Contents/MacOS/zt").resolve()
+        assert macho_text(executable) == original_text, "re-signing overwrote executable code"
         launch_log = Path(tmp) / "launch stderr"
         try:
             marker = Path(tmp) / "command starts"
