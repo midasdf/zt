@@ -11,8 +11,8 @@ ZT_RELEASE=/tmp/zt-release
 ZT_DEBUG_PREFIX=/tmp/zt-debug-prefix
 ZT_RELEASE_PREFIX=/tmp/zt-release-prefix
 if [ -z "${ZIG:-}" ]; then
-    if [ -x "$HOME/opt/zig-0.16.0/zig" ]; then
-        ZIG="$HOME/opt/zig-0.16.0/zig"
+    if [ -x "$HOME/opt/zig-0.17.0/zig" ]; then
+        ZIG="$HOME/opt/zig-0.17.0/zig"
     else
         ZIG=zig
     fi

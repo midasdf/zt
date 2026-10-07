@@ -344,8 +344,8 @@ test "Scrollback: pushRow stores cells and rowAt(0) returns newest" {
         .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' },
         .{ .char = 'D' }, .{ .char = 'E' },
     };
-    const empty_rgb = [_]?[3]u8{null} ** 5;
-    const empty_hl = [_]u16{0} ** 5;
+    const empty_rgb: [5]?[3]u8 = @splat(null);
+    const empty_hl: [5]u16 = @splat(0);
 
     sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl, true, true);
 
@@ -365,8 +365,8 @@ test "Scrollback: pushRow trims trailing default blanks for used_cols" {
         .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' },
         .{ .char = ' ' }, .{ .char = ' ' }, .{ .char = ' ' },
     };
-    const empty_rgb = [_]?[3]u8{null} ** 6;
-    const empty_hl = [_]u16{0} ** 6;
+    const empty_rgb: [6]?[3]u8 = @splat(null);
+    const empty_hl: [6]u16 = @splat(0);
 
     sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl, true, true);
     try testing.expectEqual(@as(u16, 3), sb.rowAt(0).used_cols);
@@ -377,22 +377,22 @@ test "Scrollback: pushRow detects truecolor in fg/bg/ul" {
     defer sb.deinit();
 
     const cells = [_]Cell{ .{ .char = 'X' }, .{ .char = 'Y' }, .{ .char = 'Z' } };
-    const empty_rgb = [_]?[3]u8{null} ** 3;
-    const empty_hl = [_]u16{0} ** 3;
+    const empty_rgb: [3]?[3]u8 = @splat(null);
+    const empty_hl: [3]u16 = @splat(0);
 
-    var fg = [_]?[3]u8{null} ** 3;
+    var fg: [3]?[3]u8 = @splat(null);
     fg[1] = .{ 200, 100, 50 };
     sb.pushRow(&cells, &fg, &empty_rgb, &empty_rgb, &empty_hl, true, true);
     try testing.expectEqual(true, sb.rowAt(0).has_truecolor);
 
     sb.clear();
-    var bg = [_]?[3]u8{null} ** 3;
+    var bg: [3]?[3]u8 = @splat(null);
     bg[2] = .{ 0, 0, 1 };
     sb.pushRow(&cells, &empty_rgb, &bg, &empty_rgb, &empty_hl, true, true);
     try testing.expectEqual(true, sb.rowAt(0).has_truecolor);
 
     sb.clear();
-    var u = [_]?[3]u8{null} ** 3;
+    var u: [3]?[3]u8 = @splat(null);
     u[0] = .{ 9, 9, 9 };
     sb.pushRow(&cells, &empty_rgb, &empty_rgb, &u, &empty_hl, true, true);
     try testing.expectEqual(true, sb.rowAt(0).has_truecolor);
@@ -438,8 +438,8 @@ test "Scrollback: resize shrinks rows and preserves leading content" {
         .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' },
         .{ .char = 'D' }, .{ .char = 'E' },
     };
-    const empty_rgb = [_]?[3]u8{null} ** 5;
-    const empty_hl = [_]u16{0} ** 5;
+    const empty_rgb: [5]?[3]u8 = @splat(null);
+    const empty_hl: [5]u16 = @splat(0);
     sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl, true, true);
 
     try sb.resize(3);
@@ -456,8 +456,8 @@ test "Scrollback: resize grows rows and pads with blanks" {
     defer sb.deinit();
 
     const cells = [_]Cell{ .{ .char = 'X' }, .{ .char = 'Y' }, .{ .char = 'Z' } };
-    const empty_rgb = [_]?[3]u8{null} ** 3;
-    const empty_hl = [_]u16{0} ** 3;
+    const empty_rgb: [3]?[3]u8 = @splat(null);
+    const empty_hl: [3]u16 = @splat(0);
     sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl, true, true);
 
     try sb.resize(6);
@@ -480,8 +480,8 @@ test "Scrollback: resize fixes wide-char left half stranded at new last column" 
         .{ .char = ' ', .attrs = .{ .wide_dummy = true } },
         .{ .char = 'B' },
     };
-    const empty_rgb = [_]?[3]u8{null} ** 4;
-    const empty_hl = [_]u16{0} ** 4;
+    const empty_rgb: [4]?[3]u8 = @splat(null);
+    const empty_hl: [4]u16 = @splat(0);
     sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl, true, true);
 
     // Shrink to 2 cols — the wide char's right half (col 2) is dropped, so
@@ -498,8 +498,8 @@ test "Scrollback: resize is no-op when new_cols == old_cols" {
     defer sb.deinit();
 
     const cells = [_]Cell{ .{ .char = 'A' }, .{ .char = 'B' }, .{ .char = 'C' }, .{ .char = 'D' } };
-    const empty_rgb = [_]?[3]u8{null} ** 4;
-    const empty_hl = [_]u16{0} ** 4;
+    const empty_rgb: [4]?[3]u8 = @splat(null);
+    const empty_hl: [4]u16 = @splat(0);
     sb.pushRow(&cells, &empty_rgb, &empty_rgb, &empty_rgb, &empty_hl, true, true);
 
     try sb.resize(4);

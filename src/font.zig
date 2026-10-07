@@ -68,7 +68,7 @@ pub fn FontBlob(comptime blob: []const u8) type {
         // ASCII glyph cache: O(1) lookup for codepoints 0-127
         const ascii_cache: [128]?GlyphView = blk: {
             @setEvalBranchQuota(100_000);
-            var cache: [128]?GlyphView = .{null} ** 128;
+            var cache: [128]?GlyphView = @splat(null);
             for (0..128) |cp| {
                 cache[cp] = getGlyphSlow(@intCast(cp));
             }
@@ -84,9 +84,9 @@ pub fn FontBlob(comptime blob: []const u8) type {
             const S = struct {
                 const CACHE_SIZE: usize = 256;
                 // valid=false means empty slot (avoids confusion with codepoint 0)
-                var keys: [CACHE_SIZE]u21 = [_]u21{0} ** CACHE_SIZE;
-                var vals: [CACHE_SIZE]?GlyphView = [_]?GlyphView{null} ** CACHE_SIZE;
-                var valid: [CACHE_SIZE]bool = [_]bool{false} ** CACHE_SIZE;
+                var keys: [CACHE_SIZE]u21 = @splat(0);
+                var vals: [CACHE_SIZE]?GlyphView = @splat(null);
+                var valid: [CACHE_SIZE]bool = @splat(false);
             };
 
             // XOR folding: mix all 21 bits into low 8 bits to reduce collisions

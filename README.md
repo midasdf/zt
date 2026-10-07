@@ -1,13 +1,13 @@
 # zt — minimal terminal emulator in Zig
 
-[![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
+[![Zig](https://img.shields.io/badge/Zig-0.17.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/Platform-macOS_14+-black?logo=apple&logoColor=white)](https://github.com/midasdf/zt/releases/tag/v0.10.1)
+[![macOS](https://img.shields.io/badge/Platform-macOS_14+-black?logo=apple&logoColor=white)](https://github.com/midasdf/zt/releases/tag/v0.11.0)
 [![Linux](https://img.shields.io/badge/Platform-Linux-yellow?logo=linux&logoColor=white)](https://kernel.org)
 
 A small terminal emulator for **macOS and Linux**, written in Zig. Native Cocoa/AppKit on Mac; framebuffer, X11 (XCB + SHM), and Wayland (pure Zig wire protocol, no libwayland) on Linux. No GPU required.
 
-**New in 0.10.1: multiple Mac terminals** — open a new window with Cmd+N, the Dock's right-click menu, or by opening `zt.app` again. Native Mac support covers Apple Silicon and Intel on macOS 14+. Download a Finder-launchable `zt.app` from the [0.10.1 release](https://github.com/midasdf/zt/releases/tag/v0.10.1), or [build with Homebrew](#macos-backend).
+**New in 0.11.0: Zig 0.17 support** — source builds, font tools, CI, and release packaging now use Zig 0.17.0. Multiple Mac terminals remain supported: open a new window with Cmd+N, the Dock's right-click menu, or by opening `zt.app` again. Native Mac support covers Apple Silicon and Intel on macOS 14+. Download a Finder-launchable `zt.app` from the [0.11.0 release](https://github.com/midasdf/zt/releases/tag/v0.11.0), or [build with Homebrew](#macos-backend).
 
 ![Image](https://github.com/user-attachments/assets/01ab9a42-2efe-41f7-b123-e7312dc5b8d7)
 
@@ -53,7 +53,7 @@ Measured on Intel i5-12450H, 1 CPU core, X11 (:0, hardware GPU), `-Doptimize=Rel
 
 ## Build
 
-Requires Zig 0.16.0. Zig 0.17 changes the language and standard library and is not supported yet.
+Requires Zig 0.17.0. See the [migration notes](docs/zig-0.17-migration.md) for changes and verification results.
 
 |  | fbdev | X11 | Wayland |
 |---|---|---|---|
@@ -67,8 +67,8 @@ On macOS, download `zt-aarch64-macos.zip` for Apple Silicon or
 extract it, and open `zt.app`. To build from source:
 
 ```sh
-brew install zig@0.16
-export PATH="$(brew --prefix zig@0.16)/bin:$PATH"
+brew install zig
+zig version # must report 0.17.0
 zig build -Doptimize=ReleaseFast
 sh tools/package-macos.sh
 open zig-out/zt.app
@@ -140,12 +140,12 @@ Supported protocols: xdg-shell, wl_shm, text-input-v3 (IME), wl_data_device + pr
 
 Uses Cocoa/AppKit and CoreGraphics without X11 or third-party runtime libraries.
 Requires macOS 14 or later. The native macOS build selects the Cocoa backend and `/bin/zsh` automatically.
-Install Xcode Command Line Tools (`xcode-select --install`) and **Zig 0.16.0**.
-Install the pinned compiler with Homebrew:
+Install Xcode Command Line Tools (`xcode-select --install`) and **Zig 0.17.0**.
+Install the compiler with Homebrew (or download Zig 0.17.0 from [ziglang.org](https://ziglang.org/download/)):
 
 ```sh
-brew install zig@0.16
-export PATH="$(brew --prefix zig@0.16)/bin:$PATH"
+brew install zig
+zig version # must report 0.17.0
 ```
 
 ```sh

@@ -157,7 +157,7 @@ fn epollAdd(epoll_fd: i32, fd: posix.fd_t, tag: u32) !void {
 fn epollSetPtyEvents(epoll_fd: i32, pty_fd: posix.fd_t, want_write: bool) void {
     var ev = linux.epoll_event{
         .events = linux.EPOLL.IN | if (want_write) linux.EPOLL.OUT else @as(u32, 0),
-        .data = .{ .u32 = @intFromEnum(EpollTag.pty) },
+        .data = .{ .u32 = @backingInt(EpollTag.pty) },
     };
     _ = linux.epoll_ctl(epoll_fd, linux.EPOLL.CTL_MOD, pty_fd, &ev);
 }
@@ -190,7 +190,7 @@ fn kqueueAddFd(kq: i32, fd: posix.fd_t, tag: usize) !void {
 
 fn kqueueAddSignal(kq: i32, sig: std.c.SIG) !void {
     const changelist = [1]posix.Kevent{.{
-        .ident = @intFromEnum(sig),
+        .ident = @backingInt(sig),
         .filter = std.c.EVFILT.SIGNAL,
         .flags = std.c.EV.ADD,
         .fflags = 0,
@@ -220,7 +220,7 @@ fn kqueueSetPtyWrite(kq: i32, pty_fd: posix.fd_t, enable: bool) void {
         .flags = flags,
         .fflags = 0,
         .data = 0,
-        .udata = @intFromEnum(KqueueTag.pty),
+        .udata = @backingInt(KqueueTag.pty),
     }};
     _ = posix.kevent(kq, &changelist, &.{}, null) catch |err| {
         std.log.debug("kqueueSetPtyWrite failed: {}", .{err});
@@ -530,12 +530,12 @@ fn applyCursorBlinkTimerTick(
 // Signal handler
 // =============================================================================
 
-const SIG_CHLD: u32 = if (is_linux) @intFromEnum(linux.SIG.CHLD) else @intFromEnum(std.c.SIG.CHLD);
-const SIG_TERM: u32 = if (is_linux) @intFromEnum(linux.SIG.TERM) else @intFromEnum(std.c.SIG.TERM);
-const SIG_INT: u32 = if (is_linux) @intFromEnum(linux.SIG.INT) else @intFromEnum(std.c.SIG.INT);
-const SIG_HUP: u32 = if (is_linux) @intFromEnum(linux.SIG.HUP) else @intFromEnum(std.c.SIG.HUP);
-const SIG_USR1: u32 = if (is_linux) @intFromEnum(linux.SIG.USR1) else @intFromEnum(std.c.SIG.USR1);
-const SIG_USR2: u32 = if (is_linux) @intFromEnum(linux.SIG.USR2) else @intFromEnum(std.c.SIG.USR2);
+const SIG_CHLD: u32 = if (is_linux) @backingInt(linux.SIG.CHLD) else @backingInt(std.c.SIG.CHLD);
+const SIG_TERM: u32 = if (is_linux) @backingInt(linux.SIG.TERM) else @backingInt(std.c.SIG.TERM);
+const SIG_INT: u32 = if (is_linux) @backingInt(linux.SIG.INT) else @backingInt(std.c.SIG.INT);
+const SIG_HUP: u32 = if (is_linux) @backingInt(linux.SIG.HUP) else @backingInt(std.c.SIG.HUP);
+const SIG_USR1: u32 = if (is_linux) @backingInt(linux.SIG.USR1) else @backingInt(std.c.SIG.USR1);
+const SIG_USR2: u32 = if (is_linux) @backingInt(linux.SIG.USR2) else @backingInt(std.c.SIG.USR2);
 
 fn handleSignal(sig_fd: posix.fd_t, signo_override: ?u32, backend: *Backend) bool {
     const signo: u32 = signo_override orelse blk: {
@@ -635,24 +635,24 @@ fn dispatchClipboardCopy(data: []const u8) void {
         var wayland_env_buf: [128]u8 = undefined;
         var xdg_env_buf: [256]u8 = undefined;
         var xauth_env_buf: [256]u8 = undefined;
-        var clip_env: [8:null]?[*:0]const u8 = .{null} ** 8;
+        var clip_env: [8:null]?[*:0]const u8 = @splat(null);
         var ci: usize = 0;
         clip_env[ci] = "PATH=/usr/local/bin:/usr/bin:/bin";
         ci += 1;
         if (posix.getenv("DISPLAY")) |v| {
-            clip_env[ci] = (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{v}) catch null);
+            clip_env[ci] = (std.fmt.bufPrintSentinel(&display_env_buf, "DISPLAY={s}", .{v}, 0) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
         if (posix.getenv("XAUTHORITY")) |v| {
-            clip_env[ci] = (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{v}) catch null);
+            clip_env[ci] = (std.fmt.bufPrintSentinel(&xauth_env_buf, "XAUTHORITY={s}", .{v}, 0) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
         if (posix.getenv("WAYLAND_DISPLAY")) |v| {
-            clip_env[ci] = (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{v}) catch null);
+            clip_env[ci] = (std.fmt.bufPrintSentinel(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{v}, 0) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
         if (posix.getenv("XDG_RUNTIME_DIR")) |v| {
-            clip_env[ci] = (std.fmt.bufPrintZ(&xdg_env_buf, "XDG_RUNTIME_DIR={s}", .{v}) catch null);
+            clip_env[ci] = (std.fmt.bufPrintSentinel(&xdg_env_buf, "XDG_RUNTIME_DIR={s}", .{v}, 0) catch null);
             if (clip_env[ci] != null) ci += 1;
         }
         const clip_envp: [*:null]const ?[*:0]const u8 = &clip_env;
@@ -1193,13 +1193,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // plumbing it through every call.
     posix.environ = init.environ;
     // Debug: GPA for leak detection; Release: lightweight allocator
-    var gpa = if (builtin.mode == .Debug)
+    var gpa = if (builtin.mode == .debug)
         std.heap.DebugAllocator(.{}){}
     else {};
-    defer if (builtin.mode == .Debug) {
+    defer if (builtin.mode == .debug) {
         _ = gpa.deinit();
     };
-    const allocator = if (builtin.mode == .Debug)
+    const allocator = if (builtin.mode == .debug)
         gpa.allocator()
     else if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos)
         std.heap.c_allocator
@@ -1292,11 +1292,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer posix.close(evloop_fd);
 
     if (is_linux) {
-        try epollAdd(evloop_fd, pty.master_fd, @intFromEnum(EpollTag.pty));
-        try epollAdd(evloop_fd, sig_fd, @intFromEnum(EpollTag.signal));
-        try epollAdd(evloop_fd, timer_fd, @intFromEnum(EpollTag.timer));
+        try epollAdd(evloop_fd, pty.master_fd, @backingInt(EpollTag.pty));
+        try epollAdd(evloop_fd, sig_fd, @backingInt(EpollTag.signal));
+        try epollAdd(evloop_fd, timer_fd, @backingInt(EpollTag.timer));
         if (backend.getFd()) |fd| {
-            try epollAdd(evloop_fd, fd, @intFromEnum(EpollTag.backend));
+            try epollAdd(evloop_fd, fd, @backingInt(EpollTag.backend));
         }
         if (config.backend == .fbdev) {
             for (0..backend.evdev_count) |i| {
@@ -1304,14 +1304,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
             }
         }
     } else {
-        try kqueueAddFd(evloop_fd, pty.master_fd, @intFromEnum(KqueueTag.pty));
+        try kqueueAddFd(evloop_fd, pty.master_fd, @backingInt(KqueueTag.pty));
         try kqueueAddSignal(evloop_fd, std.c.SIG.CHLD);
         try kqueueAddSignal(evloop_fd, std.c.SIG.TERM);
         try kqueueAddSignal(evloop_fd, std.c.SIG.INT);
         try kqueueAddSignal(evloop_fd, std.c.SIG.HUP);
         try kqueueAddTimer(evloop_fd, KQUEUE_TIMER_IDENT, 500);
         if (backend.getFd()) |fd| {
-            try kqueueAddFd(evloop_fd, fd, @intFromEnum(KqueueTag.backend));
+            try kqueueAddFd(evloop_fd, fd, @backingInt(KqueueTag.backend));
         }
     }
 
@@ -1421,7 +1421,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             for (events[0..n]) |ev| {
                 switch (ev.data.u32) {
-                    @intFromEnum(EpollTag.pty) => {
+                    @backingInt(EpollTag.pty) => {
                         // Handle hangup/error when no EPOLLIN (child died)
                         if (ev.events & (linux.EPOLL.HUP | linux.EPOLL.ERR) != 0 and ev.events & linux.EPOLL.IN == 0) {
                             running = false;
@@ -1469,10 +1469,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                             }
                         }
                     },
-                    @intFromEnum(EpollTag.signal) => {
+                    @backingInt(EpollTag.signal) => {
                         running = handleSignal(sig_fd, null, &backend);
                     },
-                    @intFromEnum(EpollTag.timer) => {
+                    @backingInt(EpollTag.timer) => {
                         // Read timer to acknowledge
                         var exp: u64 = 0;
                         _ = posix.read(timer_fd, std.mem.asBytes(&exp)) catch {};
@@ -1485,7 +1485,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                             cursor_idle_timeout_ns,
                         );
                     },
-                    @intFromEnum(EpollTag.backend) => {
+                    @backingInt(EpollTag.backend) => {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             if (!drainBackendEvents(&term, &pty, &backend, &write_queue, evloop_fd, &cursor_visible_blink, &cursor_blink_active, &last_input_ns, &last_render_ns, &backend_focused, &last_pressed_button, 8192)) {
@@ -1551,7 +1551,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             for (kevents[0..n]) |kev| {
                 if (kev.filter == std.c.EVFILT.READ) {
-                    if (kev.udata == @intFromEnum(KqueueTag.pty)) {
+                    if (kev.udata == @backingInt(KqueueTag.pty)) {
                         // Bound each drain so sustained output cannot starve Cocoa.
                         var drained: usize = 0;
                         while (drained < config.pty_buf_size) {
@@ -1582,7 +1582,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                                 term.vt_response_len = 0;
                             }
                         }
-                    } else if (kev.udata == @intFromEnum(KqueueTag.backend)) {
+                    } else if (kev.udata == @backingInt(KqueueTag.backend)) {
                         // Backend events (X11, Wayland or macOS)
                         if (config.backend == .x11 or config.backend == .wayland or config.backend == .macos) {
                             while (backend.pollEvents()) |event| {

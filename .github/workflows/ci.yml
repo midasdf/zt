@@ -18,8 +18,8 @@ jobs:
 
       - name: Install Zig
         run: |
-          curl -sL "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" | tar -xJ
-          echo "$PWD/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
+          curl -fL "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: |
@@ -32,14 +32,25 @@ jobs:
       - name: Format check
         run: zig fmt --check .
 
+      - name: Build (framebuffer)
+        run: zig build -Dbackend=fbdev
+
       - name: Build (X11)
         run: zig build -Dbackend=x11
 
       - name: Build (Wayland)
         run: zig build -Dbackend=wayland
 
-      - name: Test
+      - name: Test (X11)
         run: zig build test -Dbackend=x11
+
+      - name: Test (Wayland)
+        run: zig build test -Dbackend=wayland
+
+      - name: Check font tools
+        run: |
+          zig build-exe tools/bdf2blob.zig -fno-emit-bin
+          zig build-exe tools/ttf2bdf.zig -fno-emit-bin
 
   check-macos:
     strategy:
@@ -54,10 +65,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig 0.16
+      - name: Install Zig 0.17
         run: |
-          curl -fL "https://ziglang.org/download/0.16.0/zig-${{ matrix.arch }}-macos-0.16.0.tar.xz" | tar -xJ
-          echo "$PWD/zig-${{ matrix.arch }}-macos-0.16.0" >> "$GITHUB_PATH"
+          curl -fL "https://ziglang.org/download/0.17.0/zig-${{ matrix.arch }}-macos-0.17.0.tar.xz" | tar -xJ
+          echo "$PWD/zig-${{ matrix.arch }}-macos-0.17.0" >> "$GITHUB_PATH"
 
       - name: Build (native macOS defaults)
         run: zig build -Doptimize=ReleaseFast

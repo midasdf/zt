@@ -3,7 +3,8 @@ FROM archlinux:latest
 # Install dependencies
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
-    zig \
+    curl \
+    xz \
     xorg-server-xvfb \
     xdotool \
     xterm \
@@ -30,6 +31,10 @@ RUN pacman -Syu --noconfirm && \
     tree \
     git \
     && pacman -Scc --noconfirm
+
+# Pin the compiler rather than depending on Arch's rolling Zig package.
+RUN curl -fL https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz | tar -xJ -C /opt
+ENV PATH="/opt/zig-x86_64-linux-0.17.0:${PATH}"
 
 WORKDIR /zt
 COPY . /zt/

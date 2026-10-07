@@ -169,7 +169,7 @@ pub const FbdevBackend = struct {
         // Cap at 8 slots: typical systems have 1-3 keyboard devices; 8 covers
         // split keyboards, USB + Bluetooth, and virtual input devices without
         // wasting fd space. Scan up to event31 to find them all.
-        var evdev_fds: [8]posix.fd_t = [_]posix.fd_t{-1} ** 8;
+        var evdev_fds: [8]posix.fd_t = @splat(-1);
         var evdev_count: u8 = 0;
 
         for (0..32) |i| {
@@ -182,7 +182,7 @@ pub const FbdevBackend = struct {
             const fd = posix.open(c_path[0..path.len :0], .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
 
             // Check if it's a keyboard
-            var key_bits: [96]u8 = [_]u8{0} ** 96;
+            var key_bits: [96]u8 = @splat(0);
             const ev_ret = std.os.linux.ioctl(fd, EVIOCGBIT_EV_KEY, @intFromPtr(&key_bits));
             if (@as(isize, @bitCast(ev_ret)) < 0) {
                 posix.close(fd);
@@ -333,8 +333,8 @@ pub const FbdevBackend = struct {
         var mode = VtMode{
             .mode = VT_PROCESS,
             .waitv = 0,
-            .relsig = @intFromEnum(posix.SIG.USR1),
-            .acqsig = @intFromEnum(posix.SIG.USR2),
+            .relsig = @backingInt(posix.SIG.USR1),
+            .acqsig = @backingInt(posix.SIG.USR2),
             .frsig = 0,
         };
         const ret = std.os.linux.ioctl(self.tty_fd, VT_SETMODE, @intFromPtr(&mode));

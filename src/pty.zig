@@ -114,10 +114,11 @@ pub const Pty = struct {
                 @intFromPtr(&pty_num),
             );
             if (@as(isize, @bitCast(ptn_rc)) < 0) return error.IoctlFailed;
-            break :blk std.fmt.bufPrintZ(
+            break :blk std.fmt.bufPrintSentinel(
                 &slave_path_buf,
                 "/dev/pts/{d}",
                 .{pty_num},
+                0,
             ) catch return error.PathTooLong;
         };
 
@@ -206,25 +207,25 @@ pub const Pty = struct {
             var shell_env_buf: [256]u8 = undefined;
             var home_env_buf: [256]u8 = undefined;
             var user_env_buf: [128]u8 = undefined;
-            const col_env = std.fmt.bufPrintZ(&col_env_buf, "COLUMNS={d}", .{cols}) catch "COLUMNS=80";
-            const row_env = std.fmt.bufPrintZ(&row_env_buf, "LINES={d}", .{rows}) catch "LINES=24";
-            const shell_env = std.fmt.bufPrintZ(&shell_env_buf, "SHELL={s}", .{shell_path}) catch "SHELL=/bin/sh";
+            const col_env = std.fmt.bufPrintSentinel(&col_env_buf, "COLUMNS={d}", .{cols}, 0) catch "COLUMNS=80";
+            const row_env = std.fmt.bufPrintSentinel(&row_env_buf, "LINES={d}", .{rows}, 0) catch "LINES=24";
+            const shell_env = std.fmt.bufPrintSentinel(&shell_env_buf, "SHELL={s}", .{shell_path}, 0) catch "SHELL=/bin/sh";
 
             // Inherit key environment variables from parent
             const home_val = posix.getenv("HOME") orelse "/root";
             const user_val = posix.getenv("USER") orelse "root";
             const lang_val = posix.getenv("LANG") orelse "C.UTF-8";
             const path_val = posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
-            const home_env = std.fmt.bufPrintZ(&home_env_buf, "HOME={s}", .{home_val}) catch "HOME=/root";
-            const user_env = std.fmt.bufPrintZ(&user_env_buf, "USER={s}", .{user_val}) catch "USER=root";
+            const home_env = std.fmt.bufPrintSentinel(&home_env_buf, "HOME={s}", .{home_val}, 0) catch "HOME=/root";
+            const user_env = std.fmt.bufPrintSentinel(&user_env_buf, "USER={s}", .{user_val}, 0) catch "USER=root";
             var lang_env_buf: [64]u8 = undefined;
-            const lang_env = std.fmt.bufPrintZ(&lang_env_buf, "LANG={s}", .{lang_val}) catch "LANG=C.UTF-8";
+            const lang_env = std.fmt.bufPrintSentinel(&lang_env_buf, "LANG={s}", .{lang_val}, 0) catch "LANG=C.UTF-8";
             var path_env_buf: [1024]u8 = undefined;
-            const path_env = std.fmt.bufPrintZ(&path_env_buf, "PATH={s}", .{path_val}) catch "PATH=/usr/local/bin:/usr/bin:/bin";
+            const path_env = std.fmt.bufPrintSentinel(&path_env_buf, "PATH={s}", .{path_val}, 0) catch "PATH=/usr/local/bin:/usr/bin:/bin";
 
             // Capacity 32 entries; currently max 15 used (10 base + 5 Linux display vars).
             // If adding more entries, verify ei stays < 31 (last slot must be null sentinel).
-            var env_arr: [32:null]?[*:0]const u8 = .{null} ** 32;
+            var env_arr: [32:null]?[*:0]const u8 = @splat(null);
             var ei: usize = 0;
             env_arr[ei] = "TERM=xterm-256color";
             ei += 1;
@@ -254,11 +255,11 @@ pub const Pty = struct {
                 var xauth_env_buf: [256]u8 = undefined;
                 var xdg_runtime_buf: [256]u8 = undefined;
                 var dbus_env_buf: [256]u8 = undefined;
-                const display_env: ?[*:0]const u8 = if (posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintZ(&display_env_buf, "DISPLAY={s}", .{posix.getenv("DISPLAY").?}) catch null) else null;
-                const wayland_env: ?[*:0]const u8 = if (posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintZ(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{posix.getenv("WAYLAND_DISPLAY").?}) catch null) else null;
-                const xauth_env: ?[*:0]const u8 = if (posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintZ(&xauth_env_buf, "XAUTHORITY={s}", .{posix.getenv("XAUTHORITY").?}) catch null) else null;
-                const xdg_runtime_env: ?[*:0]const u8 = if (posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintZ(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{posix.getenv("XDG_RUNTIME_DIR").?}) catch null) else null;
-                const dbus_env: ?[*:0]const u8 = if (posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintZ(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}) catch null) else null;
+                const display_env: ?[*:0]const u8 = if (posix.getenv("DISPLAY")) |_| (std.fmt.bufPrintSentinel(&display_env_buf, "DISPLAY={s}", .{posix.getenv("DISPLAY").?}, 0) catch null) else null;
+                const wayland_env: ?[*:0]const u8 = if (posix.getenv("WAYLAND_DISPLAY")) |_| (std.fmt.bufPrintSentinel(&wayland_env_buf, "WAYLAND_DISPLAY={s}", .{posix.getenv("WAYLAND_DISPLAY").?}, 0) catch null) else null;
+                const xauth_env: ?[*:0]const u8 = if (posix.getenv("XAUTHORITY")) |_| (std.fmt.bufPrintSentinel(&xauth_env_buf, "XAUTHORITY={s}", .{posix.getenv("XAUTHORITY").?}, 0) catch null) else null;
+                const xdg_runtime_env: ?[*:0]const u8 = if (posix.getenv("XDG_RUNTIME_DIR")) |_| (std.fmt.bufPrintSentinel(&xdg_runtime_buf, "XDG_RUNTIME_DIR={s}", .{posix.getenv("XDG_RUNTIME_DIR").?}, 0) catch null) else null;
+                const dbus_env: ?[*:0]const u8 = if (posix.getenv("DBUS_SESSION_BUS_ADDRESS")) |_| (std.fmt.bufPrintSentinel(&dbus_env_buf, "DBUS_SESSION_BUS_ADDRESS={s}", .{posix.getenv("DBUS_SESSION_BUS_ADDRESS").?}, 0) catch null) else null;
                 if (display_env) |e| {
                     env_arr[ei] = e;
                     ei += 1;

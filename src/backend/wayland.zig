@@ -84,7 +84,7 @@ pub const PreeditEvent = struct {
     len: u32 = 0,
     caret: u32 = 0,
     active: bool = false,
-    feedback: [128]u8 = [_]u8{0} ** 128,
+    feedback: [128]u8 = @splat(0),
 
     pub fn slice(self: *const PreeditEvent) []const u8 {
         return self.data[0..self.len];
@@ -120,7 +120,7 @@ fn waitForSocket(epoll_fd: posix.fd_t) !void {
         const n: isize = @bitCast(rc);
         if (n < 0) {
             const err: u32 = @intCast(-n);
-            if (err == @intFromEnum(posix.E.INTR)) continue;
+            if (err == @backingInt(posix.E.INTR)) continue;
             return error.EpollWaitFailed;
         }
         if (n == 0) return error.InitTimeout;

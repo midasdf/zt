@@ -9,12 +9,12 @@ const testing = std.testing;
 // =============================================================================
 
 pub const CsiAction = struct {
-    params: [16]u16 = [_]u16{0} ** 16,
-    sub_params: [16][5]u16 = [_][5]u16{[_]u16{0} ** 5} ** 16,
-    sub_param_counts: [16]u3 = [_]u3{0} ** 16,
+    params: [16]u16 = @splat(0),
+    sub_params: [16][5]u16 = @splat(@splat(0)),
+    sub_param_counts: [16]u3 = @splat(0),
     has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     param_count: u8 = 0,
-    intermediates: [2]u8 = [_]u8{0} ** 2,
+    intermediates: [2]u8 = @splat(0),
     intermediate_count: u8 = 0,
     final_byte: u8 = 0,
     private_marker: u8 = 0, // '?' or '>' or 0
@@ -57,14 +57,14 @@ pub const State = enum {
 pub const Parser = struct {
     state: State = .ground,
     // CSI accumulators
-    params: [16]u16 = [_]u16{0} ** 16,
+    params: [16]u16 = @splat(0),
     param_count: u8 = 0,
-    intermediates: [2]u8 = [_]u8{0} ** 2,
+    intermediates: [2]u8 = @splat(0),
     intermediate_count: u8 = 0,
     private_marker: u8 = 0,
     in_subparam: bool = false,
-    sub_params: [16][5]u16 = [_][5]u16{[_]u16{0} ** 5} ** 16,
-    sub_param_counts: [16]u3 = [_]u3{0} ** 16,
+    sub_params: [16][5]u16 = @splat(@splat(0)),
+    sub_param_counts: [16]u3 = @splat(0),
     has_sub: u16 = 0, // bitmask: bit i set = params[i] has a sub-param
     // UTF-8 accumulator
     utf8_buf: [4]u8 = undefined,
@@ -482,12 +482,12 @@ pub const Parser = struct {
     }
 
     fn clearCsi(self: *Parser) void {
-        self.params = [_]u16{0} ** 16;
-        self.sub_params = [_][5]u16{[_]u16{0} ** 5} ** 16;
-        self.sub_param_counts = [_]u3{0} ** 16;
+        self.params = @splat(0);
+        self.sub_params = @splat(@splat(0));
+        self.sub_param_counts = @splat(0);
         self.has_sub = 0;
         self.param_count = 0;
-        self.intermediates = [_]u8{0} ** 2;
+        self.intermediates = @splat(0);
         self.intermediate_count = 0;
         self.private_marker = 0;
         self.in_subparam = false;

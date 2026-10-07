@@ -322,7 +322,7 @@ fn flattenContour(pts: []const Pt, a: std.mem.Allocator, edges: *std.ArrayList(E
 /// Nonzero-winding scanline fill into a CELL_W x CELL_H 1-bit cell.
 /// Returns 16 bytes (one per row, MSB = leftmost pixel).
 fn rasterize(edges: []const Edge, a: std.mem.Allocator) ![CELL_H]u8 {
-    var cell = [_]u8{0} ** CELL_H;
+    var cell: [CELL_H]u8 = @splat(0);
     var xs: std.ArrayList(XCross) = .empty;
     defer xs.deinit(a);
 
@@ -571,7 +571,7 @@ fn previewCell(cp: u21, cell: [CELL_H]u8) void {
     std.debug.print("U+{X:0>4}:\n", .{cp});
     for (cell) |byte| {
         var col: u32 = 0;
-        var line = [_]u8{'.'} ** CELL_W;
+        var line: [CELL_W]u8 = @splat('.');
         while (col < CELL_W) : (col += 1) {
             if (byte & (@as(u8, 0x80) >> @intCast(col)) != 0) line[col] = '#';
         }

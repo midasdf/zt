@@ -198,7 +198,7 @@ pub const Term = struct {
 
     // Hyperlinks (indexed by physical cell index, 0 = no link)
     hyperlink_ids: []u16,
-    hyperlink_table: [64]HyperlinkEntry = [_]HyperlinkEntry{.{}} ** 64,
+    hyperlink_table: [64]HyperlinkEntry = @splat(.{}),
     hyperlink_next_id: u16 = 1,
     current_hyperlink_id: u16 = 0,
 
@@ -282,10 +282,10 @@ pub const Term = struct {
     preedit_active: bool = false,
     // Per-byte feedback flags from the IME (bit 0=reverse, 1=underline,
     // 2=highlight). Aligned to preedit_text bytes.
-    preedit_feedback: [128]u8 = [_]u8{0} ** 128,
+    preedit_feedback: [128]u8 = @splat(0),
 
     // Saved DEC mode values (XTSAVE/XTRESTORE)
-    saved_dec_modes: [32]SavedDecMode = [_]SavedDecMode{.{}} ** 32,
+    saved_dec_modes: [32]SavedDecMode = @splat(.{}),
     saved_dec_mode_count: u8 = 0,
 
     // Saved cursor state (DECSC/DECRC — saves attrs + charset like st)

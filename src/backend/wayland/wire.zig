@@ -61,7 +61,7 @@ pub fn alignUp(n: usize, alignment: usize) usize {
 pub const ObjectIdAllocator = struct {
     /// Next fresh ID to hand out. ID 1 is reserved for wl_display.
     next_id: u32 = 2,
-    free_list: [256]u32 = [_]u32{0} ** 256,
+    free_list: [256]u32 = @splat(0),
     free_count: u32 = 0,
 
     /// Allocate a new object ID. Reuses freed IDs when available.
@@ -184,10 +184,10 @@ pub const Connection = struct {
 
         var path_buf: [256]u8 = undefined;
         const path = if (display.len > 0 and display[0] == '/')
-            std.fmt.bufPrintZ(&path_buf, "{s}", .{display}) catch return error.PathTooLong
+            std.fmt.bufPrintSentinel(&path_buf, "{s}", .{display}, 0) catch return error.PathTooLong
         else blk: {
             const runtime_dir = posix.getenv("XDG_RUNTIME_DIR") orelse return error.NoXdgRuntimeDir;
-            break :blk std.fmt.bufPrintZ(&path_buf, "{s}/{s}", .{ runtime_dir, display }) catch return error.PathTooLong;
+            break :blk std.fmt.bufPrintSentinel(&path_buf, "{s}/{s}", .{ runtime_dir, display }, 0) catch return error.PathTooLong;
         };
 
         const sock_fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK, 0);
@@ -400,8 +400,8 @@ pub const Connection = struct {
         if (rc_isize < 0) {
             const err: i32 = @intCast(-rc_isize);
             return switch (err) {
-                @intFromEnum(posix.E.AGAIN) => error.WouldBlock,
-                @intFromEnum(posix.E.CONNRESET) => error.ConnectionReset,
+                @backingInt(posix.E.AGAIN) => error.WouldBlock,
+                @backingInt(posix.E.CONNRESET) => error.ConnectionReset,
                 else => error.RecvFailed,
             };
         }

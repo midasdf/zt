@@ -91,7 +91,7 @@ pub fn build(b: *std.Build) void {
     const scrollback_lines_opt = b.option(u32, "scrollback_lines", "Scrollback rows for main screen (0 disables, default 10000)") orelse 10000;
     const alt_screen_wheel_scrollback_opt = b.option(bool, "alt_screen_wheel_scrollback", "Make the mouse wheel scroll the alt-screen scrollback ring instead of arrow keys (default: false)") orelse false;
     const shell_opt_raw = b.option([]const u8, "shell", "Shell path (default: /bin/zsh on macOS, /bin/sh on Linux)") orelse if (is_macos) "/bin/zsh" else "/bin/sh";
-    const shell_opt: [:0]const u8 = b.allocator.dupeZ(u8, shell_opt_raw) catch @panic("OOM");
+    const shell_opt: [:0]const u8 = b.allocator.dupeSentinel(u8, shell_opt_raw, 0) catch @panic("OOM");
 
     const options = b.addOptions();
     options.addOption(bool, "use_x11", is_x11);
@@ -105,7 +105,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(u32, "scrollback_lines", scrollback_lines_opt);
     options.addOption(bool, "alt_screen_wheel_scrollback", alt_screen_wheel_scrollback_opt);
     options.addOption([:0]const u8, "shell", shell_opt);
-    options.addOption([:0]const u8, "version", b.allocator.dupeZ(u8, "0.10.1") catch @panic("OOM"));
+    options.addOption([:0]const u8, "version", b.allocator.dupeSentinel(u8, "0.11.0", 0) catch @panic("OOM"));
 
     const config_mod = b.createModule(.{
         .root_source_file = b.path("config.zig"),
@@ -290,7 +290,7 @@ fn hostTool(b: *std.Build, name: []const u8) *std.Build.Step.Compile {
         .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("tools/{s}.zig", .{name})),
             .target = b.graph.host,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         }),
     });
 }

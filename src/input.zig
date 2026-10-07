@@ -106,7 +106,7 @@ pub fn macosToEvdev(keycode: u8) u16 {
 const macos_to_evdev_table: [128]u16 = buildMacosTable();
 
 fn buildMacosTable() [128]u16 {
-    var table = [_]u16{0} ** 128;
+    var table: [128]u16 = @splat(0);
     // Letters (ANSI layout — macOS kVK_ANSI_* keycodes)
     table[0x00] = KEY.A;
     table[0x01] = KEY.S;
@@ -293,7 +293,7 @@ fn buildJpSymbols(map: *[256]?KeyEntry) void {
 }
 
 fn buildKeymap() [256]?KeyEntry {
-    var map = [_]?KeyEntry{null} ** 256;
+    var map: [256]?KeyEntry = @splat(null);
     buildLetters(&map);
     switch (config.keymap) {
         .us => buildUsSymbols(&map),

@@ -280,7 +280,7 @@ pub inline fn execvpeZ(
     var last_err: ExecveError = error.FileNotFound;
     while (it.next()) |dir| {
         if (dir.len == 0) continue; // skip empty PATH entries (hostile-CWD hardening)
-        const full = std.fmt.bufPrintZ(&buf, "{s}/{s}", .{ dir, file_slice }) catch {
+        const full = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ dir, file_slice }, 0) catch {
             last_err = error.NameTooLong;
             continue;
         };

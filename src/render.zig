@@ -446,7 +446,7 @@ test "Render: renderCell writes pixels to buffer" {
     const h = 16;
     const bpp = 4;
     const stride = w * bpp;
-    var buffer: [stride * h]u8 = [_]u8{0} ** (stride * h);
+    var buffer: [stride * h]u8 = @splat(0);
 
     // Create a simple glyph (A-like pattern)
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
@@ -474,7 +474,7 @@ test "Render: renderCell scale=2 writes 2x2 pixel blocks" {
     const scale = 2;
     const bpp = 4;
     const stride = w * scale * bpp; // 64 bytes per row (16 pixels wide)
-    var buffer: [stride * h * scale]u8 = [_]u8{0} ** (stride * h * scale);
+    var buffer: [stride * h * scale]u8 = @splat(0);
 
     // Bitmap row 2 = 0x18 = 00011000 (bits 3 and 4 set)
     const bitmap = [_]u8{ 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00 };
@@ -514,7 +514,7 @@ test "Render: space with null glyph produces background only" {
     const h = 16;
     const bpp = 4;
     const stride = w * bpp;
-    var buffer: [stride * h]u8 = [_]u8{0} ** (stride * h);
+    var buffer: [stride * h]u8 = @splat(0);
 
     renderCell(&buffer, stride, 0, 0, .{ .char = ' ', .fg = 7, .bg = 0 }, null, null, null, null, w, h, .bgra32, false, 1, false);
 

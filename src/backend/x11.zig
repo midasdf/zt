@@ -81,7 +81,7 @@ pub const PreeditEvent = struct {
     active: bool = false,
     // Per-byte feedback flags, indexed in lockstep with `data`.
     // Bit 0 = reverse, Bit 1 = underline, Bit 2 = highlight.
-    feedback: [128]u8 = [_]u8{0} ** 128,
+    feedback: [128]u8 = @splat(0),
 
     pub fn slice(self: *const PreeditEvent) []const u8 {
         return self.data[0..self.len];
